@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WALL-E Eyes</title>
+<style>
+  body {
+    margin: 0;
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+  }
+  #status {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #888;
+    font-family: monospace;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="status">🤖 WALL-E — idle</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ==================== SETUP ====================
+const canvas = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.z = 8;
+
+// ==================== WALL-E EYES ====================
+// Each eye is a group: outer ring + inner pupil + highlight
+
+function createEye(x) {
+  const eyeGroup = new THREE.Group();
+  eyeGroup.position.x = x;
+
+  // Outer ring (dark grey metal)
+  const outerGeo = new THREE.TorusGeometry(1, 0.15, 16, 32);
+  const outerMat = new THREE.MeshStandardMaterial({
+    color: 0x3a3a4a,
+    metalness: 0.8,
+    roughness: 0.4,
+  });
+  const outer = new THREE.Mesh(outerGeo, outerMat);
+  eyeGroup.add(outer);
+
+  // Front lens (dark glass)
+  const lensGeo = new THREE.CircleGeometry(0.85, 32);
+  const lensMat = new THREE.MeshStandardMaterial({
+    color: 0x111122,
+    metalness: 0.3,
+    roughness: 0.1,
+  });
+  const lens = new THREE.Mesh(lensGeo, lensMat);
+  eyeGroup.add(lens);
+
+  // Pupil (bright center)
+  const pupilGeo = new THREE.CircleGeometry(0.5, 32);
+  const pupilMat = new THREE.MeshStandardMaterial({
+    color: 0x3344aa,
+    emissive: 0x2233aa,
+    emissiveIntensity: 0.6,
+    metalness: 0.1,
+    roughness: 0.05,
+  });
+  const pupil = new THREE.Mesh(pupilGeo, pupilMat);
+  pupil.name = 'pupil';
+  eyeGroup.add(pupil);
+
+  // Highlight (white shine)
+  const highlightGeo = new THREE.CircleGeometry(0.15, 16);
+  const highlightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const highlight = new THREE.Mesh(highlightGeo, highlightMat);
+  highlight.position.set(0.25, 0.2, 0.02);
+  highlight.name = 'highlight';
+  eyeGroup.add(highlight);
+
+  // Eyebrow (for sadness/anger expressions)
+  const browGeo = new THREE.BoxGeometry(1.6, 0.08, 0.05);
+  const browMat = new THREE.MeshStandardMaterial({
+    color: 0x555566,
+    metalness: 0.7,
+    roughness: 0.5,
+  });
+  const brow = new THREE.Mesh(browGeo, browMat);
+  brow.position.y = 1.1;
+  brow.name = 'brow';
+  eyeGroup.add(brow);
+
+  // Eyelid (top, for sadness/tired)
+  const lidGeo = new THREE.PlaneGeometry(2, 0.6);
+  const lidMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a2e,
+    roughness: 0.8,
+  });
+  const lid = new THREE.Mesh(lidGeo, lidMat);
+  lid.position.y = 1.5;
+  lid.name = 'lid';
+  lid.visible = false;
+  eyeGroup.add(lid);
+
+  return eyeGroup;
+}
+
+const leftEye = createEye(-1.2);
+const rightEye = createEye(1.2);
+const eyes = new THREE.Group();
+eyes.add(leftEye);
+eyes.add(rightEye);
+eyes.position.y = 0.5;
+scene.add(eyes);
+
+// Body box
+const bodyGeo = new THREE.BoxGeometry(4.5, 2.5, 2);
+const bodyMat = new THREE.MeshStandardMaterial({
+  color: 0xccaa44,
+  metalness: 0.2,
+  roughness: 0.7,
+});
+const body = new THREE.Mesh(bodyGeo, bodyMat);
+body.position.y = -2;
+scene.add(body);
+
+// Arms (simple boxes)
+function createArm(x, side) {
+  const armGeo = new THREE.BoxGeometry(0.3, 1.2, 0.3);
+  const armMat = new THREE.MeshStandardMaterial({
+    color: 0x999988,
+    metalness: 0.6,
+    roughness: 0.5,
+  });
+  const arm = new THREE.Mesh(armGeo, armMat);
+  arm.position.set(x * 2.5, -1.8, 0);
+  return arm;
+}
+scene.add(createArm(-1, 'left'));
+scene.add(createArm(1, 'right'));
+
+// Lights
+const ambientLight = new THREE.AmbientLight(0x333355, 1.5);
+scene.add(ambientLight);
+
+const mainLight = new THREE.DirectionalLight(0xffffff, 2);
+mainLight.position.set(5, 5, 5);
+scene.add(mainLight);
+
+const eyeLightLeft = new THREE.PointLight(0x3344ff, 1, 4);
+eyeLightLeft.position.set(-1.2, 0.5, 1);
+scene.add(eyeLightLeft);
+
+const eyeLightRight = new THREE.PointLight(0x3344ff, 1, 4);
+eyeLightRight.position.set(1.2, 0.5, 1);
+scene.add(eyeLightRight);
+
+// ==================== ANIMATION STATE ====================
+let currentEmotion = 'idle';
+let emotionTimer = 0;
+let blinkTimer = 0;
+let blinkState = 0; // 0=open, 1=closing, 2=closed, 3=opening
+const BLINK_INTERVAL = 3; // seconds between blinks
+const BLINK_SPEED = 0.06;
+
+const statusEl = document.getElementById('status');
+
+// ==================== FETCH EMOTION FROM API ====================
+async function fetchEmotion() {
+  try {
+    const resp = await fetch('/api/emotion');
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.emotion && data.emotion !== currentEmotion) {
+        setEmotion(data.emotion);
+        statusEl.textContent = `🤖 WALL-E — ${data.emotion}`;
+      }
+    }
+  } catch (e) {
+    // Server not running yet — use test cycle
+  }
+}
+
+function setEmotion(emotion) {
+  currentEmotion = emotion;
+  emotionTimer = 2.0; // Hold expression for 2 seconds
+
+  // Reset all
+  leftEye.children.forEach(c => {
+    if (c.name === 'lid') c.visible = false;
+    if (c.name === 'brow') c.rotation.z = 0;
+  });
+  rightEye.children.forEach(c => {
+    if (c.name === 'lid') c.visible = false;
+    if (c.name === 'brow') c.rotation.z = 0;
+  });
+  body.scale.set(1, 1, 1);
+  body.position.y = -2;
+
+  switch (emotion) {
+    case 'HAPPY':
+      // Eyes tilt outward (^ ^)
+      leftEye.rotation.z = 0.15;
+      rightEye.rotation.z = -0.15;
+      eyeLightLeft.intensity = 2;
+      eyeLightRight.intensity = 2;
+      body.position.y = -1.9; // Slight hop
+      break;
+    case 'CURIOUS':
+      // Head tilt
+      eyes.rotation.z = 0.2;
+      eyes.position.x = 0.1;
+      break;
+    case 'EXCITED':
+      // Eyes wide, shaking
+      eyes.scale.set(1.1, 1.1, 1);
+      eyeLightLeft.intensity = 3;
+      eyeLightRight.intensity = 3;
+      break;
+    case 'SAD':
+      // Drooping brows, half-lidded
+      leftEye.children.forEach(c => {
+        if (c.name === 'brow') c.rotation.z = -0.2;
+        if (c.name === 'lid') { c.visible = true; c.position.y = 0.5; }
+      });
+      rightEye.children.forEach(c => {
+        if (c.name === 'brow') c.rotation.z = 0.2;
+        if (c.name === 'lid') { c.visible = true; c.position.y = 0.5; }
+      });
+      eyeLightLeft.intensity = 0.3;
+      eyeLightRight.intensity = 0.3;
+      break;
+    case 'SCARED':
+      // Retracted into shell
+      body.scale.set(1, 0.6, 1);
+      body.position.y = -2.5;
+      eyes.scale.set(0.7, 0.7, 0.7);
+      eyes.position.y = -0.3;
+      break;
+    case 'LOVE':
+      // Soft, dreamy, pupils bigger
+      eyes.rotation.z = -0.15;
+      eyeLightLeft.intensity = 1.5;
+      eyeLightRight.intensity = 1.5;
+      break;
+    case 'COMPACT':
+      // Focused, determined
+      eyes.position.y = 0.2;
+      break;
+    case 'AMAZED':
+      // Eyes wide, bright
+      eyes.scale.set(1.15, 1.15, 1);
+      eyeLightLeft.intensity = 3;
+      eyeLightRight.intensity = 3;
+      body.position.y = -1.8;
+      break;
+    case 'DETERMINED':
+      // Eyebrows down
+      leftEye.children.forEach(c => {
+        if (c.name === 'brow') c.rotation.z = 0.15;
+      });
+      rightEye.children.forEach(c => {
+        if (c.name === 'brow') c.rotation.z = -0.15;
+      });
+      break;
+    default: // idle
+      break;
+  }
+}
+
+// ==================== RENDER LOOP ====================
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.1);
+
+  // Blink logic
+  blinkTimer += dt;
+  if (blinkState === 0 && blinkTimer > BLINK_INTERVAL + Math.random() * 2) {
+    blinkState = 1;
+    blinkTimer = 0;
+  }
+
+  if (blinkState === 1) { // Closing
+    eyes.scale.y = Math.max(0.05, eyes.scale.y - BLINK_SPEED);
+    if (eyes.scale.y <= 0.05) blinkState = 2;
+  } else if (blinkState === 2) { // Closed
+    blinkTimer += dt;
+    if (blinkTimer > 0.08) blinkState = 3;
+  } else if (blinkState === 3) { // Opening
+    eyes.scale.y = Math.min(1, eyes.scale.y + BLINK_SPEED);
+    if (eyes.scale.y >= 1) { blinkState = 0; blinkTimer = 0; }
+  }
+
+  // Emotion decay — return to idle
+  if (currentEmotion !== 'idle') {
+    emotionTimer -= dt;
+    if (emotionTimer <= 0) {
+      setEmotion('idle');
+      statusEl.textContent = '🤖 WALL-E — idle';
+    }
+  }
+
+  // Idle animation: gentle sway
+  if (currentEmotion === 'idle') {
+    eyes.position.y = 0.5 + Math.sin(Date.now() * 0.002) * 0.1;
+    body.position.x = Math.sin(Date.now() * 0.0015) * 0.1;
+  }
+
+  // Auto-fetch emotion from server
+  fetchEmotion();
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+// Resize handler
+window.addEventListener('resize', () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+console.log('🤖 WALL-E Eyes ready!');
+</script>
+</body>
+</html>

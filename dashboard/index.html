@@ -1,0 +1,1271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WALL-E :: Tactical Execution System</title>
+<style>
+  /* ============================================================
+     WALL-E CONTROL DASHBOARD
+     Industrial. Retro-futuristic. CRT terminal meets mech cockpit.
+     Handcrafted. No frameworks. No gradients. No glassmorphism.
+     ============================================================ */
+
+  :root {
+    --bg:        #0a0a0a;
+    --bg-2:      #111111;
+    --bg-3:      #181818;
+    --panel:     #0f0f0f;
+    --bezel:     #2a2a2a;
+    --bezel-hi:  #3d3d3d;
+    --bezel-lo:  #050505;
+    --amber:     #ff9500;
+    --amber-hi:  #ffb347;
+    --amber-lo:  #664400;
+    --amber-dim: #4a2f00;
+    --green:     #00ff41;
+    --green-dim: #1a4a22;
+    --red:       #ff3030;
+    --red-dim:   #4a1010;
+    --text:      #d4a256;
+    --text-dim:  #7a5a30;
+    --text-mute: #4a3a20;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: #000;
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono', Menlo, Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    min-height: 100vh;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: auto;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* ===== CRT SCREEN FRAME ===== */
+  .crt-frame {
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.7) 100%),
+      transparent;
+    box-shadow:
+      inset 0 0 100px 40px rgba(0,0,0,0.55);
+    pointer-events: none;
+    z-index: 9000;
+  }
+
+  /* ===== SCAN LINES ===== */
+  .scanlines {
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0,0,0,0.18) 0px,
+      rgba(0,0,0,0.18) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    pointer-events: none;
+    z-index: 9001;
+  }
+
+  .scanlines::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      180deg,
+      transparent 0%,
+      rgba(255, 149, 0, 0.03) 50%,
+      transparent 100%
+    );
+    animation: scan-sweep 8s linear infinite;
+  }
+
+  @keyframes scan-sweep {
+    0%   { transform: translateY(-100%); }
+    100% { transform: translateY(100%); }
+  }
+
+  /* ===== MAIN CHASSIS ===== */
+  .chassis {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    padding: 14px;
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* ===== TOP BAR ===== */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 14px;
+    background: var(--bg-2);
+    border: 2px solid var(--bezel);
+    box-shadow:
+      inset 0 1px 0 var(--bezel-hi),
+      inset 0 -1px 0 var(--bezel-lo),
+      0 0 0 1px #000;
+    flex-shrink: 0;
+  }
+
+  .topbar .brand {
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--amber);
+    text-shadow: 0 0 6px rgba(255,149,0,0.5);
+    font-size: 16px;
+  }
+
+  .topbar .subbrand {
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+  }
+
+  .topbar .spacer { flex: 1; }
+
+  .rec-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border: 1px solid var(--red-dim);
+    background: rgba(255,48,48,0.08);
+    color: var(--red);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+  }
+  .rec-indicator.live { color: var(--red); }
+  .rec-dot {
+    width: 8px; height: 8px;
+    background: var(--red);
+    border-radius: 50%;
+    box-shadow: 0 0 6px var(--red);
+    animation: rec-blink 1.2s steps(2) infinite;
+  }
+  @keyframes rec-blink {
+    0%, 50%   { opacity: 1; }
+    50.01%, 100% { opacity: 0.15; }
+  }
+
+  .clock {
+    color: var(--green);
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    padding: 3px 8px;
+    border: 1px solid var(--green-dim);
+    background: rgba(0,255,65,0.05);
+  }
+
+  .signal-leds {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .signal-leds span {
+    width: 6px; height: 14px;
+    background: var(--green);
+    box-shadow: 0 0 4px var(--green);
+  }
+  .signal-leds span.off { background: var(--green-dim); box-shadow: none; }
+  .signal-leds span:nth-child(1) { opacity: 0.4; }
+  .signal-leds span:nth-child(2) { opacity: 0.6; }
+  .signal-leds span:nth-child(3) { opacity: 0.8; }
+  .signal-leds span:nth-child(4) { opacity: 1; }
+  .signal-leds span:nth-child(5) { opacity: 0.5; }
+
+  /* ===== MAIN GRID ===== */
+  .main-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    grid-template-rows: 1fr auto;
+    grid-template-areas:
+      "status eyes chat"
+      "status eyes chat"
+      "audio  audio audio";
+    gap: 10px;
+    min-height: 0;
+  }
+
+  .area-status { grid-area: status; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .area-eyes   { grid-area: eyes; }
+  .area-chat   { grid-area: chat; min-height: 0; display: flex; }
+  .area-audio  { grid-area: audio; }
+
+  /* ===== PANEL BASE ===== */
+  .panel {
+    background: var(--panel);
+    border: 2px solid var(--bezel);
+    box-shadow:
+      inset 0 1px 0 var(--bezel-hi),
+      inset 0 -1px 0 var(--bezel-lo),
+      inset 2px 2px 0 #000,
+      inset -2px -2px 0 #1c1c1c,
+      0 0 0 1px #000;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background:
+      linear-gradient(0deg, var(--bg-2) 0%, #1a1a1a 100%);
+    border-bottom: 2px solid var(--bezel);
+    box-shadow: inset 0 -1px 0 #000;
+    flex-shrink: 0;
+  }
+
+  .panel-header .icon {
+    width: 14px; height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--amber);
+    color: #000;
+    font-size: 10px;
+    font-weight: 900;
+    box-shadow:
+      inset 0 1px 0 var(--amber-hi),
+      inset 0 -1px 0 var(--amber-lo);
+  }
+
+  .panel-header .icon.green { background: var(--green); box-shadow: inset 0 1px 0 #6bff8a, inset 0 -1px 0 #006a1a; color: #000; }
+  .panel-header .icon.red   { background: var(--red);   box-shadow: inset 0 1px 0 #ff7878, inset 0 -1px 0 #4a1010; color: #000; }
+  .panel-header .icon.gray  { background: #555; box-shadow: inset 0 1px 0 #888, inset 0 -1px 0 #222; color: #000; }
+
+  .panel-header .label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--amber);
+    text-transform: uppercase;
+  }
+
+  .panel-header .right {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+
+  .panel-body {
+    padding: 10px;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  /* ===== STATUS PANEL ===== */
+  .status-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--bezel);
+    box-shadow:
+      inset 0 1px 0 #1c1c1c,
+      inset 0 -1px 0 #050505;
+  }
+
+  .status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--text-mute);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.25),
+      inset 0 -1px 0 rgba(0,0,0,0.6),
+      0 0 0 1px #000;
+    flex-shrink: 0;
+  }
+  .status-dot.ok {
+    background: var(--green);
+    box-shadow:
+      inset 0 1px 0 #6bff8a,
+      inset 0 -1px 0 #006a1a,
+      0 0 6px var(--green),
+      0 0 0 1px #000;
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  .status-dot.err {
+    background: var(--red);
+    box-shadow:
+      inset 0 1px 0 #ff7878,
+      inset 0 -1px 0 #4a1010,
+      0 0 6px var(--red),
+      0 0 0 1px #000;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { box-shadow: inset 0 1px 0 #6bff8a, inset 0 -1px 0 #006a1a, 0 0 6px var(--green), 0 0 0 1px #000; }
+    50%      { box-shadow: inset 0 1px 0 #6bff8a, inset 0 -1px 0 #006a1a, 0 0 12px var(--green), 0 0 0 1px #000; }
+  }
+
+  .status-name {
+    font-size: 12px;
+    color: var(--text);
+    letter-spacing: 1px;
+    flex: 1;
+  }
+  .status-val {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+
+  .sub-panel {
+    background: var(--bg-2);
+    border: 1px solid var(--bezel);
+    box-shadow: inset 0 1px 0 #1c1c1c, inset 0 -1px 0 #050505;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .sub-panel .sub-header {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    border-bottom: 1px dashed var(--bezel);
+    padding-bottom: 4px;
+    margin-bottom: 2px;
+  }
+
+  .kv {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+  }
+  .kv .k { color: var(--text-dim); }
+  .kv .v { color: var(--amber); font-weight: 700; }
+
+  /* ===== EYES PANEL ===== */
+  .eyes-panel { height: 100%; }
+
+  .eyes-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    gap: 16px;
+    background:
+      radial-gradient(ellipse at center, #0a0a0a 0%, #000 100%);
+    position: relative;
+  }
+
+  .eyes-body::before {
+    content: "";
+    position: absolute;
+    inset: 8px;
+    border: 1px solid var(--bezel);
+    pointer-events: none;
+  }
+
+  .eyes-stage {
+    display: flex;
+    gap: 40px;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .eye-svg {
+    width: 130px;
+    height: 130px;
+    background: #000;
+    border: 3px solid #000;
+    box-shadow:
+      inset 0 0 0 2px var(--amber-dim),
+      inset 0 0 18px rgba(255,149,0,0.25),
+      0 0 0 1px var(--bezel-hi),
+      0 0 24px rgba(255,149,0,0.18);
+    transition: background 0.25s, box-shadow 0.25s;
+  }
+
+  .eye-svg.excited { box-shadow: inset 0 0 0 2px var(--amber), inset 0 0 28px rgba(255,149,0,0.55), 0 0 0 1px var(--bezel-hi), 0 0 36px rgba(255,149,0,0.4); }
+  .eye-svg.love    { box-shadow: inset 0 0 0 2px var(--red),   inset 0 0 28px rgba(255,48,48,0.55),  0 0 0 1px var(--bezel-hi), 0 0 36px rgba(255,48,48,0.4); }
+  .eye-svg.sad     { box-shadow: inset 0 0 0 2px #5577aa,    inset 0 0 18px rgba(85,119,170,0.35), 0 0 0 1px var(--bezel-hi); background: #0a0a14; }
+  .eye-svg.amazed  { box-shadow: inset 0 0 0 2px var(--amber-hi), inset 0 0 32px rgba(255,179,71,0.7), 0 0 0 1px var(--bezel-hi), 0 0 44px rgba(255,179,71,0.5); }
+
+  .eye-rect { fill: var(--amber); }
+
+  .emotion-readout {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    width: 100%;
+    max-width: 420px;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+  }
+  .emotion-readout .lbl { color: var(--text-dim); }
+  .emotion-readout .val { color: var(--amber); font-weight: 700; text-align: right; }
+  .emotion-readout .val.state-idle       { color: var(--text-dim); }
+  .emotion-readout .val.state-excited,
+  .emotion-readout .val.state-amazed     { color: var(--amber-hi); text-shadow: 0 0 6px rgba(255,179,71,0.6); }
+  .emotion-readout .val.state-love      { color: var(--red); text-shadow: 0 0 6px rgba(255,48,48,0.6); }
+  .emotion-readout .val.state-sad       { color: #7799cc; }
+
+  .emotion-ticker {
+    margin-top: 6px;
+    width: 100%;
+    max-width: 420px;
+    height: 22px;
+    background: #000;
+    border: 1px solid var(--bezel);
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .emotion-ticker .tk-text {
+    white-space: nowrap;
+    padding-left: 100%;
+    color: var(--amber);
+    font-size: 11px;
+    letter-spacing: 2px;
+    animation: ticker-scroll 18s linear infinite;
+  }
+  @keyframes ticker-scroll {
+    0%   { transform: translateX(0); }
+    100% { transform: translateX(-100%); }
+  }
+
+  /* ===== CHAT PANEL ===== */
+  .chat-panel { width: 100%; }
+
+  .chat-body {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    background: #060606;
+  }
+
+  .chat-msg {
+    border-left: 3px solid var(--text-mute);
+    padding: 5px 8px;
+    background: var(--bg-2);
+    box-shadow: inset 0 1px 0 #1c1c1c;
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+  .chat-msg.user {
+    border-left-color: var(--green);
+  }
+  .chat-msg.walle {
+    border-left-color: var(--amber);
+  }
+  .chat-msg.system {
+    border-left-color: var(--red);
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  .chat-msg .who {
+    display: inline-block;
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin-right: 6px;
+  }
+  .chat-msg.user .who { color: var(--green); }
+  .chat-msg.walle .who { color: var(--amber); }
+
+  .chat-msg .time {
+    float: right;
+    font-size: 9px;
+    color: var(--text-mute);
+    letter-spacing: 1px;
+  }
+
+  .chat-empty {
+    color: var(--text-mute);
+    font-size: 11px;
+    text-align: center;
+    padding: 20px 10px;
+    letter-spacing: 1.5px;
+  }
+
+  /* ===== AUDIO PANEL ===== */
+  .audio-panel .panel-body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #050505;
+  }
+
+  .audio-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 1.5px;
+  }
+  .audio-meta .val { color: var(--green); }
+
+  .waveform {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 2px;
+    height: 64px;
+    background: #000;
+    border: 1px solid var(--bezel);
+    box-shadow: inset 0 0 12px rgba(0,0,0,0.9);
+    padding: 4px 6px;
+  }
+
+  .wave-bar {
+    flex: 1;
+    background: var(--amber);
+    box-shadow: 0 0 4px rgba(255,149,0,0.6);
+    min-height: 2px;
+    transition: height 0.08s linear;
+  }
+  .wave-bar.peak {
+    background: var(--amber-hi);
+    box-shadow: 0 0 6px var(--amber-hi);
+  }
+
+  .audio-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .audio-stat {
+    background: var(--bg-2);
+    border: 1px solid var(--bezel);
+    box-shadow: inset 0 1px 0 #1c1c1c, inset 0 -1px 0 #050505;
+    padding: 5px 8px;
+  }
+  .audio-stat .lbl {
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 1.5px;
+  }
+  .audio-stat .val {
+    font-size: 13px;
+    color: var(--amber);
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+
+  /* ===== CONTROLS PANEL (sits inside status column at bottom) ===== */
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+  }
+
+  .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-3);
+    color: var(--amber);
+    border: 2px solid var(--bezel);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow:
+      inset 0 1px 0 var(--bezel-hi),
+      inset 0 -1px 0 var(--bezel-lo),
+      inset 2px 2px 0 #000,
+      inset -2px -2px 0 #1c1c1c,
+      0 3px 0 #000;
+    transition: transform 0.05s linear, box-shadow 0.05s linear, color 0.1s;
+    user-select: none;
+  }
+  .btn:hover { color: var(--amber-hi); }
+  .btn:active,
+  .btn.pressed {
+    transform: translateY(2px);
+    box-shadow:
+      inset 0 1px 0 var(--bezel-hi),
+      inset 0 -1px 0 var(--bezel-lo),
+      inset 2px 2px 0 #000,
+      inset -2px -2px 0 #1c1c1c,
+      0 1px 0 #000;
+  }
+
+  .btn .ind {
+    width: 8px; height: 8px;
+    background: var(--text-mute);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 0 0 1px #000;
+  }
+  .btn.green .ind { background: var(--green); box-shadow: inset 0 1px 0 #6bff8a, 0 0 6px var(--green), 0 0 0 1px #000; }
+  .btn.amber .ind { background: var(--amber); box-shadow: inset 0 1px 0 var(--amber-hi), 0 0 6px var(--amber), 0 0 0 1px #000; }
+  .btn.red   .ind { background: var(--red);   box-shadow: inset 0 1px 0 #ff7878, 0 0 6px var(--red), 0 0 0 1px #000; }
+
+  .btn.green { color: var(--green); }
+  .btn.green:hover { color: #6bff8a; }
+  .btn.red { color: var(--red); }
+  .btn.red:hover { color: #ff7878; }
+
+  .btn .glyph {
+    font-size: 12px;
+  }
+
+  .controls-hint {
+    font-size: 9px;
+    color: var(--text-mute);
+    text-align: center;
+    letter-spacing: 1.5px;
+    padding-top: 4px;
+  }
+
+  /* ===== CONFIG PANEL ===== */
+  .config-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .config-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--bezel);
+    box-shadow: inset 0 1px 0 #1c1c1c, inset 0 -1px 0 #050505;
+    font-size: 11px;
+  }
+  .config-row .k {
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+  .config-row .v {
+    color: var(--amber);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .config-row .v.tag {
+    background: var(--amber);
+    color: #000;
+    padding: 1px 6px;
+    font-size: 10px;
+    box-shadow: inset 0 1px 0 var(--amber-hi), inset 0 -1px 0 var(--amber-lo);
+  }
+
+  /* ===== FOOTER ===== */
+  .footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 12px;
+    background: var(--bg-2);
+    border: 2px solid var(--bezel);
+    box-shadow: inset 0 1px 0 var(--bezel-hi), inset 0 -1px 0 var(--bezel-lo);
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .footer .title { color: var(--amber); font-weight: 700; }
+  .footer .blink { color: var(--green); animation: text-blink 1.4s steps(2) infinite; }
+  @keyframes text-blink {
+    0%, 50% { opacity: 1; }
+    50.01%, 100% { opacity: 0.3; }
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #000; border-left: 1px solid var(--bezel); }
+  ::-webkit-scrollbar-thumb {
+    background: var(--amber-lo);
+    border: 1px solid var(--bezel-hi);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--amber-dim); }
+
+  /* ===== RESPONSIVE TWEAKS ===== */
+  @media (max-width: 1100px) {
+    .main-grid {
+      grid-template-columns: 240px 1fr 280px;
+    }
+  }
+  @media (max-width: 900px) {
+    .main-grid {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "status"
+        "eyes"
+        "chat"
+        "audio";
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="scanlines"></div>
+<div class="crt-frame"></div>
+
+<div class="chassis">
+
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="brand">WALL-E</div>
+    <div class="subbrand">// TACTICAL EXECUTION SYSTEM</div>
+    <div class="signal-leds">
+      <span></span><span></span><span></span><span></span><span class="off"></span>
+    </div>
+    <div class="spacer"></div>
+    <div class="rec-indicator" id="rec-indicator">
+      <span class="rec-dot"></span>
+      <span>REC</span>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+
+    <!-- LEFT COLUMN: STATUS + CONTROLS -->
+    <div class="area-status">
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="icon">S</span>
+          <span class="label">System Status</span>
+          <span class="right" id="uptime">UP --:--</span>
+        </div>
+        <div class="panel-body" style="padding:8px;">
+          <div class="status-rows" id="status-rows">
+
+            <div class="status-row" data-key="ollama">
+              <div class="status-dot" id="dot-ollama"></div>
+              <div class="status-name">OLLAMA</div>
+              <div class="status-val">gemma3:4b</div>
+            </div>
+
+            <div class="status-row" data-key="eye">
+              <div class="status-dot" id="dot-eye"></div>
+              <div class="status-name">EYE SERVER</div>
+              <div class="status-val">:8765</div>
+            </div>
+
+            <div class="status-row" data-key="voice">
+              <div class="status-dot" id="dot-voice"></div>
+              <div class="status-name">VOICE PIPE</div>
+              <div class="status-val">STANDBY</div>
+            </div>
+
+            <div class="status-row" data-key="tts">
+              <div class="status-dot" id="dot-tts"></div>
+              <div class="status-name">ELEVENLABS</div>
+              <div class="status-val">TTS</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1; min-height:0;">
+        <div class="panel-header">
+          <span class="icon">C</span>
+          <span class="label">Controls</span>
+          <span class="right">MANUAL</span>
+        </div>
+        <div class="panel-body controls">
+          <button class="btn green" id="btn-listen">
+            <span class="ind"></span>
+            <span class="glyph">▶</span>
+            <span id="btn-listen-label">Start Listening</span>
+          </button>
+          <button class="btn amber" id="btn-test">
+            <span class="ind"></span>
+            <span class="glyph">♪</span>
+            <span>Test Voice</span>
+          </button>
+          <button class="btn red" id="btn-shutdown">
+            <span class="ind"></span>
+            <span class="glyph">■</span>
+            <span>Shutdown</span>
+          </button>
+          <div class="controls-hint">— CONFIRM BEFORE SHUTDOWN —</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- CENTER: EYES -->
+    <div class="area-eyes">
+      <div class="panel eyes-panel">
+        <div class="panel-header">
+          <span class="icon">E</span>
+          <span class="label">Optical Expression Display</span>
+          <span class="right" id="emotion-state">STATE: IDLE</span>
+        </div>
+        <div class="panel-body eyes-body">
+
+          <div class="eyes-stage">
+            <svg class="eye-svg" id="eye-left" viewBox="0 0 100 100" preserveAspectRatio="none">
+              <rect class="eye-rect" x="20" y="38" width="60" height="24" id="eye-left-rect"/>
+            </svg>
+            <svg class="eye-svg" id="eye-right" viewBox="0 0 100 100" preserveAspectRatio="none">
+              <rect class="eye-rect" x="20" y="38" width="60" height="24" id="eye-right-rect"/>
+            </svg>
+          </div>
+
+          <div class="emotion-readout">
+            <span class="lbl">CURRENT EMOTION</span>
+            <span class="val" id="emo-current">IDLE</span>
+            <span class="lbl">LAST UPDATE</span>
+            <span class="val" id="emo-time">--:--:--</span>
+            <span class="lbl">BIND</span>
+            <span class="val">127.0.0.1:8765</span>
+          </div>
+
+          <div class="emotion-ticker">
+            <div class="tk-text" id="ticker">
+              :: WALL-E ONLINE // EMOTION ENGINE ARMED // VOICE PIPELINE STANDBY // LISTEN FOR KEYWORD // EVA-COMPAT MODE ::
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: CHAT + CONFIG -->
+    <div class="area-chat" style="flex-direction:column; gap:10px;">
+
+      <div class="panel chat-panel" style="flex:1; min-height:0;">
+        <div class="panel-header">
+          <span class="icon green">T</span>
+          <span class="label">Live Transcript</span>
+          <span class="right" id="msg-count">0 MSGS</span>
+        </div>
+        <div class="chat-body" id="chat-body">
+          <div class="chat-empty">— AWAITING INPUT —</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="icon">F</span>
+          <span class="label">Config</span>
+          <span class="right">READ-ONLY</span>
+        </div>
+        <div class="panel-body" style="padding:8px;">
+          <div class="config-rows">
+            <div class="config-row">
+              <span class="k">MODEL</span>
+              <span class="v tag">gemma3:4b</span>
+            </div>
+            <div class="config-row">
+              <span class="k">TTS PROVIDER</span>
+              <span class="v">ELEVENLABS</span>
+            </div>
+            <div class="config-row">
+              <span class="k">VOICE ID</span>
+              <span class="v">wScKuGLfIK7g3N6CI1N3</span>
+            </div>
+            <div class="config-row">
+              <span class="k">VAD SENS</span>
+              <span class="v">0.62</span>
+            </div>
+            <div class="config-row">
+              <span class="k">POLL INTERVAL</span>
+              <span class="v">750 MS</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- BOTTOM: AUDIO -->
+    <div class="area-audio">
+      <div class="panel audio-panel">
+        <div class="panel-header">
+          <span class="icon gray">A</span>
+          <span class="label">Audio Visualizer</span>
+          <span class="right">16kHz · MONO</span>
+        </div>
+        <div class="panel-body">
+
+          <div class="audio-meta">
+            <span>CH 01 &nbsp;<span class="val" id="audio-level">-42 dB</span></span>
+            <span>PEAK &nbsp;<span class="val" id="audio-peak">-12 dB</span></span>
+            <span>SR &nbsp;<span class="val">16000</span></span>
+            <span>STATE &nbsp;<span class="val" id="audio-state">IDLE</span></span>
+          </div>
+
+          <div class="waveform" id="waveform">
+            <!-- bars injected by JS -->
+          </div>
+
+          <div class="audio-stats">
+            <div class="audio-stat"><div class="lbl">RMS</div><div class="val" id="stat-rms">0.012</div></div>
+            <div class="audio-stat"><div class="lbl">PEAK</div><div class="val" id="stat-peak">0.41</div></div>
+            <div class="audio-stat"><div class="lbl">BUF</div><div class="val" id="stat-buf">512</div></div>
+            <div class="audio-stat"><div class="lbl">LATENCY</div><div class="val" id="stat-lat">38 MS</div></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <span><span class="title">WALL-E v2.0</span> &nbsp;|&nbsp; TACTICAL EXECUTION SYSTEM</span>
+    <span id="footer-build">BUILD 2026.07.11 // NODE 03 // SECTOR 7</span>
+    <span><span class="blink">●</span> LINK ESTABLISHED</span>
+  </div>
+
+</div>
+
+<script>
+  // ============================================================
+  // WALL-E DASHBOARD :: CONTROLLER
+  // ============================================================
+
+  const EYE_BASE = 'http://127.0.0.1:8765';
+  const POLL_MS  = 750;
+
+  // ---- EYE RENDERING ------------------------------------------
+  // Each emotion describes the shape of each eye rect via x,y,w,h and optional eye class.
+  // viewBox is 0 0 100 100. Eye color is amber, class controls glow.
+  const EMOTIONS = {
+    idle:       { label: 'IDLE',       class: '',          left: [20,38,60,24], right: [20,38,60,24], note: 'standing by' },
+    happy:      { label: 'HAPPY',      class: '',          left: [15,32,70,36], right: [15,32,70,36], note: 'pleased' },
+    curious:    { label: 'CURIOUS',    class: '',          left: [10,30,80,40], right: [10,30,80,40], note: 'investigating' },
+    excited:    { label: 'EXCITED',    class: 'excited',   left: [8,22,84,56],  right: [8,22,84,56],  note: 'enthusiastic' },
+    sad:        { label: 'SAD',        class: 'sad',       left: [20,50,60,16], right: [20,50,60,16], note: 'low battery feels' },
+    love:       { label: 'LOVE',       class: 'love',      left: [18,34,64,32], right: [18,34,64,32], note: 'eva...?' },
+    amazed:     { label: 'AMAZED',     class: 'amazed',    left: [4,12,92,76],  right: [4,12,92,76],  note: 'wide optics' },
+    determined: { label: 'DETERMINED', class: '',          left: [12,24,76,52], right: [12,24,76,52], note: 'focused' },
+    thinking:   { label: 'THINKING',   class: '',          left: [25,42,50,16], right: [25,42,50,16], note: 'processing' }
+  };
+
+  function setEyes(emotionKey) {
+    const key = (emotionKey || 'idle').toLowerCase();
+    const e = EMOTIONS[key] || EMOTIONS.idle;
+
+    const lr = document.getElementById('eye-left-rect');
+    const rr = document.getElementById('eye-right-rect');
+    lr.setAttribute('x', e.left[0]); lr.setAttribute('y', e.left[1]);
+    lr.setAttribute('width', e.left[2]); lr.setAttribute('height', e.left[3]);
+    rr.setAttribute('x', e.right[0]); rr.setAttribute('y', e.right[1]);
+    rr.setAttribute('width', e.right[2]); rr.setAttribute('height', e.right[3]);
+
+    const lsvg = document.getElementById('eye-left');
+    const rsvg = document.getElementById('eye-right');
+    [lsvg, rsvg].forEach(s => {
+      // remove all emotion classes
+      Object.keys(EMOTIONS).forEach(k => s.classList.remove('state-' + k));
+      s.classList.remove('excited','love','sad','amazed');
+      if (e.class) s.classList.add(e.class);
+    });
+
+    // love = heart eyes override
+    if (key === 'love') {
+      lr.setAttribute('x', 18); lr.setAttribute('y', 30); lr.setAttribute('width', 64); lr.setAttribute('height', 40);
+      rr.setAttribute('x', 18); rr.setAttribute('y', 30); rr.setAttribute('width', 64); rr.setAttribute('height', 40);
+      // convert rects to heart-like via path
+      lr.setAttribute('d', 'M50,68 C20,52 18,28 32,28 C40,28 46,34 50,42 C54,34 60,28 68,28 C82,28 80,52 50,68 Z');
+      rr.setAttribute('d', 'M50,68 C20,52 18,28 32,28 C40,28 46,34 50,42 C54,34 60,28 68,28 C82,28 80,52 50,68 Z');
+      lr.removeAttribute('width'); lr.removeAttribute('height');
+      rr.removeAttribute('width'); rr.removeAttribute('height');
+      lr.setAttribute('fill', '#ff3030');
+      rr.setAttribute('fill', '#ff3030');
+    } else {
+      [lr, rr].forEach(r => {
+        r.setAttribute('d', '');
+        r.setAttribute('fill', 'var(--amber)');
+        if (key === 'sad') r.setAttribute('fill', '#7799cc');
+      });
+    }
+
+    // readouts
+    const currentEl = document.getElementById('emo-current');
+    currentEl.textContent = e.label;
+    currentEl.className = 'val state-' + key;
+    document.getElementById('emotion-state').textContent = 'STATE: ' + e.label;
+    const t = new Date();
+    document.getElementById('emo-time').textContent =
+      String(t.getHours()).padStart(2,'0') + ':' +
+      String(t.getMinutes()).padStart(2,'0') + ':' +
+      String(t.getSeconds()).padStart(2,'0');
+
+    // ticker
+    document.getElementById('ticker').textContent =
+      ':: EMOTION: ' + e.label + ' // ' + e.note.toUpperCase() + ' // POLL @ ' + POLL_MS + 'MS // ' +
+      'WALL-E v2.0 // TACTICAL EXECUTION SYSTEM // EVA-COMPAT // SECTOR 7 // ';
+  }
+
+  // ---- STATUS -------------------------------------------------
+  function setDot(id, ok) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.remove('ok','err');
+    el.classList.add(ok ? 'ok' : 'err');
+  }
+
+  function setRowVal(key, text) {
+    const row = document.querySelector('.status-row[data-key="' + key + '"] .status-val');
+    if (row) row.textContent = text;
+  }
+
+  // ---- POLLING ------------------------------------------------
+  let listening = false;
+  let lastLogCount = 0;
+  let eyeServerUp = false;
+  let bootTime = Date.now();
+
+  async function pollEyeServer() {
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 1200);
+      const res = await fetch(EYE_BASE + '/api/emotion', { signal: ctrl.signal, cache: 'no-store' });
+      clearTimeout(tid);
+      if (!res.ok) throw new Error('bad status');
+      const data = await res.json();
+      eyeServerUp = true;
+      setDot('dot-eye', true);
+      setRowVal('eye', ':8765');
+      const e = (data.emotion || 'idle').toLowerCase();
+      setEyes(e);
+    } catch (err) {
+      eyeServerUp = false;
+      setDot('dot-eye', false);
+      setRowVal('eye', 'OFFLINE');
+      setEyes('idle');
+    }
+  }
+
+  async function pollLog() {
+    if (!eyeServerUp) return;
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 1200);
+      const res = await fetch(EYE_BASE + '/api/log', { signal: ctrl.signal, cache: 'no-store' });
+      clearTimeout(tid);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data)) return;
+      renderChat(data);
+      // Voice pipeline lights up if there's recent activity
+      if (data.length > lastLogCount) {
+        setDot('dot-voice', true);
+        setRowVal('voice', 'ACTIVE');
+        clearTimeout(window._voiceTimer);
+        window._voiceTimer = setTimeout(() => {
+          setDot('dot-voice', false);
+          setRowVal('voice', 'STANDBY');
+        }, 4000);
+      }
+      lastLogCount = data.length;
+    } catch (e) { /* silent */ }
+  }
+
+  function renderChat(messages) {
+    const body = document.getElementById('chat-body');
+    const wasNearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+    body.innerHTML = '';
+    if (messages.length === 0) {
+      body.innerHTML = '<div class="chat-empty">— AWAITING INPUT —</div>';
+      document.getElementById('msg-count').textContent = '0 MSGS';
+      return;
+    }
+    messages.forEach(m => {
+      const role = (m.role || 'system').toLowerCase();
+      const div = document.createElement('div');
+      div.className = 'chat-msg ' + role;
+      const who = role === 'user' ? 'USER' : (role === 'walle' || role === 'assistant' || role === 'bot' ? 'WALL-E' : 'SYS');
+      const time = m.time ? String(m.time).slice(0,8) : '';
+      div.innerHTML =
+        '<span class="time">' + escapeHTML(time) + '</span>' +
+        '<span class="who">[' + who + ']</span>' +
+        escapeHTML(m.text || '');
+      body.appendChild(div);
+    });
+    document.getElementById('msg-count').textContent = messages.length + ' MSGS';
+    if (wasNearBottom) body.scrollTop = body.scrollHeight;
+  }
+
+  function escapeHTML(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  // ---- CONTROLS -----------------------------------------------
+  async function sendControl(action) {
+    if (!eyeServerUp) {
+      flashStatus('EYE SERVER OFFLINE — CMD DROPPED', true);
+      return;
+    }
+    try {
+      await fetch(EYE_BASE + '/api/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+    } catch (e) {
+      flashStatus('CONTROL TX FAILED', true);
+    }
+  }
+
+  function flashStatus(msg, err) {
+    const rec = document.getElementById('rec-indicator');
+    const originalLabel = rec.innerHTML;
+    rec.innerHTML = '<span class="rec-dot"></span><span style="color:' + (err ? 'var(--red)' : 'var(--green)') + '">' + msg + '</span>';
+    setTimeout(() => { rec.innerHTML = originalLabel; }, 1800);
+  }
+
+  // ---- WAVEFORM SIM -------------------------------------------
+  const WAVE_BARS = 56;
+  const waveEl = document.getElementById('waveform');
+  const waveBars = [];
+  for (let i = 0; i < WAVE_BARS; i++) {
+    const b = document.createElement('div');
+    b.className = 'wave-bar';
+    b.style.height = '2px';
+    waveEl.appendChild(b);
+    waveBars.push(b);
+  }
+
+  function tickWaveform() {
+    let rms = 0, peak = 0;
+    for (let i = 0; i < WAVE_BARS; i++) {
+      // base idle + occasional peaks + slow envelope
+      const t = Date.now() / 1000;
+      const env = listening ? 0.55 + 0.25 * Math.sin(t * 1.2) : 0.08 + 0.04 * Math.sin(t * 0.4);
+      const noise = Math.random();
+      const shaped = Math.max(0.04, env * (0.4 + noise * 0.9));
+      const h = Math.min(1, shaped) * 56;
+      waveBars[i].style.height = h + 'px';
+      if (h > 36) waveBars[i].classList.add('peak');
+      else waveBars[i].classList.remove('peak');
+      rms += shaped * shaped;
+      if (h > peak) peak = h;
+    }
+    rms = Math.sqrt(rms / WAVE_BARS);
+
+    document.getElementById('stat-rms').textContent  = rms.toFixed(3);
+    document.getElementById('stat-peak').textContent = (peak/56).toFixed(2);
+    document.getElementById('audio-level').textContent =
+      Math.round(-60 + rms * 50) + ' dB';
+    document.getElementById('audio-peak').textContent =
+      Math.round(-60 + (peak/56) * 50) + ' dB';
+    document.getElementById('audio-state').textContent = listening ? 'LISTENING' : 'IDLE';
+  }
+  setInterval(tickWaveform, 80);
+
+  // ---- CLOCK / UPTIME -----------------------------------------
+  function tickClock() {
+    const d = new Date();
+    document.getElementById('clock').textContent =
+      String(d.getHours()).padStart(2,'0') + ':' +
+      String(d.getMinutes()).padStart(2,'0') + ':' +
+      String(d.getSeconds()).padStart(2,'0');
+
+    const upMs = Date.now() - bootTime;
+    const m = Math.floor(upMs / 60000);
+    const s = Math.floor((upMs % 60000) / 1000);
+    document.getElementById('uptime').textContent =
+      'UP ' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  }
+  setInterval(tickClock, 1000);
+  tickClock();
+
+  // ---- BUTTONS ------------------------------------------------
+  const btnListen = document.getElementById('btn-listen');
+  const btnListenLabel = document.getElementById('btn-listen-label');
+  btnListen.addEventListener('click', () => {
+    listening = !listening;
+    btnListen.classList.toggle('pressed', listening);
+    btnListenLabel.textContent = listening ? 'Stop Listening' : 'Start Listening';
+    sendControl(listening ? 'start' : 'stop');
+    setDot('dot-voice', listening);
+    setRowVal('voice', listening ? 'ACTIVE' : 'STANDBY');
+  });
+
+  const btnTest = document.getElementById('btn-test');
+  btnTest.addEventListener('click', () => {
+    btnTest.classList.add('pressed');
+    setTimeout(() => btnTest.classList.remove('pressed'), 200);
+    sendControl('test');
+    flashStatus('TEST VOICE QUEUED', false);
+  });
+
+  const btnShutdown = document.getElementById('btn-shutdown');
+  btnShutdown.addEventListener('click', () => {
+    if (!confirm('Confirm SHUTDOWN of WALL-E control systems?')) return;
+    btnShutdown.classList.add('pressed');
+    flashStatus('SHUTDOWN SIGNAL SENT', true);
+    sendControl('shutdown');
+  });
+
+  // ---- SERVICE HEALTH PROBES ----------------------------------
+  // Ollama + ElevenLabs are external; we mark them based on indirect signals.
+  // Ollama: assume OK if eye server is up (they run together).
+  // ElevenLabs: assume OK until told otherwise. TTS dot = green by default.
+  function setExternalStatus() {
+    if (eyeServerUp) {
+      setDot('dot-ollama', true);
+      setDot('dot-tts', true);
+    } else {
+      setDot('dot-ollama', false);
+      setDot('dot-tts', false);
+    }
+  }
+
+  // ---- BOOT ---------------------------------------------------
+  setEyes('idle');
+  setExternalStatus();
+  setInterval(() => {
+    pollEyeServer().then(setExternalStatus);
+    pollLog();
+  }, POLL_MS);
+  // initial poll
+  pollEyeServer().then(() => {
+    setExternalStatus();
+    pollLog();
+  });
+
+</script>
+
+</body>
+</html>
