@@ -1,98 +1,97 @@
-# Rau Home — Offline WALL-E on Mac mini
+# Rau Home
 
-Private deployment source for the offline household WALL-E prototype. This repository contains
-only the local interface, prompts, and runtime scripts. It intentionally excludes timing history,
-memories, generated caches, models, audio recordings, credentials, and other machine-local state.
+A voice-controlled companion robot that runs on a Mac mini (Apple M4, 16 GB) sitting in a
+home, with a microphone, speaker, and display plugged directly into it. You talk to it, it
+listens, thinks for a moment, and replies in a robot voice with beeps, whirs, and animated
+eyes on a local web page.
 
-## Original implementation notes
+The project started as a WALL-E build; the current persona is Rocky (an engineer-scientist
+character inspired by *Project Hail Mary*), defined in `prompts/system-prompt.md`.
 
-**머신**: Apple M4 · 16GB RAM · 178GB free · macOS 26.4  
-**원칙**: 완전 로컬 · Mac Mini 단독 실행 (모니터/스피커/마이크 직접 연결)
+This repository is the deployment source only. It deliberately excludes machine-local state:
+API keys, downloaded models, sound-effect files, timing history, and memories are all
+gitignored.
 
----
+## How it works
 
-## 아키텍처 (Phase 1→3)
+The main entry point is `scripts/voice-pipeline-v2.py`, a threaded pipeline where each stage
+runs in its own thread and stages hand off through queues:
 
 ```
-┌──────────────────────────────────────────┐
-│              Mac Mini (M4)                │
-│                                           │
-│  🎤 Mic ──→ faster-whisper (STT)         │
-│              ↓                            │
-│  🧠 Ollama qwen3:14b (LLM + Wall-E prompt)│
-│              ↓                            │
-│  🎵 kokoro-onnx (TTS) + SFX overlay       │
-│              ↓                            │
-│  🔊 Speaker ←── audio output              │
-│                                           │
-│  📹 Webcam ──→ mlx-vlm / ollama vision    │
-│              ↓                            │
-│              "Directive! *compacts*"      │
-│                                           │
-│  👁️ Three.js web UI (눈 + 표정)           │
-│     → localhost:8765                      │
-└──────────────────────────────────────────┘
+Mic (ffmpeg capture) → Silero VAD v5 → faster-whisper (STT)
+    → DeepSeek API (LLM, streaming) → emotion tag parse → SFX overlay
+    → ElevenLabs flash TTS → pedalboard robot FX → Speaker
 ```
 
-## 모델 선택 (16GB 기준)
+- **Audio capture** — ffmpeg (`avfoundation`) reads the mic directly, which sidesteps the
+  macOS microphone-permission problems Python has.
+- **Voice activity detection** — Silero VAD v5, with an energy-based fallback if the
+  `silero-vad` package is missing.
+- **Speech-to-text** — faster-whisper, `small` model on CPU (int8). Handles Korean and
+  English; `small` was chosen over `tiny` because Korean accuracy matters.
+- **LLM** — DeepSeek (`deepseek-chat`) over the cloud API, streaming, with the character
+  system prompt. The reply ends with an emotion tag like `[HAPPY]` or `[CURIOUS]`.
+- **Emotion tags** — parsed out of the reply and mapped to a sound effect
+  (`assets/sfx/*.wav`) and an eye expression on the web UI.
+- **Text-to-speech** — ElevenLabs `eleven_flash_v2_5`, then a pedalboard FX chain (pitch
+  shift, bitcrush, distortion, reverb) to make it sound like a robot instead of a person.
 
-| 모델 | 사이즈 | 용도 | 상태 |
-|---|---|---|---|
-| `qwen3:14b` | ~9GB | 메인 LLM | 다운로드 중 |
-| `faster-whisper` (tiny) | ~200MB | STT | ✅ 설치됨 |
-| `kokoro-onnx` | ~400MB | TTS | 설치 중 |
-| `mlx-community/Qwen2-VL-7B` | ~5GB | Vision | Phase 3 |
+A note on "offline": the original goal was a fully local build, and earlier iterations in
+this repo (Ollama + kokoro-onnx) did exactly that. The current pipeline moved the LLM and
+TTS to cloud APIs for quality and latency, so it needs internet access and two API keys.
+Audio capture, VAD, STT, and all sound effects still run locally on the machine.
 
-## Phase 진행
+## Repository layout
 
-### Phase 1: LLM + 캐릭터 ✅ 진행 중
-- [x] System Prompt 작성
-- [ ] qwen3:14b pull 완료 → test-chat.py 실행
-- [ ] 응답 퀄리티 확인 + 프롬프트 튜닝
+- `launch.sh` — one-command launcher (see below)
+- `scripts/voice-pipeline-v2.py` — the current voice pipeline (this is what actually runs)
+- `scripts/eye-server.py` — local web server on `http://127.0.0.1:8765`
+- `scripts/llm.py` — DeepSeek backend, streaming and non-streaming
+- `scripts/elevenlabs_tts.py` — ElevenLabs TTS client
+- `scripts/engine.py`, `scripts/cache.py` — keyword-matched response cache for instant
+  replies to common inputs, bypassing the LLM
+- `scripts/profile.py` — per-stage latency profiling for the pipeline
+- `scripts/voice-pipeline.py`, `scripts/voice-chat.py`, `scripts/launch.py`,
+  `scripts/test-chat.py` — earlier iterations kept for reference (local Ollama + kokoro
+  stack); not the current path
+- `prompts/` — character system prompts
+- `dashboard/` — control dashboard served by the eye server (chat log, emotion state,
+  status, controls)
+- `ui/eyes.html` — the original standalone eye-animation page, used as a fallback if
+  `dashboard/` is absent
+- `research-notes.md`, `competitive-research.md` — dated background research from the
+  planning phase; useful context, but describe earlier stacks, not the current one
 
-### Phase 2: 음성 파이프라인 (3~5일)
-- [ ] faster-whisper STT 연동
-- [ ] kokoro-onnx TTS 연동
-- [ ] Emotion tag → SFX 매핑
-- [ ] Wall-E 비프음 SFX 다운로드
-- [ ] 음성 루프: Mic → STT → LLM → TTS+SFX → Speaker
+## Quick start
 
-### Phase 3: Vision + UI (5~7일)
-- [ ] 웹캠 → Vision 모델 → "trash or treasure?" 판단
-- [ ] Three.js 눈 애니메이션 (감정 태그 연동)
-- [ ] Web UI (localhost:8765)
-
-### Phase 4: 정리
-- [ ] 설정 파일 분리
-- [ ] launch 스크립트 (ollama serve + python voice-loop.py + web UI)
-- [ ] git push
-
----
-
-## 핵심 디자인 결정
-
-1. **TTS는 Kokoro지만 로봇 효과가 핵심** — pitch shift + ring modulation으로 Wall-E 목소리
-2. **SFX pre-loading** — 자주 쓰는 비프음/압축음은 메모리에 미리 로딩
-3. **Emotion tag 파싱** — LLM 응답 끝의 `[HAPPY]` → 해당 SFX + 눈 애니메이션
-4. **한국어는 Whisper가 처리, LLM은 영어+비프로 응답** — Wall-E 본연의 캐릭터 유지
-
----
-
-## 설치할 것들
+Full setup details are in [SETUP.md](SETUP.md). In short:
 
 ```bash
-# STT - MLX 최적화 (faster-whisper 대체 고려)
-pip install mlx-whisper
+python3 -m venv venv && source venv/bin/activate
+pip install numpy sounddevice faster-whisper silero-vad torch pedalboard elevenlabs
+brew install ffmpeg
 
-# TTS - 로컬
-pip install kokoro-onnx onnxruntime
+# .env in the repo root:
+#   DEEPSEEK_API_KEY=...
+#   ELEVENLABS_API_KEY=...
 
-# 오디오 I/O
-pip install sounddevice numpy
-
-# SFX
-# → freesound.org에서 Wall-E sound pack 다운로드
-
-# Vision
-pip install mlx-vlm  # 또는 Ollama로 qwen2-vl:7b pull
+bash launch.sh                 # full voice pipeline + eye server
+bash launch.sh --eyes-only     # just the web UI on :8765
+bash launch.sh --test          # canned prompts through the LLM
+bash launch.sh --text-only     # text chat, no audio
 ```
+
+Two caveats worth knowing:
+
+- `launch.sh` checks for a local Ollama install with `gemma3:4b` before starting any mode,
+  a leftover from the previous local-LLM stack. The voice pipeline itself does not use
+  Ollama; running `python3 scripts/voice-pipeline-v2.py` directly skips that check.
+- `--test` and `--text-only` route through the older Ollama-based scripts, so those two
+  modes genuinely need Ollama (with `gemma3:4b` / `qwen3:14b` pulled).
+
+## Status
+
+Working prototype on a single machine. The v2 voice pipeline, eye server, and dashboard are
+the current state; vision (webcam input) is not implemented. Everything runs against real
+hardware (USB mic, speaker, a browser pointed at the eye server), so the repo contains no
+automated tests — `scripts/profile.py` and `bash launch.sh --test` are the sanity checks.
