@@ -7,6 +7,11 @@ from urllib.parse import urlsplit
 LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
 WILDCARD_BINDS = {"", "0.0.0.0", "::", "[::]"}
 
+#: A WebSocket scope reports scheme "ws"/"wss", but the Origin a browser sends
+#: with the handshake is the page's — always http/https. Comparing the two
+#: verbatim rejects every same-origin socket the UI opens.
+WS_ORIGIN_SCHEME = {"ws": "http", "wss": "https"}
+
 
 def _hostname(authority: str) -> str:
     value = str(authority or "").strip().lower()
@@ -47,7 +52,8 @@ def origin_allowed(origin: str, request_host: str, request_scheme: str = "http")
         return False
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
-    if parsed.scheme != str(request_scheme or "http").lower():
+    scheme = str(request_scheme or "http").lower()
+    if parsed.scheme != WS_ORIGIN_SCHEME.get(scheme, scheme):
         return False
     # Compare complete authorities, including ports. Vite's development proxy
     # preserves both at 5173; production serves both API and UI from 8765.

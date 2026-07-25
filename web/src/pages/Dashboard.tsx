@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from '../router'
 import ClawdAvatar from '../components/ClawdAvatar'
 import { api, type Job } from '../api'
+import { live as liveChannel } from '../live'
 import './Dashboard.css'
 
 const HARD_STATES: Record<string, string> = {
@@ -59,29 +60,19 @@ export default function Dashboard() {
   useEffect(() => {
     refresh()
     const id = setInterval(refresh, 2000)
-    let ws: WebSocket | null = null
-    try {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      ws = new WebSocket(`${proto}://${location.host}/ws`)
-      ws.onopen = () => setLive(true)
-      ws.onclose = () => setLive(false)
-      ws.onmessage = (ev) => {
-        try {
-          const data = JSON.parse(ev.data)
-          if (data.kind === 'ping' || data.kind === 'hello') {
-            if (data.status) setStatus(data.status)
-          }
-          if (data.kind === 'hard_task' || data.kind === 'confirm_request') refresh()
-        } catch {
-          /* ignore */
-        }
+    // One socket per page, shared with the body controller — two would give
+    // the dashboard and the avatar beside it two views of the same turn.
+    const offStatus = liveChannel.onStatus(setLive)
+    const offEvents = liveChannel.subscribe((data) => {
+      if (data.kind === 'ping' || data.kind === 'hello') {
+        if (data.status) setStatus(data.status)
       }
-    } catch {
-      /* ignore */
-    }
+      if (data.kind === 'hard_task' || data.kind === 'confirm_request') refresh()
+    })
     return () => {
       clearInterval(id)
-      ws?.close()
+      offStatus()
+      offEvents()
     }
   }, [])
 

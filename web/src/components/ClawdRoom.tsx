@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { bodyController } from '../clawd/body'
 import { Director, EMPTY_SIGNALS, type Signals } from '../clawd/director'
 import { ClawdRig } from '../clawd/rig'
 import { drawBubble, Scene } from '../clawd/scene'
 import { STAGE, type RoomState } from '../clawd/room'
 import { useClawdCanvas } from '../clawd/useClawdCanvas'
+import { live } from '../live'
 import type { MotionName } from '../clawd/motions'
 import './ClawdRoom.css'
 
@@ -55,11 +57,30 @@ export default function ClawdRoom({
     director.setMode(conversing ? 'conversing' : 'room')
   }, [director, conversing])
 
+  // The full room can do everything a plan asks for, locomotion included.
+  useEffect(() => {
+    live.start()
+    return bodyController.registerTarget({
+      applyCue: (cue) => director.applyCue(cue),
+      releaseCue: () => director.releaseCue(),
+    })
+  }, [director])
+
   useEffect(() => {
     onReady?.({
-      play: (name) => director.force(name),
-      goTo: (id) => director.goTo(id),
+      // Anything a human asks for outranks the model's plan, and cancels the
+      // rest of it — playing out the remaining cues over the top of what they
+      // just asked for is not deference.
+      play: (name) => {
+        bodyController.humanTakeover()
+        director.force(name)
+      },
+      goTo: (id) => {
+        bodyController.humanTakeover()
+        director.goTo(id)
+      },
       setManual: (m) => {
+        if (m) bodyController.humanTakeover()
         director.manual = m
       },
     })
@@ -138,7 +159,9 @@ export default function ClawdRoom({
           const r = hitRect.current
           const inside =
             e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
-          if (inside) director.startle()
+          if (!inside) return
+          bodyController.humanTakeover()
+          director.startle()
         }}
       />
     </div>

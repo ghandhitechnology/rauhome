@@ -11,6 +11,7 @@ import ChatMarkdown from '../components/ChatMarkdown'
 import ClawdAvatar from '../components/ClawdAvatar'
 import SlashMenu from '../components/SlashMenu'
 import { api } from '../api'
+import { live } from '../live'
 import {
   filterSlashCommands,
   matchSlash,
@@ -171,6 +172,15 @@ export default function Conversation() {
   const [slashOpen, setSlashOpen] = useState(true)
   /** The message just sent, echoed locally until the hub's log includes it. */
   const [pending, setPending] = useState<{ role: 'user'; text: string; time: string } | null>(null)
+  /**
+   * The reply arriving right now, streamed over `/ws`.
+   *
+   * The HTTP response still carries the finished text, so this is not what
+   * makes the answer appear — it is what makes it appear *progressively*, and
+   * what gives a phrase-anchored body cue a moment at which its phrase became
+   * visible to fire on.
+   */
+  const [streaming, setStreaming] = useState<{ turnId: string; text: string } | null>(null)
   const [sendError, setSendError] = useState('')
   const [offline, setOffline] = useState(false)
   const threadRef = useRef<HTMLElement>(null)
@@ -219,6 +229,31 @@ export default function Conversation() {
       .catch(() => setCommands(mergeSkillCommands([])))
   }, [])
 
+  useEffect(() =>
+    live.subscribe((event) => {
+      const turnId = typeof event.turn_id === 'string' ? event.turn_id : ''
+      const text = typeof event.text === 'string' ? event.text : ''
+      switch (event.kind) {
+        case 'chat_started':
+          setStreaming({ turnId, text: '' })
+          break
+        case 'chat_delta':
+          setStreaming((prev) =>
+            prev && prev.turnId !== turnId ? prev : { turnId, text },
+          )
+          break
+        case 'chat_done':
+          // Hold the finished text until the polled log catches up with it,
+          // otherwise the reply blinks out and back in again.
+          setStreaming((prev) => (prev && prev.turnId !== turnId ? prev : { turnId, text }))
+          break
+        case 'chat_error':
+          setStreaming((prev) => (prev && prev.turnId !== turnId ? prev : null))
+          break
+      }
+    }),
+  [])
+
   const slashDraft = useMemo(() => readSlashDraft(draft), [draft])
   const activeSlash = useMemo(
     () => (slashDraft?.hasSpace || (slashDraft && matchSlash(draft, commands)) ? matchSlash(draft, commands) : null),
@@ -243,6 +278,16 @@ export default function Conversation() {
     return [...log, pending]
   }, [log, pending])
 
+  // Same idea for the streamed reply: it hands over to the polled log the
+  // moment that log contains it, so the message never appears twice.
+  const liveReply = useMemo(() => {
+    const text = streaming?.text?.trim()
+    if (!text) return ''
+    const last = log[log.length - 1]
+    if (last && last.role !== 'user' && String(last.text || '').trim() === text) return ''
+    return text
+  }, [streaming, log])
+
   // Track whether the reader is at the bottom; scrolling up to reread must
   // not be yanked back down by the next poll.
   useEffect(() => {
@@ -263,7 +308,7 @@ export default function Conversation() {
     requestAnimationFrame(() => {
       thread.scrollTop = thread.scrollHeight
     })
-  }, [displayLog, sending])
+  }, [displayLog, sending, liveReply])
 
   // Grow the composer with its content instead of scrolling a one-line box.
   useEffect(() => {
@@ -420,7 +465,16 @@ export default function Conversation() {
             </article>
           )
         })}
-        {sending && (
+        {liveReply && (
+          <article className="convo-msg rau is-streaming">
+            <div className="meta">
+              <span className="who">Rau</span>
+              <span className="time">now</span>
+            </div>
+            <ChatMarkdown text={liveReply} />
+          </article>
+        )}
+        {sending && !liveReply && (
           <div className="convo-typing" role="status" aria-label="Rau is replying">
             <i />
             <i />

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { bodyController } from '../clawd/body'
+import { spokenSoFar, type AlignedSentence } from './alignment'
 import { FRAME_MS, MicCapture } from './capture'
 import { TtsPlayback } from './playback'
 import { Vad } from './vad'
@@ -64,6 +66,13 @@ type ServerMessage = {
   /** hello: which STT backend the session actually resolved to. */
   stt?: string
   model?: string
+  /** say_align / say / say_end: which reply this frame belongs to. */
+  turn_id?: string
+  /** say_align: where this sentence starts in the reply's audio timeline. */
+  offset_ms?: number
+  duration_ms?: number
+  /** say_align: when each character of `text` starts, within the sentence. */
+  char_ms?: number[]
 }
 
 /** A tool the model invoked during the current session. */
@@ -176,8 +185,19 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
       }
     })
 
-    playback.onLevel((level, _playedMs, idle) => {
+    /** Sentences of the reply currently being spoken, in timeline order. */
+    let aligned: AlignedSentence[] = []
+    let reported = ''
+
+    playback.onLevel((level, playedMs, idle) => {
       outRef.current = idle ? 0 : level
+      if (!aligned.length) return
+      const spoken = spokenSoFar(aligned, playedMs)
+      if (spoken === reported) return
+      reported = spoken
+      // 'audio' takes the turn away from the text stream for good: the two
+      // describe the same reply, but only one of them is in step with the ear.
+      bodyController.advance(aligned[0].turnId, spoken, 'audio')
     })
 
     // Audio hardware can fail asynchronously — a device the OS hands over but
@@ -231,6 +251,10 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
         held.length = 0
         vad.reset()
         playback.reset()
+        // A reconnect starts a new timeline; a plan for the dead one is over.
+        aligned = []
+        reported = ''
+        bodyController.cancel(undefined, 'disconnected')
         setPartial('')
         applyPhase('idle')
         if (disposed) return
@@ -257,9 +281,34 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
             const next = msg.phase ?? 'idle'
             // The server measures barge offsets from the start of each reply,
             // so the played-time counter restarts with the turn.
-            if (next === 'thinking') playback.reset()
+            if (next === 'thinking') {
+              playback.reset()
+              // Timings describe one reply's audio timeline; carrying them
+              // into the next one would place every phrase in the wrong place.
+              aligned = []
+              reported = ''
+            }
             if (next === 'thinking' || next === 'idle') mutedRef.current = false
             applyPhase(next)
+            break
+          }
+          case 'say_align': {
+            const turnId = msg.turn_id ?? ''
+            const text = msg.text ?? ''
+            if (!turnId || !text) break
+            if (aligned.length && aligned[0].turnId !== turnId) {
+              aligned = []
+              reported = ''
+            }
+            const charMs = Array.isArray(msg.char_ms) ? msg.char_ms : []
+            aligned.push({
+              turnId,
+              text,
+              offsetMs: typeof msg.offset_ms === 'number' ? msg.offset_ms : 0,
+              durationMs: typeof msg.duration_ms === 'number' ? msg.duration_ms : 0,
+              charMs,
+            })
+            aligned.sort((a, b) => a.offsetMs - b.offsetMs)
             break
           }
           case 'partial':
@@ -290,6 +339,8 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
           case 'cancelled':
             // The server confirms the barge; audio was already flushed locally.
             setLastSay('')
+            aligned = []
+            reported = ''
             break
           case 'hello':
             setBackend(msg.stt ?? '')
