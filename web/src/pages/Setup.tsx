@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from '../router'
 import { api, type Catalog, type SetupState } from '../api'
 import ClawdAvatar from '../components/ClawdAvatar'
 import StepOrigin from './setup/StepOrigin'

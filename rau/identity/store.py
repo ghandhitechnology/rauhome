@@ -7,8 +7,9 @@ soul first. Deterministic compile is only a fallback when no key / LLM fails.
 from __future__ import annotations
 
 import logging
+import os
 import re
-import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -74,30 +75,66 @@ Hard rules for the soul you write:
 """
 
 
+def valid_soul(content: str) -> bool:
+    """Reject empty, truncated, or clearly off-format identity rewrites."""
+    text = str(content or "").strip()
+    # Do not require the Latin spelling "Rau": identity files may be authored
+    # entirely in another language. A markdown heading and real body still
+    # reject empty/refusal fragments and accidental scalar output.
+    return len(text) >= 120 and text.startswith("#") and len(text.splitlines()) >= 3
+
+
 def has_soul() -> bool:
-    return SOUL_MD.exists() and SOUL_MD.stat().st_size > 0
+    return valid_soul(read_text(SOUL_MD))
 
 
 def read_text(path: Path) -> str:
-    if not path.exists():
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
         return ""
-    return path.read_text(encoding="utf-8")
 
 
 def write_text(path: Path, content: str) -> None:
+    """Atomically replace a UTF-8 identity file.
+
+    A crash during the nightly soul rewrite must leave either the old file or
+    the complete new one, never a truncated identity that poisons every turn.
+    """
     ensure_dirs()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content.strip() + "\n", encoding="utf-8")
+    value = str(content or "").strip() + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def backup_soul() -> Optional[Path]:
     if not has_soul():
         return None
     ensure_dirs()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    content = read_text(SOUL_MD)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup = IDENTITY_DIR / f"soul.{stamp}.bak.md"
-    shutil.copy2(SOUL_MD, backup)
-    shutil.copy2(SOUL_MD, SOUL_BAK)
+    write_text(backup, content)
+    write_text(SOUL_BAK, content)
+    # Nightly dreams should not create an unbounded identity archive.
+    historical = sorted(IDENTITY_DIR.glob("soul.*.bak.md"), key=lambda p: p.stat().st_mtime)
+    for stale in historical[:-30]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     return backup
 
 
@@ -192,10 +229,10 @@ def distill_soul_llm(
         effort="high",
     )
     soul = _strip_fences(result.content or "")
-    if len(soul) < 120 or "rau" not in soul.lower():
-        raise RuntimeError("Distill returned a soul that looks empty or off-character.")
     if not soul.lstrip().startswith("#"):
         soul = "# Soul — operating self for Rau\n\n" + soul
+    if not valid_soul(soul):
+        raise RuntimeError("Distill returned a soul that looks empty or off-character.")
     meta = {
         "distilled": True,
         "provider": getattr(provider, "name", None) or model.split("/")[0],
@@ -295,10 +332,13 @@ def hard_steer(identity: Optional[str] = None, backstory: Optional[str] = None) 
 
 
 def write_soul(content: str, *, backup: bool = True) -> dict:
+    soul = _strip_fences(content)
+    if not valid_soul(soul):
+        raise ValueError("refusing to replace soul.md with empty or off-character content")
     ensure_dirs()
     b = backup_soul() if backup else None
-    write_text(SOUL_MD, content)
-    return {"soul": content, "backup": str(b) if b else None}
+    write_text(SOUL_MD, soul)
+    return {"soul": soul, "backup": str(b) if b else None}
 
 
 def status() -> dict:
@@ -318,7 +358,13 @@ def status() -> dict:
 
 
 def load_soul() -> str:
-    if has_soul():
-        return read_text(SOUL_MD)
+    primary = read_text(SOUL_MD)
+    if valid_soul(primary):
+        return primary
+    backup = read_text(SOUL_BAK)
+    if valid_soul(backup):
+        log.error("soul.md is invalid; using the last known-good backup")
+        return backup
+    log.error("soul.md and its backup are invalid; using the deterministic seed")
     soul, _ = synthesize_soul(FRESH_IDENTITY, FRESH_BACKSTORY, use_llm=False)
     return soul

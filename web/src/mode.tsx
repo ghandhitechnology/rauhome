@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- provider and hook form one small state API */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 export type Mode = 'chat' | 'voice'

@@ -1,14 +1,15 @@
-import { Navigate, Route, Routes, useLocation, Link } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { api } from './api'
 import { ModeProvider, useMode } from './mode'
 import { useGlobalHotkey } from './hooks/useGlobalHotkey'
-import Setup from './pages/Setup'
-import Conversation from './pages/Conversation'
-import Dashboard from './pages/Dashboard'
-import Settings from './pages/Settings'
-import Identity from './pages/Identity'
-import Face from './pages/Face'
+import { Link, Navigate, useLocation } from './router'
+
+const Conversation = lazy(() => import('./pages/Conversation'))
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Face = lazy(() => import('./pages/Face'))
+const Identity = lazy(() => import('./pages/Identity'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Setup = lazy(() => import('./pages/Setup'))
 
 const NAV = [
   { to: '/', label: 'Talk' },
@@ -42,7 +43,9 @@ function Shell() {
     api
       .identity()
       .then((d) => setReady(!!d.ready))
-      .catch(() => setReady(false))
+      // A hub blip must not throw a configured app back into the setup
+      // wizard — only fail closed when we never knew better.
+      .catch(() => setReady((r) => (r === null ? false : r)))
   }, [loc.pathname])
 
   if (ready === null) {
@@ -65,7 +68,11 @@ function Shell() {
 
   // The room owns the whole viewport — no shell chrome around it.
   if (isFace) {
-    return <Face />
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Face />
+      </Suspense>
+    )
   }
 
   return (
@@ -89,14 +96,9 @@ function Shell() {
       <main className={`main ${isTalk ? 'main-talk' : ''}`}>
         {/* keyed on path so each route replays its entrance */}
         <div key={loc.pathname} className={isSetup ? undefined : 'route-fade'}>
-          <Routes location={loc}>
-            <Route path="/" element={<Conversation />} />
-            <Route path="/face" element={<Face />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/setup" element={<Setup onDone={() => setReady(true)} />} />
-            <Route path="/identity" element={<Identity />} />
-            <Route path="/settings" element={<Settings />} />
-          </Routes>
+          <Suspense fallback={<RouteFallback />}>
+            <RoutePage pathname={loc.pathname} onSetupDone={() => setReady(true)} />
+          </Suspense>
         </div>
       </main>
 
@@ -110,6 +112,46 @@ function Shell() {
           </svg>
         </Link>
       )}
+    </div>
+  )
+}
+
+function RoutePage({
+  pathname,
+  onSetupDone,
+}: {
+  pathname: string
+  onSetupDone: () => void
+}) {
+  const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
+  switch (path) {
+    case '/':
+      return <Conversation />
+    case '/face':
+      return <Face />
+    case '/dashboard':
+      return <Dashboard />
+    case '/setup':
+      return <Setup onDone={onSetupDone} />
+    case '/identity':
+      return <Identity />
+    case '/settings':
+      return <Settings />
+    default:
+      return null
+  }
+}
+
+function RouteFallback() {
+  return (
+    <div className="boot">
+      <div className="boot-inner">
+        <span className="boot-word">Rau</span>
+        <span className="boot-bar">
+          <i />
+        </span>
+        <span className="muted">waking up</span>
+      </div>
     </div>
   )
 }

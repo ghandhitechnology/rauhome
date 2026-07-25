@@ -25,6 +25,8 @@ _state: Dict[str, Any] = {
 _chat_log: List[Dict[str, Any]] = []
 MAX_LOG = 100
 _control_queue: List[Dict[str, Any]] = []
+_browser_voice_sessions = 0
+_listening_before_browser_voice: Optional[bool] = None
 
 # Background jobs, newest ideas and oldest leftovers alike, keyed by job id.
 _jobs: Dict[str, Dict[str, Any]] = {}
@@ -89,8 +91,38 @@ def pop_control() -> Optional[Dict[str, Any]]:
 
 
 def set_listening(on: bool) -> None:
+    global _listening_before_browser_voice
     with _lock:
-        _state["listening"] = on
+        if _browser_voice_sessions:
+            # Remember the host pipeline's desired state for the final release,
+            # but never let it resume underneath an active browser socket.
+            _listening_before_browser_voice = bool(on)
+            _state["listening"] = False
+        else:
+            _state["listening"] = bool(on)
+
+
+def acquire_browser_voice() -> None:
+    """Suspend the host mic until the last browser voice socket closes."""
+    global _browser_voice_sessions, _listening_before_browser_voice
+    with _lock:
+        if _browser_voice_sessions == 0:
+            _listening_before_browser_voice = bool(_state["listening"])
+        _browser_voice_sessions += 1
+        _state["listening"] = False
+
+
+def release_browser_voice() -> None:
+    """Release one browser voice lease without racing concurrent sockets."""
+    global _browser_voice_sessions, _listening_before_browser_voice
+    with _lock:
+        if _browser_voice_sessions <= 0:
+            return
+        _browser_voice_sessions -= 1
+        if _browser_voice_sessions == 0:
+            if _listening_before_browser_voice is not None:
+                _state["listening"] = _listening_before_browser_voice
+            _listening_before_browser_voice = None
 
 
 def set_face_busy(busy: bool) -> None:

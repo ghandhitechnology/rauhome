@@ -16,6 +16,15 @@ const SCENARIOS = {
 		(context) => fauxAssistantMessage(`Done. Goal was: ${goalOf(context)}`),
 	],
 	text: [(context) => fauxAssistantMessage(`Done. Goal was: ${goalOf(context)}`)],
+	empty: [() => fauxAssistantMessage("")],
+	"multi-tool": [
+		() =>
+			fauxAssistantMessage([
+				fauxToolCall("bash", { command: "printf first" }),
+				fauxToolCall("bash", { command: "printf second" }),
+			]),
+		() => fauxAssistantMessage("Both commands finished."),
+	],
 	stall: [
 		() =>
 			fauxAssistantMessage([
@@ -80,7 +89,14 @@ export async function resolveModel({ provider, model, fauxScenario }) {
 async function loadProviderFactory(provider) {
 	const module = await import(`@earendil-works/pi-ai/providers/${provider}`);
 	const name = `${provider.replace(/-([a-z])/g, (_, c) => c.toUpperCase())}Provider`;
-	const factory = module[name];
+	// Export names preserve acronym casing (OpenAI, AI, ...), while provider
+	// ids are lowercase kebab-case. Compare case-insensitively after removing
+	// punctuation so every builtin catalog provider remains selectable.
+	const normalized = name.replace(/[^a-z0-9]/gi, "").toLowerCase();
+	const exportName = Object.keys(module).find(
+		(key) => key.replace(/[^a-z0-9]/gi, "").toLowerCase() === normalized,
+	);
+	const factory = exportName ? module[exportName] : undefined;
 	if (typeof factory !== "function") throw new Error(`provider ${provider} exposes no ${name}()`);
 	return factory;
 }

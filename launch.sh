@@ -30,9 +30,10 @@ fi
 source "$ROOT/venv/bin/activate"
 pip install -q -r "$ROOT/requirements.txt"
 
-if [ ! -d "$ROOT/web/dist" ]; then
+WEB_INDEX="$ROOT/web/dist/index.html"
+if [ ! -f "$WEB_INDEX" ] || find "$ROOT/web/src" "$ROOT/web/package.json" "$ROOT/web/vite.config.ts" -newer "$WEB_INDEX" -print -quit | grep -q .; then
   echo "Building web UI..."
-  (cd "$ROOT/web" && npm install && npm run build)
+  (cd "$ROOT/web" && npm ci && npm run build)
 fi
 
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"

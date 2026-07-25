@@ -6,15 +6,35 @@ import {
 	createEditTool,
 	createReadTool,
 	createWriteTool,
+	err,
+	ExecutionError,
+	FileError,
 	InMemorySessionStorage,
 	NodeExecutionEnv,
+	ok,
 	Session,
 } from "@earendil-works/pi-agent-core/node";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { realpath } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { resolveModel } from "./models.mjs";
 
 const ACTIVE_STATES = new Set(["running", "awaiting_confirm"]);
 const TERMINAL_STATES = new Set(["done", "failed", "cancelled"]);
 const MAX_HISTORY = 500;
+const MAX_GOAL_CHARS = 100_000;
+const MAX_SYSTEM_PROMPT_CHARS = 200_000;
+const MAX_SKILLS = 64;
+const MAX_SKILL_FIELD_CHARS = 100_000;
+const MAX_SKILLS_TOTAL_CHARS = 200_000;
+const MAX_TOOLS = 16;
+const MAX_CONFIRM_TIMEOUT_MS = 10 * 60_000;
+const MAX_RUN_TIMEOUT_MS = 60 * 60_000;
+const MAX_TURNS = 100;
+
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+export const PROJECT_ROOT = realpathSync(process.env.PI_SIDECAR_ROOT ?? resolve(MODULE_DIR, "../.."));
 
 const TOOL_FACTORIES = {
 	bash: createBashTool,
@@ -31,7 +51,121 @@ export const DEFAULTS = {
 	confirmTools: ["bash", "write", "edit"],
 	confirmTimeoutMs: 45_000,
 	maxTurns: 24,
+	runTimeoutMs: 15 * 60_000,
 };
+
+function isWithin(root, candidate) {
+	const rel = relative(root, candidate);
+	return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+}
+
+/**
+ * Resolve a possibly-new path without trusting symlinked existing prefixes.
+ *
+ * `realpath()` only accepts an existing target, but write tools necessarily
+ * receive paths that do not exist yet. Walk upward until something exists,
+ * resolve that prefix, then append the missing path components.
+ */
+async function canonicalCandidate(candidate) {
+	let current = resolve(candidate);
+	const missing = [];
+	while (!existsSync(current)) {
+		const parent = dirname(current);
+		if (parent === current) break;
+		missing.unshift(current.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
+		current = parent;
+	}
+	const base = await realpath(current);
+	return resolve(base, ...missing);
+}
+
+function shellQuote(value) {
+	return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function sandboxProfile(root) {
+	const home = process.env.HOME ? resolve(process.env.HOME) : "";
+	const writable = [
+		root,
+		"/tmp",
+		"/private/tmp",
+		"/private/var/tmp",
+		home && resolve(home, "Library/Caches"),
+		home && resolve(home, ".cache"),
+	].filter(Boolean);
+	const subpaths = writable
+		.map((path) => `(subpath ${JSON.stringify(path)})`)
+		.join(" ");
+	return [
+		"(version 1)",
+		"(allow default)",
+		"(deny file-write*)",
+		`(allow file-write* ${subpaths})`,
+		'(allow file-write-data (literal "/dev/null") (literal "/dev/zero") (regex #"^/dev/tty.*"))',
+	].join("\n");
+}
+
+/**
+ * pi's stock NodeExecutionEnv resolves absolute paths anywhere on the host.
+ * This wrapper makes file-tool containment a property of the environment,
+ * not a prompt convention, and runs bash under macOS seatbelt.
+ */
+export class ConfinedExecutionEnv extends NodeExecutionEnv {
+	constructor({ cwd, root = PROJECT_ROOT }) {
+		super({ cwd });
+		this.root = root;
+		this.profile = sandboxProfile(root);
+	}
+
+	async absolutePath(path) {
+		try {
+			if (typeof path !== "string" || !path.trim()) {
+				return err(new FileError("invalid", "path must be a non-empty string", String(path ?? "")));
+			}
+			const candidate = isAbsolute(path) ? path : resolve(this.cwd, path);
+			const canonical = await canonicalCandidate(candidate);
+			if (!isWithin(this.root, canonical)) {
+				return err(
+					new FileError(
+						"permission_denied",
+						`path escapes the configured root: ${path}`,
+						canonical,
+					),
+				);
+			}
+			return ok(canonical);
+		} catch (error) {
+			return err(new FileError("invalid", String(error), String(path ?? ""), error));
+		}
+	}
+
+	async exec(command, options) {
+		const cwdResult = await this.absolutePath(options?.cwd ?? this.cwd);
+		if (!cwdResult.ok) {
+			return err(new ExecutionError("spawn_error", cwdResult.error.message, cwdResult.error));
+		}
+		if (!existsSync("/usr/bin/sandbox-exec")) {
+			if (process.env.PI_SIDECAR_ALLOW_UNSANDBOXED !== "1") {
+				return err(
+					new ExecutionError(
+						"spawn_error",
+						"sandbox-exec is unavailable; refusing an unconfined bash tool",
+					),
+				);
+			}
+			return super.exec(command, { ...options, cwd: cwdResult.value });
+		}
+		const wrapped = [
+			"/usr/bin/sandbox-exec",
+			"-p",
+			shellQuote(this.profile),
+			"/bin/bash",
+			"-c",
+			shellQuote(command),
+		].join(" ");
+		return super.exec(wrapped, { ...options, cwd: cwdResult.value });
+	}
+}
 
 /**
  * One pi agent run, projected onto Rau's job vocabulary.
@@ -61,6 +195,14 @@ export class PiRun {
 		this.pendingConfirm = undefined;
 		this.cancelled = false;
 		this.overBudget = false;
+		this.timedOut = false;
+		this.timeoutTimer = undefined;
+		this.env = undefined;
+		this.toolPhases = new Map();
+		this.closed = false;
+		this.completion = new Promise((resolve) => {
+			this.resolveCompletion = resolve;
+		});
 	}
 
 	snapshot() {
@@ -80,37 +222,40 @@ export class PiRun {
 		};
 	}
 
-	subscribe(listener) {
+	subscribe(listener, afterSeq = 0) {
 		const pending = this.pendingConfirm;
 		let replayed = false;
 		for (const event of this.history) {
+			if (event.seq <= afterSeq) continue;
 			if (pending && event.type === "confirm_request" && event.confirm_id === pending.id) replayed = true;
-			listener(event);
+			this.notify(listener, event);
 		}
 		// A long run pushes its own confirm request out of the replay window. Without
 		// it a subscriber attaching now has nothing to approve and the gate can only
 		// clear on its timeout, so re-announce the one that is still open.
-		if (pending && !replayed) {
-			listener({
-				seq: this.seq,
-				type: "confirm_request",
-				ts: Date.now(),
-				confirm_id: pending.id,
-				tool: pending.tool,
-				summary: pending.summary,
-				input: pending.input,
-			});
+		if (pending && !replayed && pending.event?.seq > afterSeq) {
+			this.notify(listener, pending.event);
 		}
 		if (TERMINAL_STATES.has(this.state)) return () => {};
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
 
+	notify(listener, event) {
+		try {
+			listener(event);
+			return true;
+		} catch {
+			this.listeners.delete(listener);
+			return false;
+		}
+	}
+
 	emit(type, payload = {}) {
 		const event = { seq: ++this.seq, type, ts: Date.now(), ...payload };
 		this.history.push(event);
 		if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
-		for (const listener of this.listeners) listener(event);
+		for (const listener of [...this.listeners]) this.notify(listener, event);
 		return event;
 	}
 
@@ -123,16 +268,31 @@ export class PiRun {
 	}
 
 	async start() {
+		this.timeoutTimer = setTimeout(() => {
+			if (!ACTIVE_STATES.has(this.state)) return;
+			this.timedOut = true;
+			this.finish("failed", "", `run timed out after ${this.options.runTimeoutMs} ms`);
+			this.settleConfirm(false, "run timeout");
+			void this.abortHarness();
+		}, this.options.runTimeoutMs);
 		try {
 			const { models, model } = await resolveModel(this.options);
-			const env = new NodeExecutionEnv({ cwd: this.cwd });
+			// Cancellation/timeout can land while a provider module is loading.
+			// Do not create a harness or make a billable request after settlement.
+			if (!ACTIVE_STATES.has(this.state)) return;
+			const env = new ConfinedExecutionEnv({ cwd: this.cwd, root: this.options.root });
+			this.env = env;
 			const session = new Session(
 				new InMemorySessionStorage({ metadata: { id: this.id, createdAt: new Date().toISOString() } }),
 			);
 			const tools = this.options.tools.map((name) => {
 				const factory = TOOL_FACTORIES[name];
 				if (!factory) throw new Error(`unknown tool: ${name}`);
-				return factory();
+				const tool = factory();
+				// Pi executes tool batches in parallel by default. Rau exposes a
+				// single confirmation gate, and file/shell mutations also need
+				// deterministic ordering, so serialize the entire batch.
+				return { ...tool, executionMode: "sequential" };
 			});
 			this.harness = new AgentHarness({
 				session,
@@ -146,6 +306,10 @@ export class PiRun {
 				systemPrompt: ({ resources }) => this.buildSystemPrompt(resources),
 				resources: { skills: this.options.skills },
 			});
+			if (!ACTIVE_STATES.has(this.state)) {
+				await this.abortHarness();
+				return;
+			}
 			this.harness.subscribe((event) => this.onAgentEvent(event));
 			this.harness.on("tool_call", (event) => this.onToolCall(event));
 
@@ -154,16 +318,36 @@ export class PiRun {
 		} catch (error) {
 			this.fail(error);
 		} finally {
+			clearTimeout(this.timeoutTimer);
 			this.settleConfirm(false, "run ended");
-			for (const listener of this.listeners) listener({ seq: ++this.seq, type: "close", ts: Date.now() });
+			try {
+				await this.env?.cleanup();
+			} catch (error) {
+				this.emit("warning", { message: `environment cleanup failed: ${String(error)}` });
+			}
+			this.toolPhases.clear();
+			this.closed = true;
+			for (const listener of [...this.listeners]) {
+				this.notify(listener, { seq: ++this.seq, type: "close", ts: Date.now() });
+			}
 			this.listeners.clear();
+			this.resolveCompletion();
 		}
 	}
 
 	/** pi never injects the skill listing itself — the application owns that block. */
 	buildSystemPrompt(resources) {
-		const skills = formatSkillsForSystemPrompt(resources.skills ?? []);
-		return skills ? `${this.options.systemPrompt}\n\n${skills}` : this.options.systemPrompt;
+		const available = resources.skills ?? [];
+		const skills = formatSkillsForSystemPrompt(available);
+		// pi's formatter advertises only names and file locations. Rau skills
+		// can be synthesized in memory, and a run may intentionally omit the
+		// read tool, so carry supplied bodies as well instead of silently
+		// dropping the capability at the bridge.
+		const bodies = available
+			.filter((skill) => skill.content)
+			.map((skill) => `## Skill: ${skill.name}\n${skill.content}`)
+			.join("\n\n");
+		return [this.options.systemPrompt, skills, bodies].filter(Boolean).join("\n\n");
 	}
 
 	onAgentEvent(event) {
@@ -175,12 +359,35 @@ export class PiRun {
 			return;
 		}
 		if (event.type === "tool_execution_start") {
-			this.setState("running", `running ${event.toolName}`);
-			this.emit("tool", { phase: "start", tool: event.toolName, args: event.args });
+			const gated = this.options.confirmTools.includes(event.toolName);
+			this.toolPhases.set(event.toolCallId, gated ? "preflight" : "running");
+			if (gated) {
+				this.emit("tool", {
+					phase: "preflight",
+					tool: event.toolName,
+					tool_call_id: event.toolCallId,
+					args: event.args,
+				});
+			} else {
+				this.setState("running", `running ${event.toolName}`);
+				this.emit("tool", {
+					phase: "start",
+					tool: event.toolName,
+					tool_call_id: event.toolCallId,
+					args: event.args,
+				});
+			}
 			return;
 		}
 		if (event.type === "tool_execution_end") {
-			this.emit("tool", { phase: "end", tool: event.toolName, ok: !event.isError });
+			const phase = this.toolPhases.get(event.toolCallId);
+			this.toolPhases.delete(event.toolCallId);
+			this.emit("tool", {
+				phase: phase === "blocked" ? "blocked" : "end",
+				tool: event.toolName,
+				tool_call_id: event.toolCallId,
+				ok: !event.isError,
+			});
 			return;
 		}
 		if (event.type === "turn_end") {
@@ -199,8 +406,20 @@ export class PiRun {
 		if (this.cancelled) return { block: true, reason: "run cancelled" };
 		if (!this.options.confirmTools.includes(event.toolName)) return undefined;
 		const approved = await this.requestConfirm(event);
-		this.setState("running", `running ${event.toolName}`);
-		return approved ? undefined : { block: true, reason: "user denied or confirm timed out" };
+		if (approved) {
+			this.toolPhases.set(event.toolCallId, "running");
+			this.setState("running", `running ${event.toolName}`);
+			this.emit("tool", {
+				phase: "start",
+				tool: event.toolName,
+				tool_call_id: event.toolCallId,
+				args: event.input,
+			});
+			return undefined;
+		}
+		this.toolPhases.set(event.toolCallId, "blocked");
+		this.setState("running", `${event.toolName} blocked`);
+		return { block: true, reason: "user denied or confirm timed out" };
 	}
 
 	requestConfirm(event) {
@@ -210,7 +429,12 @@ export class PiRun {
 			const timer = setTimeout(() => this.settleConfirm(false, "timeout"), this.options.confirmTimeoutMs);
 			this.pendingConfirm = { id, tool: event.toolName, summary, input: event.input, resolve, timer };
 			this.setState("awaiting_confirm", summary);
-			this.emit("confirm_request", { confirm_id: id, tool: event.toolName, summary, input: event.input });
+			this.pendingConfirm.event = this.emit("confirm_request", {
+				confirm_id: id,
+				tool: event.toolName,
+				summary,
+				input: event.input,
+			});
 		});
 	}
 
@@ -259,6 +483,8 @@ export class PiRun {
 		if (message.stopReason === "aborted") {
 			if (this.overBudget) {
 				this.finish("failed", "", `turn budget of ${this.options.maxTurns} exhausted`);
+			} else if (this.timedOut) {
+				this.finish("failed", "", `run timed out after ${this.options.runTimeoutMs} ms`);
 			} else {
 				this.finish("cancelled", "", "");
 			}
@@ -266,6 +492,14 @@ export class PiRun {
 		}
 		if (message.stopReason === "error") {
 			this.finish("failed", text, message.errorMessage || "provider error");
+			return;
+		}
+		if (message.stopReason === "length") {
+			this.finish("failed", text, "provider response hit the output token limit");
+			return;
+		}
+		if (!text) {
+			this.finish("failed", "", "provider returned an empty final response");
 			return;
 		}
 		this.finish("done", text, "");
@@ -288,27 +522,132 @@ export class PiRun {
 }
 
 function summarize(event) {
-	const input = event.input ?? {};
+	const input = event.input && typeof event.input === "object" && !Array.isArray(event.input) ? event.input : {};
 	if (typeof input.command === "string") return `run: ${input.command}`;
 	if (typeof input.path === "string") return `${event.toolName}: ${input.path}`;
 	return `${event.toolName}: ${JSON.stringify(input).slice(0, 200)}`;
 }
 
-export function withDefaults(body) {
-	const goal = String(body.goal ?? "").trim();
+function finiteInteger(value, name, { min, max }) {
+	const number = Number(value);
+	if (!Number.isSafeInteger(number) || number < min || number > max) {
+		throw new Error(`${name} must be an integer between ${min} and ${max}`);
+	}
+	return number;
+}
+
+function stringField(value, name, max, { optional = false } = {}) {
+	if (value === undefined && optional) return undefined;
+	if (typeof value !== "string") throw new Error(`${name} must be a string`);
+	if (value.length > max) throw new Error(`${name} exceeds ${max} characters`);
+	return value;
+}
+
+function stringArray(value, name, { allowed, max = MAX_TOOLS }) {
+	if (!Array.isArray(value) || value.length > max) throw new Error(`${name} must be an array of at most ${max} items`);
+	const out = [];
+	for (const item of value) {
+		if (typeof item !== "string" || !allowed.has(item)) throw new Error(`unknown ${name} entry: ${String(item)}`);
+		if (!out.includes(item)) out.push(item);
+	}
+	return out;
+}
+
+function resolveCwd(value, root) {
+	const raw = value === undefined ? root : stringField(value, "cwd", 4096);
+	const candidate = isAbsolute(raw) ? raw : resolve(root, raw);
+	let canonical;
+	try {
+		canonical = realpathSync(candidate);
+	} catch {
+		throw new Error(`cwd does not exist: ${raw}`);
+	}
+	if (!statSync(canonical).isDirectory()) throw new Error(`cwd is not a directory: ${raw}`);
+	if (!isWithin(root, canonical)) throw new Error(`cwd escapes configured root: ${raw}`);
+	return canonical;
+}
+
+function normalizeSkills(value, root) {
+	if (!Array.isArray(value) || value.length > MAX_SKILLS) {
+		throw new Error(`skills must be an array of at most ${MAX_SKILLS} items`);
+	}
+	let total = 0;
+	return value.map((skill, index) => {
+		if (!skill || typeof skill !== "object" || Array.isArray(skill)) {
+			throw new Error(`skills[${index}] must be an object`);
+		}
+		const normalized = {
+			name: stringField(skill.name ?? "", `skills[${index}].name`, 200),
+			description: stringField(skill.description ?? "", `skills[${index}].description`, 4000),
+			content: stringField(skill.content ?? "", `skills[${index}].content`, MAX_SKILL_FIELD_CHARS),
+			filePath: stringField(skill.filePath ?? "", `skills[${index}].filePath`, 4096),
+		};
+		if (!normalized.name.trim()) throw new Error(`skills[${index}].name must not be empty`);
+		total += normalized.content.length;
+		if (total > MAX_SKILLS_TOTAL_CHARS) {
+			throw new Error(`skill content exceeds ${MAX_SKILLS_TOTAL_CHARS} characters in total`);
+		}
+		if (normalized.filePath) {
+			const candidate = isAbsolute(normalized.filePath)
+				? normalized.filePath
+				: resolve(root, normalized.filePath);
+			const canonical = realpathSync(candidate);
+			if (!isWithin(root, canonical)) {
+				throw new Error(`skills[${index}].filePath escapes configured root`);
+			}
+			if (!statSync(canonical).isFile()) {
+				throw new Error(`skills[${index}].filePath is not a file`);
+			}
+			normalized.filePath = canonical;
+		}
+		return normalized;
+	});
+}
+
+export function withDefaults(body, root = PROJECT_ROOT) {
+	if (!body || typeof body !== "object" || Array.isArray(body)) {
+		throw new Error("request body must be a JSON object");
+	}
+	const goal = stringField(body.goal ?? "", "goal", MAX_GOAL_CHARS).trim();
 	if (!goal) throw new Error("empty goal");
+	const provider = stringField(body.provider ?? DEFAULTS.provider, "provider", 100);
+	const model = stringField(body.model ?? DEFAULTS.model, "model", 300);
+	if (!/^[a-z0-9][a-z0-9-]*$/i.test(provider)) throw new Error("invalid provider id");
+	if (!model.trim() || /[\0\r\n]/.test(model)) throw new Error("invalid model id");
+	const tools = stringArray(body.tools ?? DEFAULTS.tools, "tools", {
+		allowed: new Set(Object.keys(TOOL_FACTORIES)),
+	});
+	const requestedConfirmTools = stringArray(body.confirm_tools ?? DEFAULTS.confirmTools, "confirm_tools", {
+		allowed: new Set(tools),
+	});
+	// Callers may add gates but may never disable the baseline gates around
+	// process execution and mutation tools.
+	const mandatoryConfirmTools = DEFAULTS.confirmTools.filter((name) => tools.includes(name));
+	const confirmTools = [...new Set([...requestedConfirmTools, ...mandatoryConfirmTools])];
 	return {
 		goal,
-		cwd: body.cwd ?? process.cwd(),
-		provider: body.provider ?? DEFAULTS.provider,
-		model: body.model ?? DEFAULTS.model,
-		fauxScenario: body.faux_scenario ?? DEFAULTS.fauxScenario,
-		systemPrompt: body.system_prompt ?? "You are a focused coding agent. Finish the goal, then report briefly.",
-		skills: body.skills ?? [],
-		tools: body.tools ?? DEFAULTS.tools,
-		confirmTools: body.confirm_tools ?? DEFAULTS.confirmTools,
-		confirmTimeoutMs: Number(body.confirm_timeout_ms ?? DEFAULTS.confirmTimeoutMs),
-		maxTurns: Number(body.max_turns ?? DEFAULTS.maxTurns),
+		root,
+		cwd: resolveCwd(body.cwd, root),
+		provider,
+		model,
+		fauxScenario: stringField(body.faux_scenario ?? DEFAULTS.fauxScenario, "faux_scenario", 100),
+		systemPrompt: stringField(
+			body.system_prompt ?? "You are a focused coding agent. Finish the goal, then report briefly.",
+			"system_prompt",
+			MAX_SYSTEM_PROMPT_CHARS,
+		),
+		skills: normalizeSkills(body.skills ?? [], root),
+		tools,
+		confirmTools,
+		confirmTimeoutMs: finiteInteger(body.confirm_timeout_ms ?? DEFAULTS.confirmTimeoutMs, "confirm_timeout_ms", {
+			min: 100,
+			max: MAX_CONFIRM_TIMEOUT_MS,
+		}),
+		maxTurns: finiteInteger(body.max_turns ?? DEFAULTS.maxTurns, "max_turns", { min: 1, max: MAX_TURNS }),
+		runTimeoutMs: finiteInteger(body.run_timeout_ms ?? DEFAULTS.runTimeoutMs, "run_timeout_ms", {
+			min: 250,
+			max: MAX_RUN_TIMEOUT_MS,
+		}),
 	};
 }
 

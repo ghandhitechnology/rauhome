@@ -16,9 +16,78 @@ from rau.providers.base import (
     ToolCall,
     ToolCallDelta,
     assemble_tool_calls,
+    normalize_tool_arguments,
     orphan_tool_prose,
     pair_tool_calls,
 )
+
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_STREAM_LINE_BYTES = 1024 * 1024
+MAX_MALFORMED_STREAM_EVENTS = 16
+
+
+def _stream_event(blob: str, malformed: int) -> tuple[Optional[Dict[str, Any]], int]:
+    try:
+        event = json.loads(blob)
+    except json.JSONDecodeError:
+        return None, malformed + 1
+    if not isinstance(event, dict):
+        return None, malformed + 1
+    if event.get("type") == "error":
+        error = event.get("error")
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        raise RuntimeError(f"provider stream error: {message}")
+    return event, malformed
+
+
+def _event_index(value: Any) -> Optional[int]:
+    try:
+        index = int(value if value is not None else 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return index if 0 <= index <= 1024 else None
+
+
+def _malformed(name: str, count: int) -> int:
+    count += 1
+    if count > MAX_MALFORMED_STREAM_EVENTS:
+        raise RuntimeError(f"{name} sent too many malformed stream events")
+    return count
+
+
+def _stream_lines(resp: Any, name: str):
+    """Yield bounded SSE lines and cap the complete streaming response."""
+    total = 0
+    readline = getattr(resp, "readline", None)
+    if callable(readline):
+        while True:
+            raw = readline(MAX_STREAM_LINE_BYTES + 1)
+            if not raw:
+                return
+            if len(raw) > MAX_STREAM_LINE_BYTES or (
+                len(raw) == MAX_STREAM_LINE_BYTES + 1
+                and not raw.endswith((b"\n", b"\r"))
+            ):
+                raise RuntimeError(
+                    f"{name} stream line exceeded {MAX_STREAM_LINE_BYTES} bytes"
+                )
+            total += len(raw)
+            if total > MAX_RESPONSE_BYTES:
+                raise RuntimeError(
+                    f"{name} stream exceeded {MAX_RESPONSE_BYTES} bytes"
+                )
+            yield raw
+        return
+
+    for raw in resp:
+        if len(raw) > MAX_STREAM_LINE_BYTES:
+            raise RuntimeError(
+                f"{name} stream line exceeded {MAX_STREAM_LINE_BYTES} bytes"
+            )
+        total += len(raw)
+        if total > MAX_RESPONSE_BYTES:
+            raise RuntimeError(f"{name} stream exceeded {MAX_RESPONSE_BYTES} bytes")
+        yield raw
 
 
 def _push(out: List[Dict[str, Any]], role: str, blocks: List[Dict[str, Any]]) -> None:
@@ -103,7 +172,11 @@ def _to_anthropic_messages(messages: List[Message]) -> tuple[str, List[Dict[str,
 def _openai_tools_to_anthropic(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for t in tools or []:
+        if not isinstance(t, dict):
+            continue
         fn = (t.get("function") or t) if t.get("type") == "function" else t
+        if not isinstance(fn, dict):
+            continue
         name = fn.get("name") or ""
         if not name:
             continue
@@ -122,16 +195,35 @@ def _openai_tools_to_anthropic(tools: Optional[List[Dict[str, Any]]]) -> List[Di
 def _parse_anthropic_result(body: Dict[str, Any]) -> ChatResult:
     text_parts: List[str] = []
     tool_calls: List[ToolCall] = []
-    for block in body.get("content") or []:
+    if not isinstance(body, dict):
+        raise RuntimeError("provider returned non-object JSON")
+    error = body.get("error")
+    if error:
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        raise RuntimeError(f"provider error: {message}")
+    blocks = body.get("content") or []
+    if not isinstance(blocks, list):
+        raise RuntimeError("provider content must be an array")
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
         btype = block.get("type")
         if btype == "text":
-            text_parts.append(block.get("text") or "")
+            text = block.get("text") or ""
+            if isinstance(text, str):
+                text_parts.append(text)
         elif btype == "tool_use":
+            call_id = block.get("id")
+            name = block.get("name")
             tool_calls.append(
                 ToolCall(
-                    id=block.get("id") or f"tool_{len(tool_calls)}",
-                    name=block.get("name") or "",
-                    arguments=block.get("input") or {},
+                    id=(
+                        call_id
+                        if isinstance(call_id, str) and call_id
+                        else f"tool_{len(tool_calls)}"
+                    ),
+                    name=name if isinstance(name, str) else "",
+                    arguments=normalize_tool_arguments(block.get("input") or {}),
                 )
             )
     return ChatResult(
@@ -214,10 +306,21 @@ class AnthropicCompatProvider(ChatProvider):
         )
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                raise RuntimeError(
+                    f"{self.name} response exceeded {MAX_RESPONSE_BYTES} bytes"
+                )
+            body = json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as e:
-            err = e.read().decode("utf-8", errors="replace")
+            err = e.read(4000).decode("utf-8", errors="replace")
             raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
+        except OSError as e:
+            raise RuntimeError(f"{self.name} connection failed: {e}") from e
+        except (UnicodeError, json.JSONDecodeError) as e:
+            raise RuntimeError(f"{self.name} returned invalid JSON") from e
 
         return _parse_anthropic_result(body)
 
@@ -258,31 +361,38 @@ class AnthropicCompatProvider(ChatProvider):
             method="POST",
         )
         accum: List[str] = []
+        malformed = 0
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                for raw in resp:
+                for raw in _stream_lines(resp, self.name):
                     line = raw.decode("utf-8", errors="ignore").rstrip("\n")
                     if not line.startswith("data:"):
                         continue
                     payload_str = line[len("data:") :].strip()
                     if not payload_str or payload_str == "[DONE]":
                         continue
-                    try:
-                        event = json.loads(payload_str)
-                    except json.JSONDecodeError:
+                    event, malformed = _stream_event(payload_str, malformed)
+                    if malformed > MAX_MALFORMED_STREAM_EVENTS:
+                        raise RuntimeError(
+                            f"{self.name} sent too many malformed stream events"
+                        )
+                    if event is None:
                         continue
                     etype = event.get("type")
                     if etype == "content_block_delta":
                         delta = event.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            malformed = _malformed(self.name, malformed)
+                            continue
                         token = delta.get("text") or ""
-                        if token:
+                        if isinstance(token, str) and token:
                             accum.append(token)
                             yield token
                     elif etype == "message_delta":
                         pass
         except urllib.error.HTTPError as e:
             # Fall back to non-stream if streaming unsupported
-            err = e.read().decode("utf-8", errors="replace")
+            err = e.read(4000).decode("utf-8", errors="replace")
             if e.code in (400, 404, 415, 501):
                 result = self.chat(
                     messages,
@@ -295,6 +405,10 @@ class AnthropicCompatProvider(ChatProvider):
                     yield result.content
                 return result.content
             raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
+        except OSError as e:
+            raise RuntimeError(f"{self.name} connection failed: {e}") from e
 
         return "".join(accum)
 
@@ -342,57 +456,74 @@ class AnthropicCompatProvider(ChatProvider):
 
         text: List[str] = []
         parts: Dict[int, Dict[str, str]] = {}
+        malformed = 0
 
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
-                for raw in resp:
+                for raw in _stream_lines(resp, self.name):
                     line = raw.decode("utf-8", errors="ignore").strip()
                     if not line.startswith("data:"):
                         continue
                     blob = line[len("data:") :].strip()
                     if not blob or blob == "[DONE]":
                         continue
-                    try:
-                        event = json.loads(blob)
-                    except json.JSONDecodeError:
+                    event, malformed = _stream_event(blob, malformed)
+                    if malformed > MAX_MALFORMED_STREAM_EVENTS:
+                        raise RuntimeError(
+                            f"{self.name} sent too many malformed stream events"
+                        )
+                    if event is None:
                         continue
 
                     etype = event.get("type")
-                    idx = int(event.get("index") or 0)
+                    idx = _event_index(event.get("index"))
+                    if idx is None:
+                        malformed = _malformed(self.name, malformed)
+                        continue
 
                     if etype == "content_block_start":
                         block = event.get("content_block") or {}
+                        if not isinstance(block, dict):
+                            malformed = _malformed(self.name, malformed)
+                            continue
                         if block.get("type") == "tool_use":
                             # Anthropic announces name/id up front, then streams
                             # the arguments as partial JSON fragments.
+                            block_id = block.get("id")
+                            block_name = block.get("name")
                             parts[idx] = {
-                                "id": block.get("id") or "",
-                                "name": block.get("name") or "",
+                                "id": block_id if isinstance(block_id, str) else "",
+                                "name": block_name if isinstance(block_name, str) else "",
                                 "args": "",
                             }
                             yield ToolCallDelta(
                                 index=idx,
-                                id=block.get("id") or "",
-                                name=block.get("name") or "",
+                                id=block_id if isinstance(block_id, str) else "",
+                                name=block_name if isinstance(block_name, str) else "",
                             )
                     elif etype == "content_block_delta":
                         delta = event.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            malformed = _malformed(self.name, malformed)
+                            continue
                         dtype = delta.get("type")
                         if dtype == "text_delta":
                             token = delta.get("text") or ""
-                            if token:
+                            if isinstance(token, str) and token:
                                 text.append(token)
                                 yield TextDelta(token)
                         elif dtype == "input_json_delta":
                             frag = delta.get("partial_json") or ""
-                            if frag:
+                            if isinstance(frag, str) and frag:
                                 slot = parts.setdefault(
                                     idx, {"id": "", "name": "", "args": ""}
                                 )
                                 slot["args"] += frag
                                 yield ToolCallDelta(index=idx, args_fragment=frag)
+                            elif frag:
+                                malformed = _malformed(self.name, malformed)
         except urllib.error.HTTPError as e:
-            err = e.read().decode("utf-8", errors="replace")
+            err = e.read(4000).decode("utf-8", errors="replace")
             if e.code in (400, 404, 415, 501):
                 # Streaming unsupported — fall back to one blocking call.
                 result = self.chat(
@@ -408,6 +539,10 @@ class AnthropicCompatProvider(ChatProvider):
                 yield StreamDone(result)
                 return
             raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
+        except OSError as e:
+            raise RuntimeError(f"{self.name} connection failed: {e}") from e
 
         yield StreamDone(
             ChatResult(

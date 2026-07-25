@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -24,6 +23,7 @@ from rau.env import (
 )
 from rau.events import BUS
 from rau.heartbeat.presence import start_heartbeat
+from rau.hub.security import LocalAccessMiddleware, allowed_hostnames
 from rau.identity import store as identity_store
 from rau.mcp.client import MCP
 from rau.memory import store as memory_store
@@ -45,11 +45,16 @@ load_dotenv(override=False)
 ensure_dirs()
 
 app = FastAPI(title="Rau Hub", version="1.0.0")
+_security_settings = load_settings()
+_extra_hosts = _security_settings.get("hub_allowed_hosts") or []
+if isinstance(_extra_hosts, str):
+    _extra_hosts = [_extra_hosts]
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    LocalAccessMiddleware,
+    allowed_hosts=allowed_hostnames(
+        str(_security_settings.get("hub_host") or "127.0.0.1"),
+        (str(host) for host in _extra_hosts),
+    ),
 )
 
 
@@ -107,11 +112,11 @@ class ConfirmIn(BaseModel):
 
 
 class ChatIn(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=16_000)
 
 
 class AuthKeyIn(BaseModel):
-    key: str
+    key: str = Field(min_length=1, max_length=20_000)
 
 
 class AuthVerifyIn(BaseModel):
@@ -126,7 +131,7 @@ class EffortIn(BaseModel):
 
 
 class GoalIn(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=4_000)
 
 
 class GoalNoteIn(BaseModel):
@@ -207,7 +212,12 @@ def api_hard_task_get():
 
 @app.post("/api/hard-task")
 def api_hard_task_start(body: HardTaskIn):
-    return orchestrator.start_hard_task(body.goal)
+    result = orchestrator.start_hard_task(body.goal)
+    if result.get("reason") in {"empty_goal", "invalid_goal", "goal_too_large"}:
+        return JSONResponse(result, status_code=400)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=409)
+    return result
 
 
 @app.post("/api/hard-task/cancel")
@@ -217,7 +227,12 @@ def api_hard_task_cancel():
 
 @app.post("/api/hard-task/redirect")
 def api_hard_task_redirect(body: HardTaskIn):
-    return orchestrator.redirect_hard_task(body.goal)
+    result = orchestrator.redirect_hard_task(body.goal)
+    if result.get("reason") in {"empty_goal", "invalid_goal", "goal_too_large"}:
+        return JSONResponse(result, status_code=400)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=409)
+    return result
 
 
 @app.get("/api/jobs")
@@ -276,7 +291,10 @@ def api_models_put(body: ModelsIn):
     data = body.model_dump(exclude_none=True)
     for k, v in data.items():
         cfg[k] = {**(cfg.get(k) or {}), **v}
-    return save_models(cfg)
+    try:
+        return save_models(cfg)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 @app.get("/api/providers/status")
@@ -369,7 +387,10 @@ def api_goal_get():
 
 @app.put("/api/goal")
 def api_goal_put(body: GoalIn):
-    return {"ok": True, "goal": goal_store.set_goal(body.text)}
+    goal = goal_store.set_goal(body.text)
+    if goal.get("ok") is False:
+        return JSONResponse(goal, status_code=400)
+    return {"ok": True, "goal": goal}
 
 
 @app.delete("/api/goal")
@@ -526,9 +547,7 @@ async def ws_voice(ws: WebSocket):
 
     # The host-side mic loop and a browser session must not both listen, or
     # every utterance is transcribed twice.
-    was_listening = bool(state.status_snapshot().get("listening"))
-    if was_listening:
-        state.set_listening(False)
+    state.acquire_browser_voice()
 
     try:
         await ws.send_json({"t": "hello", **session_info()})
@@ -538,32 +557,56 @@ async def ws_voice(ws: WebSocket):
                 break
 
             data = msg.get("bytes")
-            if data:
-                session.feed(data)
+            if data is not None:
+                error = session.feed(data)
+                if error:
+                    await session.send(t="error", detail=f"audio: {error}")
+                    await session.stop_stt()
+                    await session.set_phase("idle")
                 continue
 
             raw = msg.get("text")
-            if not raw:
+            if raw is None:
+                continue
+            if len(raw) > 65_536:
+                await session.send(t="error", detail="voice command is too large")
                 continue
             try:
                 cmd = json.loads(raw)
             except json.JSONDecodeError:
+                await session.send(t="error", detail="invalid voice command JSON")
+                continue
+            if not isinstance(cmd, dict):
+                await session.send(t="error", detail="voice command must be an object")
                 continue
 
             kind = cmd.get("t")
-            if kind == "speech_start":
-                await session.speech_start()
-            elif kind == "speech_end":
-                await session.speech_end()
-            elif kind == "barge":
-                await session.barge(float(cmd.get("playedMs") or 0))
-            elif kind == "text":
-                # Typed input while in voice mode — same turn machinery.
-                text = str(cmd.get("text") or "").strip()
-                if text:
-                    await session.begin_turn(text)
-            elif kind == "stop":
-                await session.stop_stt()
+            try:
+                if kind == "speech_start":
+                    await session.speech_start()
+                elif kind == "speech_end":
+                    await session.speech_end()
+                elif kind == "barge":
+                    played = cmd.get("playedMs", 0)
+                    if isinstance(played, bool) or not isinstance(played, (int, float)):
+                        raise ValueError("playedMs must be a number")
+                    await session.barge(float(played))
+                elif kind == "text":
+                    # Typed input while in voice mode — same turn machinery.
+                    value = cmd.get("text")
+                    if not isinstance(value, str):
+                        raise ValueError("text must be a string")
+                    text = value.strip()
+                    if len(text) > 16_000:
+                        raise ValueError("text is too long")
+                    if text:
+                        await session.begin_turn(text)
+                elif kind == "stop":
+                    await session.stop()
+                else:
+                    raise ValueError("unknown voice command")
+            except (TypeError, ValueError) as e:
+                await session.send(t="error", detail=str(e))
     except WebSocketDisconnect:
         pass
     except Exception as e:  # noqa: BLE001 — never let one socket kill the hub
@@ -572,9 +615,10 @@ async def ws_voice(ws: WebSocket):
         except Exception:
             pass
     finally:
-        await session.close()
-        if was_listening:
-            state.set_listening(True)
+        try:
+            await session.close()
+        finally:
+            state.release_browser_voice()
 
 
 @app.websocket("/ws")

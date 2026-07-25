@@ -20,6 +20,81 @@ from rau.providers.base import (
 )
 
 
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_STREAM_LINE_BYTES = 1024 * 1024
+MAX_MALFORMED_STREAM_EVENTS = 16
+
+
+def _choice_delta(chunk: Any) -> Dict[str, Any]:
+    if not isinstance(chunk, dict):
+        return {}
+    error = chunk.get("error")
+    if error:
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        raise RuntimeError(f"provider stream error: {message}")
+    choices = chunk.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return {}
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return {}
+    delta = choice.get("delta") or {}
+    return delta if isinstance(delta, dict) else {}
+
+
+def _tool_index(value: Any) -> Optional[int]:
+    try:
+        index = int(value if value is not None else 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return index if 0 <= index <= 1024 else None
+
+
+def _malformed(name: str, count: int) -> int:
+    count += 1
+    if count > MAX_MALFORMED_STREAM_EVENTS:
+        raise RuntimeError(f"{name} sent too many malformed stream events")
+    return count
+
+
+def _stream_lines(resp: Any, name: str):
+    """Iterate response lines without letting readline or the stream grow forever."""
+    total = 0
+    readline = getattr(resp, "readline", None)
+    if callable(readline):
+        while True:
+            raw = readline(MAX_STREAM_LINE_BYTES + 1)
+            if not raw:
+                return
+            if len(raw) > MAX_STREAM_LINE_BYTES or (
+                len(raw) == MAX_STREAM_LINE_BYTES + 1
+                and not raw.endswith((b"\n", b"\r"))
+            ):
+                raise RuntimeError(
+                    f"{name} stream line exceeded {MAX_STREAM_LINE_BYTES} bytes"
+                )
+            total += len(raw)
+            if total > MAX_RESPONSE_BYTES:
+                raise RuntimeError(
+                    f"{name} stream exceeded {MAX_RESPONSE_BYTES} bytes"
+                )
+            yield raw
+        return
+
+    # Test doubles and unusual response adapters may only be iterable. The
+    # aggregate remains bounded even though only urllib's readline path can
+    # prevent allocation of an oversized individual line before it is yielded.
+    for raw in resp:
+        if len(raw) > MAX_STREAM_LINE_BYTES:
+            raise RuntimeError(
+                f"{name} stream line exceeded {MAX_STREAM_LINE_BYTES} bytes"
+            )
+        total += len(raw)
+        if total > MAX_RESPONSE_BYTES:
+            raise RuntimeError(f"{name} stream exceeded {MAX_RESPONSE_BYTES} bytes")
+        yield raw
+
+
 class OpenAICompatProvider(ChatProvider):
     def __init__(
         self,
@@ -38,6 +113,29 @@ class OpenAICompatProvider(ChatProvider):
 
     def available(self) -> bool:
         return bool(self._key())
+
+    def _open(self, req: urllib.request.Request, timeout: float):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(4000).decode("utf-8", errors="replace")
+            raise RuntimeError(f"{self.name} HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"{self.name} is unreachable: {exc.reason}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"{self.name} connection failed: {exc}") from exc
+
+    def _read_json(self, resp) -> Dict[str, Any]:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise RuntimeError(f"{self.name} response exceeded {MAX_RESPONSE_BYTES} bytes")
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"{self.name} returned an invalid JSON response") from exc
+        if not isinstance(body, dict):
+            raise RuntimeError(f"{self.name} returned an unexpected response shape")
+        return body
 
     def chat(
         self,
@@ -78,16 +176,20 @@ class OpenAICompatProvider(ChatProvider):
             headers=headers,
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+        with self._open(req, timeout=120) as resp:
+            body = self._read_json(resp)
 
-        choice = (body.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
+        error = body.get("error")
+        if error:
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            raise RuntimeError(f"{self.name} provider error: {message}")
+        choices = body.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else {}
+        msg = choice.get("message") if isinstance(choice, dict) else {}
+        msg = msg if isinstance(msg, dict) else {}
         content = msg.get("content") or ""
+        if not isinstance(content, str):
+            content = str(content)
         return ChatResult(
             content=content,
             tool_calls=parse_tool_calls_openai(body),
@@ -130,8 +232,9 @@ class OpenAICompatProvider(ChatProvider):
             method="POST",
         )
         accum: List[str] = []
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            for raw in resp:
+        malformed = 0
+        with self._open(req, timeout=120) as resp:
+            for raw in _stream_lines(resp, self.name):
                 line = raw.decode("utf-8", errors="ignore").rstrip("\n")
                 if not line.startswith("data:"):
                     continue
@@ -141,10 +244,11 @@ class OpenAICompatProvider(ChatProvider):
                 try:
                     chunk = json.loads(payload_str)
                 except json.JSONDecodeError:
+                    malformed = _malformed(self.name, malformed)
                     continue
-                delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
+                delta = _choice_delta(chunk)
                 token = delta.get("content") or ""
-                if token:
+                if isinstance(token, str) and token:
                     accum.append(token)
                     yield token
         return "".join(accum)
@@ -193,9 +297,10 @@ class OpenAICompatProvider(ChatProvider):
         # index -> {"id", "name", "args"}; `arguments` arrives in fragments and
         # is only valid JSON once the whole call has streamed in.
         parts: Dict[int, Dict[str, str]] = {}
+        malformed = 0
 
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            for raw in resp:
+        with self._open(req, timeout=120) as resp:
+            for raw in _stream_lines(resp, self.name):
                 line = raw.decode("utf-8", errors="ignore").strip()
                 if not line.startswith("data:"):
                     continue
@@ -205,32 +310,53 @@ class OpenAICompatProvider(ChatProvider):
                 try:
                     chunk = json.loads(blob)
                 except json.JSONDecodeError:
+                    malformed = _malformed(self.name, malformed)
                     continue
 
-                delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                delta = _choice_delta(chunk)
 
                 token = delta.get("content") or ""
-                if token:
+                if isinstance(token, str) and token:
                     text.append(token)
                     yield TextDelta(token)
 
-                for tc in delta.get("tool_calls") or []:
+                calls = delta.get("tool_calls") or []
+                if not isinstance(calls, list):
+                    malformed = _malformed(self.name, malformed)
+                    continue
+                for tc in calls:
+                    if not isinstance(tc, dict):
+                        malformed = _malformed(self.name, malformed)
+                        continue
                     # Some providers omit `index` when there is only one call.
-                    idx = int(tc.get("index") or 0)
+                    idx = _tool_index(tc.get("index"))
+                    if idx is None:
+                        malformed = _malformed(self.name, malformed)
+                        continue
                     fn = tc.get("function") or {}
+                    if not isinstance(fn, dict):
+                        malformed = _malformed(self.name, malformed)
+                        continue
                     slot = parts.setdefault(idx, {"id": "", "name": "", "args": ""})
-                    if tc.get("id"):
-                        slot["id"] = tc["id"]
-                    if fn.get("name"):
-                        slot["name"] = fn["name"]
+                    tc_id = tc.get("id")
+                    tc_id = tc_id if isinstance(tc_id, str) else ""
+                    fn_name = fn.get("name")
+                    fn_name = fn_name if isinstance(fn_name, str) else ""
+                    if tc_id:
+                        slot["id"] = tc_id
+                    if fn_name:
+                        slot["name"] = fn_name
                     frag = fn.get("arguments") or ""
-                    if frag:
+                    if isinstance(frag, str) and frag:
                         slot["args"] += frag
+                    elif frag:
+                        malformed = _malformed(self.name, malformed)
+                        continue
                     yield ToolCallDelta(
                         index=idx,
-                        id=tc.get("id") or "",
-                        name=fn.get("name") or "",
-                        args_fragment=frag,
+                        id=tc_id,
+                        name=fn_name,
+                        args_fragment=frag if isinstance(frag, str) else "",
                     )
 
         yield StreamDone(
@@ -241,7 +367,7 @@ class OpenAICompatProvider(ChatProvider):
         )
 
 
-PROVIDERS = {
+PROVIDERS: Dict[str, ChatProvider] = {
     "openrouter": OpenAICompatProvider(
         "openrouter",
         "https://openrouter.ai/api/v1",
@@ -291,4 +417,3 @@ PROVIDERS["kimi_code"] = AnthropicCompatProvider(
 # Friendly aliases for the UI / config
 PROVIDERS["kimi-code"] = PROVIDERS["kimi_code"]
 PROVIDERS["kimi_coding"] = PROVIDERS["kimi_code"]
-

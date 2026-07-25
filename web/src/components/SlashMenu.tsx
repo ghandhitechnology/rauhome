@@ -27,7 +27,7 @@ export default function SlashMenu({ open, commands, activeIndex, onHover, onPick
   return (
     <div className="slash-menu" role="listbox" aria-label="Slash commands">
       <div className="slash-menu-head">Commands</div>
-      <ul ref={listRef} className="slash-menu-list">
+      <ul ref={listRef} id="slash-menu-list" className="slash-menu-list">
         {commands.map((cmd, i) => (
           <li key={cmd.slash}>
             <button
@@ -35,6 +35,7 @@ export default function SlashMenu({ open, commands, activeIndex, onHover, onPick
                 itemRefs.current[i] = node
               }}
               type="button"
+              id={`slash-opt-${i}`}
               role="option"
               aria-selected={i === activeIndex}
               className={`slash-menu-item ${i === activeIndex ? 'active' : ''}`}

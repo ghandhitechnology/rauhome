@@ -8,10 +8,8 @@ Two separate mechanisms, because they buy different amounts of safety:
   root before it is opened.
 * Shell containment leans on macOS seatbelt (`sandbox-exec`), which is present
   on every Mac. It confines writes to the project root and the caches a build
-  needs; reads and network are left open. When the binary is missing the
-  command runs unconfined and the caller is handed a warning to say so — the
-  confirm gate in `danger.py` is then the only thing between the model and the
-  host, and it reviews rather than contains.
+  needs; reads and network are left open. When the binary is missing the tool
+  fails closed unless `allow_unconfined_shell` was explicitly enabled.
 """
 from __future__ import annotations
 
@@ -119,13 +117,20 @@ def sandbox_enabled() -> bool:
     return bool(load_settings().get("shell_sandbox", True))
 
 
+def allow_unconfined_shell() -> bool:
+    """Explicit escape hatch for hosts without macOS seatbelt."""
+    from rau.providers.registry import load_settings
+
+    return bool(load_settings().get("allow_unconfined_shell", False))
+
+
 def shell_argv(command: str) -> Tuple[List[str], Optional[str]]:
     """
     Build the argv for a shell command, plus a warning when it is unconfined.
 
     A non-empty warning means nothing is holding the command inside the
-    project; it belongs in the tool result so the model does not act on a
-    safety guarantee it did not get.
+    project. The execution layer refuses the missing-seatbelt case by default
+    and returns the warning only for an explicit override.
     """
     inner = ["/bin/sh", "-c", command]
     if not sandbox_enabled():

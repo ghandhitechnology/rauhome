@@ -6,7 +6,8 @@
 	"type": "module",
 	"main": "src/server.mjs",
 	"scripts": {
-		"start": "node src/server.mjs"
+		"start": "node src/server.mjs",
+		"test": "node --test"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "0.82.1",

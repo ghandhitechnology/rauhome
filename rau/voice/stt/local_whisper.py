@@ -10,25 +10,31 @@ two copies of whisper in memory.
 """
 from __future__ import annotations
 
+import threading
+from typing import Any
+
 import numpy as np
 
 from rau.voice.stt.buffered import BufferedStt
 
-_model = None
+_models: dict[str, Any] = {}
+_model_lock = threading.Lock()
 
 
 def _get_model(size: str):
     """Reuse the pipeline's loaded model when the size matches."""
-    global _model
     from rau.face import pipeline
 
     if getattr(pipeline, "_whisper_model", None) is not None and size == "small":
         return pipeline._whisper_model
-    if _model is None:
-        from faster_whisper import WhisperModel
+    with _model_lock:
+        model = _models.get(size)
+        if model is None:
+            from faster_whisper import WhisperModel
 
-        _model = WhisperModel(size, device="cpu", compute_type="int8")
-    return _model
+            model = WhisperModel(size, device="cpu", compute_type="int8")
+            _models[size] = model
+        return model
 
 
 class LocalWhisperStt(BufferedStt):

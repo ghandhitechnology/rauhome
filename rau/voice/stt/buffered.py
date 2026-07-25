@@ -19,6 +19,7 @@ from rau.voice.stt.base import SAMPLE_RATE, SttProvider, Transcript
 
 #: Ignore blips shorter than this — a click or a door closing is not speech.
 MIN_SAMPLES = SAMPLE_RATE // 5  # 200ms
+MAX_PCM_BYTES = SAMPLE_RATE * 2 * 90  # 90 seconds of PCM16 mono
 
 
 def pcm_to_wav(pcm: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -45,6 +46,12 @@ class BufferedStt(SttProvider):
 
         chunks = bytearray()
         async for frame in audio:
+            if not isinstance(frame, bytes):
+                raise ValueError("STT audio frames must be bytes")
+            if len(frame) % 2:
+                raise ValueError("STT audio ended with an incomplete PCM16 sample")
+            if len(chunks) + len(frame) > MAX_PCM_BYTES:
+                raise ValueError("STT utterance exceeds 90 seconds")
             chunks.extend(frame)
 
         if len(chunks) < MIN_SAMPLES * 2:  # 2 bytes per sample

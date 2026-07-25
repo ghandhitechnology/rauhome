@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
@@ -68,23 +69,31 @@ class StreamDone:
 StreamEvent = Any  # TextDelta | ToolCallDelta | StreamDone
 
 
+def normalize_tool_arguments(raw: Any) -> Dict[str, Any]:
+    """Normalize provider tool input without ever guessing executable args."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {"_raw": raw}
+        return parsed if isinstance(parsed, dict) else {"_raw": parsed}
+    return {"_raw": raw}
+
+
 def assemble_tool_calls(parts: Dict[int, Dict[str, str]]) -> List[ToolCall]:
     """Turn accumulated ToolCallDelta fragments into finished ToolCalls."""
     out: List[ToolCall] = []
     for index in sorted(parts):
         part = parts[index]
         raw = part.get("args") or "{}"
-        try:
-            args = json.loads(raw) if raw.strip() else {}
-        except json.JSONDecodeError:
-            # A truncated stream can leave invalid JSON — surface it rather
-            # than dropping the call silently.
-            args = {"_raw": raw}
+        args = normalize_tool_arguments(raw)
         out.append(
             ToolCall(
                 id=part.get("id") or f"call_{index}",
                 name=part.get("name") or "",
-                arguments=args if isinstance(args, dict) else {"_raw": args},
+                arguments=args,
             )
         )
     return [tc for tc in out if tc.name]
@@ -189,10 +198,23 @@ def pair_tool_calls(
     A call left unanswered and a result with no call are both protocol errors,
     so anything that does not pair cleanly is handed back for demotion.
     """
-    by_id = {m.tool_call_id: m for m in results if m.tool_call_id}
-    paired = [(tc, by_id[tc.id]) for tc in assistant.tool_calls or [] if tc.id in by_id]
-    matched = {tc.id for tc, _ in paired}
-    return paired, [m for m in results if m.tool_call_id not in matched]
+    calls = list(assistant.tool_calls or [])
+    call_counts = Counter(tc.id for tc in calls if tc.id)
+    by_id: Dict[str, List[Message]] = defaultdict(list)
+    for result in results:
+        if result.tool_call_id:
+            by_id[result.tool_call_id].append(result)
+
+    paired: List[tuple[ToolCall, Message]] = []
+    used: set[int] = set()
+    for call in calls:
+        matches = by_id.get(call.id) or []
+        # Duplicate ids are ambiguous in either direction. Demote the result to
+        # prose instead of silently pairing it to an arbitrary call.
+        if call.id and call_counts[call.id] == 1 and len(matches) == 1:
+            paired.append((call, matches[0]))
+            used.add(id(matches[0]))
+    return paired, [result for result in results if id(result) not in used]
 
 
 def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
@@ -258,19 +280,32 @@ def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
 
 def parse_tool_calls_openai(data: Dict[str, Any]) -> List[ToolCall]:
     out: List[ToolCall] = []
-    choice = (data.get("choices") or [{}])[0]
+    if not isinstance(data, dict):
+        return out
+    choices = data.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else {}
+    if not isinstance(choice, dict):
+        return out
     msg = choice.get("message") or {}
-    for tc in msg.get("tool_calls") or []:
+    if not isinstance(msg, dict):
+        return out
+    calls = msg.get("tool_calls") or []
+    if not isinstance(calls, list):
+        return out
+    for tc in calls:
+        if not isinstance(tc, dict):
+            continue
         fn = tc.get("function") or {}
+        if not isinstance(fn, dict):
+            continue
         args_raw = fn.get("arguments") or "{}"
-        try:
-            args = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw)
-        except json.JSONDecodeError:
-            args = {"_raw": args_raw}
+        args = normalize_tool_arguments(args_raw)
+        call_id = tc.get("id")
+        name = fn.get("name")
         out.append(
             ToolCall(
-                id=tc.get("id") or f"call_{len(out)}",
-                name=fn.get("name") or "",
+                id=call_id if isinstance(call_id, str) and call_id else f"call_{len(out)}",
+                name=name if isinstance(name, str) else "",
                 arguments=args,
             )
         )

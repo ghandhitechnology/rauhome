@@ -17,5 +17,5 @@ secrets/
 memories/
 identity/soul*.bak.md
 backups/
-skills/
+/skills/
 node_modules/

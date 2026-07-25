@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from '../router'
 import ClawdAvatar from '../components/ClawdAvatar'
 import { api, type Job } from '../api'
 import './Dashboard.css'
@@ -95,8 +95,22 @@ export default function Dashboard() {
         subagent: res.subagent || level,
         dream: res.dream || level,
       })
+    } catch {
+      /* hub down — the segmented control simply stays where it was */
     } finally {
       setBusyEffort('')
+    }
+  }
+
+  async function startGoal() {
+    const text = goal.trim()
+    if (!text) return
+    try {
+      await api.startHardTask(text)
+      setGoal('')
+      refresh()
+    } catch {
+      /* hub down — keep the goal text so it can be retried */
     }
   }
 
@@ -159,7 +173,7 @@ export default function Dashboard() {
         <div className="row">
           <button
             className="btn"
-            onClick={() => api.control(status?.listening ? 'stop' : 'start').then(refresh)}
+            onClick={() => api.control(status?.listening ? 'stop' : 'start').then(refresh).catch(() => {})}
           >
             {status?.listening ? 'Pause listening' : 'Start listening'}
           </button>
@@ -214,10 +228,10 @@ export default function Dashboard() {
             <h3>Confirm</h3>
             <p>{confirm.summary}</p>
             <div className="row end">
-              <button className="btn danger sm" onClick={() => api.confirm(false, confirm.id).then(refresh)}>
+              <button className="btn danger sm" onClick={() => api.confirm(false, confirm.id).then(refresh).catch(() => {})}>
                 Deny
               </button>
-              <button className="btn primary sm" onClick={() => api.confirm(true, confirm.id).then(refresh)}>
+              <button className="btn primary sm" onClick={() => api.confirm(true, confirm.id).then(refresh).catch(() => {})}>
                 Allow
               </button>
             </div>
@@ -238,7 +252,7 @@ export default function Dashboard() {
           <div className="goal-box">
             <div className="dash-head" style={{ marginBottom: '0.35rem' }}>
               <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontWeight: 400 }}>Active goal</h3>
-              <button className="btn sm danger" onClick={() => api.clearGoal().then(refresh)}>Clear</button>
+              <button className="btn sm danger" onClick={() => api.clearGoal().then(refresh).catch(() => {})}>Clear</button>
             </div>
             <p style={{ margin: 0 }}>{activeGoal.text}</p>
           </div>
@@ -254,29 +268,20 @@ export default function Dashboard() {
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && goal.trim()) api.startHardTask(goal).then(refresh)
+              if (e.key === 'Enter') startGoal()
             }}
             placeholder="What should Rau dig into?"
           />
         </div>
 
         <div className="row">
-          <button
-            className="btn primary"
-            disabled={!goal.trim()}
-            onClick={() =>
-              api.startHardTask(goal).then(() => {
-                setGoal('')
-                refresh()
-              })
-            }
-          >
+          <button className="btn primary" disabled={!goal.trim()} onClick={startGoal}>
             Start deep work
           </button>
           <button
             className="btn danger"
             disabled={activeJobs.length === 0}
-            onClick={() => api.cancelHardTask().then(refresh)}
+            onClick={() => api.cancelHardTask().then(refresh).catch(() => {})}
           >
             {activeJobs.length > 1 ? `Cancel all (${activeJobs.length})` : 'Cancel'}
           </button>
@@ -292,7 +297,7 @@ export default function Dashboard() {
                 <span className="job-state">{j.progress || j.state}</span>
                 <button
                   className="btn danger sm"
-                  onClick={() => api.cancelJob(j.id).then(refresh)}
+                  onClick={() => api.cancelJob(j.id).then(refresh).catch(() => {})}
                 >
                   Stop
                 </button>
@@ -303,7 +308,7 @@ export default function Dashboard() {
 
         <h3 className="section-title">Skills</h3>
         <p className="muted" style={{ marginTop: 0 }}>
-          Always on. Slash in talk: {skills.slice(0, 4).map((s) => s.slash).join(' ')}…
+          Always available. Slash in talk: {skills.slice(0, 4).map((s) => s.slash).join(' ')}…
         </p>
         <div className="skills-list">
           {skills.map((s) => (

@@ -204,6 +204,10 @@ _history: List[Message] = []
 # runs on its own thread while /api/chat is served from the threadpool), so
 # every mutation of _history goes through this.
 _history_lock = threading.RLock()
+# Assistant placeholders reserved by in-flight streaming turns. Keeping the
+# slot in `_history` preserves ordering when a provider is slow and another
+# turn starts, while snapshots hide the empty internal marker from providers.
+_pending_stream_messages: set[int] = set()
 # Held for the duration of a fold, so a fast exchange cannot start a second
 # summarizer on top of the one already thinking.
 _compacting = threading.Lock()
@@ -212,6 +216,7 @@ _compacting = threading.Lock()
 def reset_history() -> None:
     with _history_lock:
         _history.clear()
+        _pending_stream_messages.clear()
 
 
 def _append_history(*msgs: Message) -> None:
@@ -221,7 +226,36 @@ def _append_history(*msgs: Message) -> None:
 
 def snapshot_history() -> List[Message]:
     with _history_lock:
-        return list(_history)
+        return [m for m in _history if id(m) not in _pending_stream_messages]
+
+
+def _reserve_stream_turn(user_text: str) -> Tuple[Message, List[Message]]:
+    """Atomically reserve a history position for one streaming response."""
+    user = Message(role="user", content=user_text)
+    pending = Message(role="assistant", content="")
+    with _history_lock:
+        _history.append(user)
+        messages = [m for m in _history if id(m) not in _pending_stream_messages]
+        _history.append(pending)
+        _pending_stream_messages.add(id(pending))
+    return pending, messages
+
+
+def _finish_stream_turn(pending: Message, spoken: str) -> Optional[Message]:
+    """Replace an exact streaming placeholder without touching another turn."""
+    committed = Message(role="assistant", content=spoken)
+    result: Optional[Message] = None
+    with _history_lock:
+        for i, message in enumerate(_history):
+            if message is pending:
+                if spoken:
+                    _history[i] = committed
+                    result = committed
+                else:
+                    _history.pop(i)
+                break
+        _pending_stream_messages.discard(id(pending))
+    return result
 
 
 def _context_budget() -> int:
@@ -323,7 +357,10 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if name == "list_skills":
         return {"ok": True, "skills": skills_public()}
     if name == "set_goal":
-        return {"ok": True, "goal": goal_store.set_goal(str(args.get("text") or ""))}
+        goal = goal_store.set_goal(str(args.get("text") or ""))
+        if goal.get("ok") is False:
+            return goal
+        return {"ok": True, "goal": goal}
     if name == "clear_goal":
         return goal_store.clear_goal()
     if name == "goal_note":
@@ -448,7 +485,93 @@ def chat(user_text: str) -> str:
 
 
 class Cancelled(Exception):
-    """Raised inside chat_streaming when the caller cancels mid-turn."""
+    """A cancelled stream plus the exact history slot that belongs to it."""
+
+    def __init__(
+        self,
+        pending: Optional[Message] = None,
+        generated: str = "",
+        user_text: str = "",
+    ) -> None:
+        super().__init__("streaming turn cancelled")
+        self.pending = pending
+        self.generated = generated
+        self.user_text = user_text
+
+
+class StreamingReply(str):
+    """String-compatible reply carrying its exact committed history message."""
+
+    history_message: Optional[Message]
+    user_text: str
+    diary_deferred: bool
+
+    def __new__(
+        cls,
+        value: str,
+        history_message: Optional[Message],
+        user_text: str,
+        diary_deferred: bool,
+    ):
+        obj = str.__new__(cls, value)
+        obj.history_message = history_message
+        obj.user_text = user_text
+        obj.diary_deferred = diary_deferred
+        return obj
+
+
+def finish_interrupted_turn(
+    turn: Cancelled | StreamingReply,
+    heard: str,
+) -> None:
+    """Commit only audible prose for a cancelled stream, in its original slot."""
+    marker = (
+        turn.pending if isinstance(turn, Cancelled) else turn.history_message
+    )
+    if marker is None:
+        if isinstance(turn, StreamingReply) and turn.diary_deferred:
+            append_diary("user", turn.user_text)
+            if heard:
+                append_diary("rau", heard)
+            turn.diary_deferred = False
+        return
+
+    note = Message(
+        role="system",
+        content=(
+            "(You were interrupted here — the user began speaking before you "
+            "finished. Do not repeat what you already said. Acknowledge them "
+            "naturally and respond to what they actually asked.)"
+        ),
+    )
+    assistant = Message(role="assistant", content=heard)
+    finished = False
+    with _history_lock:
+        for i, message in enumerate(_history):
+            if message is marker:
+                _history[i : i + 1] = [assistant, note] if heard else [note]
+                finished = True
+                break
+        _pending_stream_messages.discard(id(marker))
+
+    if not finished:
+        return
+    append_diary("user", turn.user_text)
+    if heard:
+        append_diary("rau", heard)
+    if isinstance(turn, StreamingReply):
+        turn.diary_deferred = False
+    _maybe_compact_history()
+
+
+def commit_streamed_turn(reply: StreamingReply) -> None:
+    """Commit deferred voice diary entries once playback finishes normally."""
+    if not reply.diary_deferred:
+        return
+    append_diary("user", reply.user_text)
+    append_diary("rau", str(reply))
+    reply.diary_deferred = False
+    _maybe_compact_history()
 
 
 def chat_streaming(
@@ -457,6 +580,7 @@ def chat_streaming(
     on_token: Callable[[str], None],
     on_tool: Optional[Callable[[str, Dict[str, Any], Dict[str, Any]], None]] = None,
     cancel: Optional[threading.Event] = None,
+    defer_diary: bool = False,
 ) -> str:
     """
     Streaming face turn that keeps full tool access.
@@ -476,16 +600,18 @@ def chat_streaming(
 
     prep = prepare_turn(user_text)
     if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
+        on_token(prep.immediate_reply)
+        if defer_diary:
+            return StreamingReply(prep.immediate_reply, None, user_text, True)
         append_diary("user", user_text)
         append_diary("rau", prep.immediate_reply)
-        on_token(prep.immediate_reply)
         return prep.immediate_reply
 
     provider, slot = chat_for_slot("face")
-    _append_history(Message(role="user", content=prep.user_text))
+    pending, history = _reserve_stream_turn(prep.user_text)
     messages = [
         Message(role="system", content=_system_prompt(prep.system_extra))
-    ] + snapshot_history()
+    ] + history
 
     # Every token handed to on_token was actually spoken aloud, including the
     # "let me look that up" said before a tool fires. Blocking chat() throws
@@ -493,50 +619,60 @@ def chat_streaming(
     # remembered, or Rau will not know he already acknowledged the request.
     heard: List[str] = []
 
-    for _ in range(6):
-        if stop():
-            raise Cancelled()
-
-        chunks: List[str] = []
-        result = None
-        for event in provider.stream_turn(
-            messages,
-            model=slot.get("model") or "deepseek-v4-flash",
-            max_tokens=int(slot.get("max_tokens") or 512),
-            temperature=float(slot.get("temperature") or 0.9),
-            tools=FACE_TOOLS,
-            effort=str(slot.get("effort") or "medium"),
-        ):
+    try:
+        for _ in range(6):
             if stop():
-                raise Cancelled()
-            if isinstance(event, TextDelta):
-                chunks.append(event.text)
-                heard.append(event.text)
-                on_token(event.text)
-            elif isinstance(event, StreamDone):
-                result = event.result
-        if result is None:
+                raise Cancelled(pending, "".join(heard).strip(), user_text)
+
+            chunks: List[str] = []
+            result = None
+            for event in provider.stream_turn(
+                messages,
+                model=slot.get("model") or "deepseek-v4-flash",
+                max_tokens=int(slot.get("max_tokens") or 512),
+                temperature=float(slot.get("temperature") or 0.9),
+                tools=FACE_TOOLS,
+                effort=str(slot.get("effort") or "medium"),
+            ):
+                if stop():
+                    raise Cancelled(pending, "".join(heard).strip(), user_text)
+                if isinstance(event, TextDelta):
+                    chunks.append(event.text)
+                    heard.append(event.text)
+                    on_token(event.text)
+                elif isinstance(event, StreamDone):
+                    result = event.result
+            if result is None:
+                break
+
+            if result.tool_calls:
+                _record_tool_round(messages, result, prep.system_extra, on_tool)
+                continue
+
+            if not chunks and result.content:
+                # Provider returned prose only in the terminal event.
+                heard.append(result.content)
+                on_token(result.content)
             break
-
-        if result.tool_calls:
-            _record_tool_round(messages, result, prep.system_extra, on_tool)
-            continue
-
-        if not chunks and result.content:
-            # Provider returned prose only in the terminal event.
-            heard.append(result.content)
-            on_token(result.content)
-        break
+    except Cancelled:
+        raise
+    except Exception:
+        # A provider can fail after yielding prose. Preserve that partial reply
+        # in the reserved slot; an empty failure must not leave a ghost turn.
+        _finish_stream_turn(pending, "".join(heard).strip())
+        raise
 
     spoken = "".join(heard).strip()
     if not spoken:
         spoken = "Okay. I'm with you."
         on_token(spoken)
-    _append_history(Message(role="assistant", content=spoken))
-    _maybe_compact_history()
-    append_diary("user", user_text)
-    append_diary("rau", spoken)
-    return spoken
+    history_message = _finish_stream_turn(pending, spoken)
+    if not defer_diary:
+        _maybe_compact_history()
+    if not defer_diary:
+        append_diary("user", user_text)
+        append_diary("rau", spoken)
+    return StreamingReply(spoken, history_message, user_text, defer_diary)
 
 
 def chat_stream(user_text: str) -> Generator[str, None, str]:

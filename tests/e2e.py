@@ -79,9 +79,27 @@ async def voice_socket(base_ws: str) -> Dict[str, Any]:
     """Drive the real /ws/voice endpoint the way the browser client does."""
     import websockets
 
-    out: Dict[str, Any] = {"hello": None, "accepted_audio": False, "phases": []}
+    out: Dict[str, Any] = {
+        "hello": None,
+        "accepted_audio": False,
+        "phases": [],
+        "validation_errors": [],
+    }
     async with websockets.connect(f"{base_ws}/ws/voice", open_timeout=10) as ws:
         out["hello"] = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+
+        # Malformed commands are per-message errors, not reasons to tear down
+        # the user's live voice connection.
+        for malformed in (
+            "{",
+            json.dumps([]),
+            json.dumps({"t": "barge", "playedMs": "not-a-number"}),
+        ):
+            await ws.send(malformed)
+            response = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+            if response.get("t") == "error":
+                out["validation_errors"].append(response.get("detail"))
+
         await ws.send(json.dumps({"t": "speech_start"}))
         # 200ms of silence at 16kHz mono PCM16 — shape matters, content does not.
         await ws.send(b"\x00\x00" * 3200)
@@ -156,6 +174,11 @@ def main() -> int:
             check("/ws/voice handshake", hello.get("t") == "hello", str(hello)[:90])
             check("declares sample rates", hello.get("sample_rate_in") == 16000
                   and hello.get("sample_rate_out") == 24000)
+            check(
+                "malformed voice commands keep socket alive",
+                len(res["validation_errors"]) == 3,
+                str(res["validation_errors"]),
+            )
             check("accepts binary mic frames", res["accepted_audio"])
         except Exception as e:  # noqa: BLE001
             check("/ws/voice handshake", False, f"{type(e).__name__}: {e}")

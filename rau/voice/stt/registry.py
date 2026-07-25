@@ -49,7 +49,10 @@ def resolve_stt() -> Tuple[str, Dict[str, Any]]:
     works, so we degrade to it rather than raising.
     """
     slot = get_slot("stt")
-    provider = (slot.get("provider") or "local").lower()
+    provider = str(slot.get("provider") or "local").lower()
+    if provider not in STT_AUTH:
+        provider = "local"
+        slot = {**slot, "provider": "local", "model": "small", "_fallback": True}
     env = STT_AUTH.get(provider, "")
     if env and not has_secret(env):
         provider = "local"

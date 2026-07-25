@@ -27,6 +27,7 @@ _SENTENCE = re.compile(r"(?<=[.!?…])\s+|(?<=[.!?…])$|\n{2,}")
 MIN_CHARS = 24
 #: ...unless it already ends a sentence, or we have this much queued.
 MAX_CHARS = 220
+MAX_SENTENCE_PCM_BYTES = SR * 2 * 120
 
 
 def split_sentences(text: str) -> List[str]:
@@ -134,7 +135,7 @@ def synth_sentence(
     cancel: Optional[threading.Event] = None,
 ) -> Iterator[bytes]:
     """Yield PCM16 chunks for one sentence, stopping early if cancelled."""
-    slot = get_slot("tts")
+    slot = get_slot("tts") if not voice_id or not model else {}
     c = client or _client()
     stream = c.text_to_speech.stream(
         voice_id=voice_id or slot.get("voice_id") or "TX3LPaxmHKxFdv7VOQHJ",
@@ -142,11 +143,27 @@ def synth_sentence(
         model_id=model or slot.get("model") or "eleven_flash_v2_5",
         output_format="pcm_24000",
     )
-    for chunk in stream:
-        if cancel is not None and cancel.is_set():
-            return
-        if chunk:
-            yield chunk
+    emitted = 0
+    try:
+        for chunk in stream:
+            if cancel is not None and cancel.is_set():
+                return
+            if chunk:
+                if not isinstance(chunk, bytes):
+                    raise TypeError("TTS provider returned a non-bytes audio chunk")
+                if len(chunk) % 2:
+                    raise RuntimeError("TTS provider returned incomplete PCM16 audio")
+                emitted += len(chunk)
+                if emitted > MAX_SENTENCE_PCM_BYTES:
+                    raise RuntimeError("TTS sentence audio exceeded two minutes")
+                yield chunk
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def speak_stream(
@@ -167,6 +184,9 @@ def speak_stream(
     buf = SentenceBuffer()
     fx = RobotVoice() if robot else None
     client = _client()
+    slot = get_slot("tts")
+    voice_id = str(slot.get("voice_id") or "TX3LPaxmHKxFdv7VOQHJ")
+    model = str(slot.get("model") or "eleven_flash_v2_5")
 
     def emit(sentence: str) -> bool:
         if cancel is not None and cancel.is_set():
@@ -176,7 +196,13 @@ def speak_stream(
 
         if fx is None:
             # No FX: forward chunks the instant they arrive, lowest latency.
-            for chunk in synth_sentence(sentence, client=client, cancel=cancel):
+            for chunk in synth_sentence(
+                sentence,
+                client=client,
+                voice_id=voice_id,
+                model=model,
+                cancel=cancel,
+            ):
                 if cancel is not None and cancel.is_set():
                     return False
                 on_audio(chunk)
@@ -186,9 +212,17 @@ def speak_stream(
         # it first. Granularity is a sentence, not the whole reply, so the
         # first words still arrive far sooner than the old one-shot path.
         parts = bytearray()
-        for chunk in synth_sentence(sentence, client=client, cancel=cancel):
+        for chunk in synth_sentence(
+            sentence,
+            client=client,
+            voice_id=voice_id,
+            model=model,
+            cancel=cancel,
+        ):
             if cancel is not None and cancel.is_set():
                 return False
+            if len(parts) + len(chunk) > MAX_SENTENCE_PCM_BYTES:
+                raise RuntimeError("TTS sentence audio exceeded two minutes")
             parts.extend(chunk)
         if cancel is not None and cancel.is_set():
             return False
@@ -211,4 +245,6 @@ def speak_stream(
 
 def pcm_duration_ms(pcm: bytes, sample_rate: int = SR) -> float:
     """How long a PCM16 mono buffer will take to play."""
-    return (len(pcm) / 2) / sample_rate * 1000.0
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+    return (len(pcm) // 2) / sample_rate * 1000.0

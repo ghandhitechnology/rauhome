@@ -6,7 +6,7 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from '../router'
 import ChatMarkdown from '../components/ChatMarkdown'
 import ClawdAvatar from '../components/ClawdAvatar'
 import SlashMenu from '../components/SlashMenu'
@@ -169,22 +169,40 @@ export default function Conversation() {
   const [commands, setCommands] = useState<SlashCmd[]>(() => mergeSkillCommands([]))
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashOpen, setSlashOpen] = useState(true)
+  /** The message just sent, echoed locally until the hub's log includes it. */
+  const [pending, setPending] = useState<{ role: 'user'; text: string; time: string } | null>(null)
+  const [sendError, setSendError] = useState('')
+  const [offline, setOffline] = useState(false)
   const threadRef = useRef<HTMLElement>(null)
   const composeRef = useRef<HTMLElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const refreshingRef = useRef(false)
+  const failsRef = useRef(0)
+  /** Whether the user is reading at the bottom — only then do we auto-scroll. */
+  const stickRef = useRef(true)
 
   useComposerRubberBand(threadRef, composeRef)
 
   async function refresh() {
+    // Polls that outlive their interval slot must not stack up or land
+    // out of order and flash an older log over a newer one.
+    if (refreshingRef.current) return
+    refreshingRef.current = true
     try {
       const [l, e, s] = await Promise.all([api.log(), api.emotion(), api.status()])
       setLog(l.log || [])
       setEmotion((e.emotion || 'idle').toLowerCase())
       setConfirm(s.confirm || null)
       setHardState(s.hard_task?.state || 'idle')
+      failsRef.current = 0
+      setOffline(false)
     } catch {
-      /* hub down */
+      // One miss is a blip; two in a row is worth telling the user about.
+      failsRef.current += 1
+      if (failsRef.current >= 2) setOffline(true)
+    } finally {
+      refreshingRef.current = false
     }
   }
 
@@ -217,14 +235,35 @@ export default function Conversation() {
     setSlashOpen(true)
   }, [slashDraft?.token, slashDraft?.hasSpace])
 
-  // Scroll the thread pane only — never the page under the composer.
+  // The pending echo disappears once the hub's log has caught up with it.
+  const displayLog = useMemo(() => {
+    if (!pending) return log
+    const last = log[log.length - 1]
+    if (last?.role === 'user' && String(last.text || '') === pending.text) return log
+    return [...log, pending]
+  }, [log, pending])
+
+  // Track whether the reader is at the bottom; scrolling up to reread must
+  // not be yanked back down by the next poll.
   useEffect(() => {
     const thread = threadRef.current
     if (!thread) return
+    const onScroll = () => {
+      stickRef.current =
+        thread.scrollTop + thread.clientHeight >= thread.scrollHeight - 80
+    }
+    thread.addEventListener('scroll', onScroll, { passive: true })
+    return () => thread.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Scroll the thread pane only — never the page under the composer.
+  useEffect(() => {
+    const thread = threadRef.current
+    if (!thread || !stickRef.current) return
     requestAnimationFrame(() => {
       thread.scrollTop = thread.scrollHeight
     })
-  }, [log, sending])
+  }, [displayLog, sending])
 
   // Grow the composer with its content instead of scrolling a one-line box.
   useEffect(() => {
@@ -246,10 +285,25 @@ export default function Conversation() {
     setSending(true)
     setDraft('')
     setSlashOpen(false)
+    setSendError('')
+    // Sending your own message always belongs at the bottom.
+    stickRef.current = true
+    setPending({
+      role: 'user',
+      text,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    })
     try {
       await api.chat(text)
+      failsRef.current = 0
+      setOffline(false)
       await refresh()
+    } catch {
+      // Give the message back instead of losing it.
+      setDraft(text)
+      setSendError('Could not reach Rau — that message was not sent.')
     } finally {
+      setPending(null)
       setSending(false)
     }
   }
@@ -267,7 +321,7 @@ export default function Conversation() {
         return
       }
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-        const pick = slashSuggestions[slashIndex]
+        const pick = slashSuggestions[clampedSlashIndex]
         if (pick) {
           e.preventDefault()
           pickSlash(pick)
@@ -287,15 +341,20 @@ export default function Conversation() {
   }
 
   const working = hardState === 'running' || hardState === 'awaiting_confirm'
+  const clampedSlashIndex = Math.min(slashIndex, Math.max(0, slashSuggestions.length - 1))
 
   return (
     <div className="convo">
       <header className="convo-hero">
         <div className="convo-brand">
           <h1>Rau</h1>
-          <p className="convo-sub">
-            <span className={`state-dot ${working ? 'working' : ''}`} />
-            {working ? 'Still working on something — talk whenever.' : 'One continuous mind. Just talk.'}
+          <p className="convo-sub" role="status">
+            <span className={`state-dot ${offline ? 'offline' : working ? 'working' : ''}`} />
+            {offline
+              ? 'Can’t reach Rau right now — retrying…'
+              : working
+                ? 'Still working on something — talk whenever.'
+                : 'One continuous mind. Just talk.'}
           </p>
         </div>
         <div className="convo-eyes">
@@ -313,19 +372,25 @@ export default function Conversation() {
             <p>{confirm.summary}</p>
           </div>
           <div className="row">
-            <button className="btn danger sm" onClick={() => api.confirm(false, confirm.id).then(refresh)}>
+            <button className="btn danger sm" onClick={() => api.confirm(false, confirm.id).then(refresh).catch(() => {})}>
               Deny
             </button>
-            <button className="btn primary sm" onClick={() => api.confirm(true, confirm.id).then(refresh)}>
+            <button className="btn primary sm" onClick={() => api.confirm(true, confirm.id).then(refresh).catch(() => {})}>
               Allow
             </button>
           </div>
         </div>
       )}
 
-      <section ref={threadRef} className="convo-thread">
-        {log.length === 0 && <div className="convo-empty">Say something — voice or text.</div>}
-        {log.map((m, i) => {
+      <section
+        ref={threadRef}
+        className="convo-thread"
+        role="log"
+        aria-live="polite"
+        aria-label="Conversation with Rau"
+      >
+        {displayLog.length === 0 && <div className="convo-empty">Say something — voice or text.</div>}
+        {displayLog.map((m, i) => {
           const used =
             m.role === 'user' ? matchSlash(String(m.text || ''), commands) : null
           return (
@@ -356,7 +421,7 @@ export default function Conversation() {
           )
         })}
         {sending && (
-          <div className="convo-typing">
+          <div className="convo-typing" role="status" aria-label="Rau is replying">
             <i />
             <i />
             <i />
@@ -370,10 +435,15 @@ export default function Conversation() {
           <SlashMenu
             open={showSlashMenu}
             commands={slashSuggestions}
-            activeIndex={Math.min(slashIndex, Math.max(0, slashSuggestions.length - 1))}
+            activeIndex={clampedSlashIndex}
             onHover={setSlashIndex}
             onPick={pickSlash}
           />
+          {sendError && (
+            <p className="compose-error" role="alert">
+              {sendError}
+            </p>
+          )}
           {activeSlash && (
             <div className="compose-slash-chip" aria-live="polite">
               {activeSlash.cmd.slash}
@@ -394,6 +464,12 @@ export default function Conversation() {
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onComposeKey}
               placeholder="Talk to Rau…  try /skills"
+              aria-label="Message Rau"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={showSlashMenu}
+              aria-controls="slash-menu-list"
+              aria-activedescendant={showSlashMenu ? `slash-opt-${clampedSlashIndex}` : undefined}
               autoFocus
             />
             <button

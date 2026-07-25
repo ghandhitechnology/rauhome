@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
+import threading
 from typing import Dict, List, Optional
 
 from rau.paths import ENV_FILE, ensure_dirs
+
+_env_lock = threading.RLock()
 
 # Known auth slots shown in the UI
 AUTH_SLOTS: List[Dict[str, str]] = [
@@ -71,19 +75,20 @@ AUTH_SLOTS: List[Dict[str, str]] = [
 
 
 def load_dotenv(*, override: bool = False) -> None:
-    if not ENV_FILE.exists():
-        return
-    for raw in ENV_FILE.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, val = line.split("=", 1)
-        key = key.strip()
-        val = val.strip().strip('"').strip("'")
-        if not key:
-            continue
-        if override or key not in os.environ:
-            os.environ[key] = val
+    with _env_lock:
+        if not ENV_FILE.exists():
+            return
+        for raw in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if not key:
+                continue
+            if override or key not in os.environ:
+                os.environ[key] = val
 
 
 def get_secret(name: str, default: str = "") -> str:
@@ -142,30 +147,49 @@ def _write_env_map(data: Dict[str, str], *, remove: Optional[set] = None) -> Non
         if key not in seen and key not in remove:
             out.append(f"{key}={val}")
 
-    ENV_FILE.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    value = "\n".join(out).rstrip() + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=ENV_FILE.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, ENV_FILE)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
-def set_secret(name: str, value: str) -> Dict[str, str]:
+def set_secret(name: str, value: str) -> Dict[str, object]:
     name = name.strip()
     value = value.strip()
     if not name or not re.match(r"^[A-Z][A-Z0-9_]*$", name):
         raise ValueError("invalid secret name")
     if not value:
         raise ValueError("empty secret")
-    data = _read_env_map()
-    data[name] = value
-    _write_env_map(data)
-    os.environ[name] = value
-    return {"env": name, "configured": True, "masked": _mask(value)}
+    if len(value) > 20_000:
+        raise ValueError("secret is too long")
+    if re.search(r"[\x00-\x1f\x7f]", value):
+        raise ValueError("secret contains control characters")
+    with _env_lock:
+        data = _read_env_map()
+        data[name] = value
+        _write_env_map(data)
+        os.environ[name] = value
+        return {"env": name, "configured": True, "masked": _mask(value)}
 
 
-def clear_secret(name: str) -> Dict[str, str]:
+def clear_secret(name: str) -> Dict[str, object]:
     name = name.strip()
-    data = _read_env_map()
-    data.pop(name, None)
-    _write_env_map(data, remove={name})
-    os.environ.pop(name, None)
-    return {"env": name, "configured": False, "masked": ""}
+    with _env_lock:
+        data = _read_env_map()
+        data.pop(name, None)
+        _write_env_map(data, remove={name})
+        os.environ.pop(name, None)
+        return {"env": name, "configured": False, "masked": ""}
 
 
 def auth_status() -> List[Dict[str, object]]:

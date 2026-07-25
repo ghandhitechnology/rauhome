@@ -2,39 +2,65 @@
 from __future__ import annotations
 
 import base64
-import io
+import math
+import os
 import subprocess
+import tempfile
+import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
 from rau.memory.store import append_trace
 
+AUTOMATION_TIMEOUT_SEC = 15
+MAX_WAIT_SEC = 30.0
+MAX_TEXT_CHARS = 20_000
+MAX_COORDINATE = 100_000
 
 def capture_screenshot_b64() -> str:
     """Capture main display to PNG base64 via screencapture."""
-    path = "/tmp/rau-cua.png"
-    subprocess.run(
-        ["screencapture", "-x", "-C", path],
-        check=False,
-        capture_output=True,
-    )
     try:
-        data = open(path, "rb").read()
+        fd, path = tempfile.mkstemp(prefix="rau-cua-", suffix=".png")
+        os.close(fd)
     except OSError:
-        data = b""
+        return ""
+    try:
+        result = subprocess.run(
+            ["screencapture", "-x", "-C", path],
+            check=False,
+            capture_output=True,
+            timeout=AUTOMATION_TIMEOUT_SEC,
+        )
+        if result.returncode != 0:
+            return ""
+        with open(path, "rb") as image:
+            data = image.read()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
     return base64.b64encode(data).decode("ascii")
 
 
 def _osascript(script: str) -> Tuple[int, str]:
-    r = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
-    return r.returncode, (r.stdout or r.stderr or "").strip()
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=AUTOMATION_TIMEOUT_SEC,
+        )
+        return r.returncode, (r.stdout or r.stderr or "").strip()
+    except FileNotFoundError:
+        return 127, "osascript is unavailable"
+    except subprocess.TimeoutExpired:
+        return 124, "osascript timed out"
 
 
-def _click(x: int, y: int, double: bool = False) -> None:
+def _click(x: int, y: int, double: bool = False) -> Tuple[bool, str]:
     # cliclick if available; else AppleScript System Events is limited —
     # use Python Quartz when possible.
     try:
@@ -56,19 +82,37 @@ def _click(x: int, y: int, double: bool = False) -> None:
             for ev in events:
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
                 time.sleep(0.01)
-        return
+        return True, ""
     except Exception:
         pass
     kind = "dc" if double else "c"
-    subprocess.run(["cliclick", f"{kind}:{x},{y}"], check=False, capture_output=True)
+    try:
+        result = subprocess.run(
+            ["cliclick", f"{kind}:{x},{y}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=AUTOMATION_TIMEOUT_SEC,
+        )
+    except FileNotFoundError:
+        return False, "neither Quartz nor cliclick is available"
+    except subprocess.TimeoutExpired:
+        return False, "cliclick timed out"
+    return result.returncode == 0, (result.stderr or result.stdout or "").strip()
 
 
-def _type_text(text: str) -> None:
+def _apple_string(text: str) -> str:
+    """Quote untrusted text as an AppleScript string literal."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _type_text(text: str) -> Tuple[bool, str]:
     safe = text.replace("\\", "\\\\").replace('"', '\\"')
-    _osascript(f'tell application "System Events" to keystroke "{safe}"')
+    code, output = _osascript(f'tell application "System Events" to keystroke "{safe}"')
+    return code == 0, output
 
 
-def _key(key: str) -> None:
+def _key(key: str) -> Tuple[bool, str]:
     mapping = {
         "return": "return",
         "enter": "return",
@@ -77,50 +121,129 @@ def _key(key: str) -> None:
         "delete": "delete",
         "space": "space",
     }
-    code = mapping.get(key.lower(), key)
-    _osascript(f'tell application "System Events" to key code 36' if code == "return"
-               else f'tell application "System Events" to keystroke "{code}"')
+    normalized = key.lower().strip()
+    code = mapping.get(normalized)
+    if code is None:
+        # Arbitrary strings used to be interpolated directly into AppleScript,
+        # which made the key action a script-injection surface.
+        if len(key) != 1 or ord(key) < 32:
+            return False, f"unsupported key: {key[:40]}"
+        script = f'tell application "System Events" to keystroke {_apple_string(key)}'
+    elif code == "return":
+        script = 'tell application "System Events" to key code 36'
+    else:
+        script = f'tell application "System Events" to keystroke {_apple_string(code)}'
+    status, output = _osascript(script)
+    return status == 0, output
 
 
-def execute_action(action: Dict[str, Any]) -> Dict[str, Any]:
+def _int_field(action: Dict[str, Any], name: str, default: int = 0) -> int:
+    value = action.get(name, default)
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    parsed = int(value)
+    if abs(parsed) > MAX_COORDINATE:
+        raise ValueError(f"{name} is outside the supported range")
+    return parsed
+
+
+def _seconds(value: Any, default: float = 0.5) -> float:
+    try:
+        parsed = float(value if value is not None else default)
+    except (TypeError, ValueError):
+        raise ValueError("seconds must be a number") from None
+    if not math.isfinite(parsed) or not 0 <= parsed <= MAX_WAIT_SEC:
+        raise ValueError(f"seconds must be between 0 and {MAX_WAIT_SEC:g}")
+    return parsed
+
+
+def execute_action(
+    action: Dict[str, Any],
+    cancel: Optional[threading.Event] = None,
+) -> Dict[str, Any]:
     """
     action schema:
       { "action": "screenshot"|"click"|"double_click"|"type"|"key"|"scroll"|"wait",
         "x": int, "y": int, "text": str, "key": str, "dy": int, "seconds": float }
     """
-    kind = (action.get("action") or action.get("type") or "screenshot").lower()
+    if not isinstance(action, dict):
+        return {"action": "unknown", "ok": False, "error": "action must be an object"}
+    raw_kind = action.get("action") or action.get("type") or "screenshot"
+    if not isinstance(raw_kind, str):
+        return {"action": "unknown", "ok": False, "error": "action name must be a string"}
+    kind = raw_kind.lower()
     result: Dict[str, Any] = {"action": kind, "ok": True}
 
-    if kind == "screenshot":
-        result["image_b64"] = capture_screenshot_b64()
-    elif kind == "click":
-        _click(int(action.get("x", 0)), int(action.get("y", 0)), double=False)
-    elif kind == "double_click":
-        _click(int(action.get("x", 0)), int(action.get("y", 0)), double=True)
-    elif kind == "type":
-        _type_text(str(action.get("text") or ""))
-    elif kind == "key":
-        _key(str(action.get("key") or "return"))
-    elif kind == "scroll":
-        dy = int(action.get("dy") or action.get("amount") or -3)
-        try:
-            import Quartz  # type: ignore
-
-            ev = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 1, dy)
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
-        except Exception as e:
+    try:
+        if cancel is not None and cancel.is_set():
             result["ok"] = False
-            result["error"] = str(e)
-    elif kind == "wait":
-        time.sleep(float(action.get("seconds") or 0.5))
-    elif kind == "drag":
-        # simplified: click start then click end
-        _click(int(action.get("x", 0)), int(action.get("y", 0)))
-        time.sleep(0.05)
-        _click(int(action.get("x2", 0)), int(action.get("y2", 0)))
-    else:
-        result["ok"] = False
-        result["error"] = f"unknown action {kind}"
+            result["cancelled"] = True
+            result["error"] = "action cancelled"
+        elif kind == "screenshot":
+            image = capture_screenshot_b64()
+            if image:
+                result["image_b64"] = image
+            else:
+                result.update(ok=False, error="screenshot capture failed")
+        elif kind in ("click", "double_click"):
+            ok, detail = _click(
+                _int_field(action, "x"),
+                _int_field(action, "y"),
+                double=kind == "double_click",
+            )
+            if not ok:
+                result.update(ok=False, error=detail or "click failed")
+        elif kind == "type":
+            text = action.get("text") or ""
+            if not isinstance(text, str):
+                raise ValueError("text must be a string")
+            if len(text) > MAX_TEXT_CHARS:
+                raise ValueError(f"text exceeds {MAX_TEXT_CHARS} characters")
+            ok, detail = _type_text(text)
+            if not ok:
+                result.update(ok=False, error=detail or "typing failed")
+        elif kind == "key":
+            key = action.get("key") or "return"
+            if not isinstance(key, str):
+                raise ValueError("key must be a string")
+            ok, detail = _key(key)
+            if not ok:
+                result.update(ok=False, error=detail or "key action failed")
+        elif kind == "scroll":
+            dy = _int_field(action, "dy", int(action.get("amount") or -3))
+            try:
+                import Quartz  # type: ignore
+
+                ev = Quartz.CGEventCreateScrollWheelEvent(
+                    None, Quartz.kCGScrollEventUnitLine, 1, dy
+                )
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+            except Exception as e:
+                result.update(ok=False, error=str(e))
+        elif kind == "wait":
+            seconds = _seconds(action.get("seconds"), 0.5)
+            if cancel is not None and cancel.wait(timeout=seconds):
+                result.update(ok=False, cancelled=True, error="action cancelled")
+            elif cancel is None:
+                time.sleep(seconds)
+        elif kind == "drag":
+            # The fallback remains two clicks when Quartz is absent, but now
+            # reports either failed endpoint rather than claiming success.
+            first, detail = _click(_int_field(action, "x"), _int_field(action, "y"))
+            if first and not (cancel and cancel.wait(timeout=0.05)):
+                second, second_detail = _click(
+                    _int_field(action, "x2"), _int_field(action, "y2")
+                )
+                if not second:
+                    result.update(ok=False, error=second_detail or "drag endpoint failed")
+            elif not first:
+                result.update(ok=False, error=detail or "drag start failed")
+            else:
+                result.update(ok=False, cancelled=True, error="action cancelled")
+        else:
+            result.update(ok=False, error=f"unknown action {kind}")
+    except (TypeError, ValueError, OverflowError) as exc:
+        result.update(ok=False, error=str(exc))
 
     append_trace("cua", {"action": kind, "ok": result.get("ok")})
     # Don't persist huge screenshots in return to LLM beyond a flag

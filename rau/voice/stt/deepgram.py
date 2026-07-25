@@ -8,6 +8,7 @@ user has stopped talking without waiting on our own VAD hangover.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from typing import AsyncIterator, Optional
 from urllib.parse import urlencode
@@ -50,9 +51,22 @@ class DeepgramStt(SttProvider):
         if not key:
             raise RuntimeError("DEEPGRAM_API_KEY not set")
 
-        async with websockets.connect(
-            self._url(), additional_headers={"Authorization": f"Token {key}"}
-        ) as ws:
+        connect_params = inspect.signature(websockets.connect).parameters
+        header_arg = (
+            "additional_headers"
+            if "additional_headers" in connect_params
+            else "extra_headers"
+        )
+        connect_options = {
+            header_arg: {"Authorization": f"Token {key}"},
+            "open_timeout": 10,
+            "close_timeout": 5,
+            "ping_interval": 20,
+            "ping_timeout": 20,
+            "max_size": 1_000_000,
+            "max_queue": 32,
+        }
+        async with websockets.connect(self._url(), **connect_options) as ws:
             self._ws = ws
 
             async def pump() -> None:
@@ -62,8 +76,16 @@ class DeepgramStt(SttProvider):
                     # Tell Deepgram to flush rather than just dropping the socket,
                     # otherwise the tail of the last word is lost.
                     await ws.send(json.dumps({"type": "CloseStream"}))
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
-                    pass
+                    # Wake the receive loop so the sender failure is observed
+                    # instead of leaving transcription hung forever.
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    raise
 
             sender = asyncio.create_task(pump())
             try:
@@ -86,7 +108,12 @@ class DeepgramStt(SttProvider):
                         confidence=alt.get("confidence"),
                     )
             finally:
-                sender.cancel()
+                if not sender.done():
+                    sender.cancel()
+                try:
+                    await sender
+                except asyncio.CancelledError:
+                    pass
                 self._ws = None
 
     async def close(self) -> None:

@@ -85,4 +85,24 @@ Skills live in `skills/*/SKILL.md` and are always injectable. In talk:
 
 Dashboard also has **Model effort** knobs (face / subagent / dream) and a skills list.
 
-See [SETUP.md](SETUP.md) for hardware and dependency notes.
+## Safety model
+
+- The hub defaults to loopback and rejects untrusted Host, Origin, cross-site HTTP, and WebSocket traffic. Set `hub_allowed_hosts` explicitly for trusted LAN names.
+- Every shell command, external app action, computer input, destructive write, and skill installation requires explicit confirmation. Model-authored subprocesses do not inherit provider credentials.
+- File tools and the Pi sidecar are confined to the project root. A non-loopback Pi sidecar additionally requires a 32+ character `PI_SIDECAR_TOKEN`.
+- Secrets are stored atomically in owner-only `.env`; model config and `soul.md` use atomic replacement and recoverable backups.
+
+## Verification
+
+```bash
+source venv/bin/activate
+python -m compileall -q rau tests
+python -m unittest discover -s tests -p 'test_*.py' -v
+python tests/regress.py && python tests/agentic.py
+python tests/agentic_hardening.py && python tests/e2e.py
+
+(cd web && npm test && npm run build && npm run lint && npm audit)
+(cd pi-sidecar && npm test && npm audit)
+```
+
+Credentialed speech providers and physical microphone/speaker latency still require a real-device smoke test. See [SETUP.md](SETUP.md) for hardware and dependency notes.

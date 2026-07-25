@@ -20,8 +20,16 @@ _stop = threading.Event()
 
 def _in_window(now: datetime, start: str, end: str) -> bool:
     def parse(hhmm: str):
-        h, m = hhmm.split(":")
-        return int(h), int(m)
+        parts = str(hhmm or "").split(":")
+        if len(parts) != 2:
+            raise ValueError(f"invalid dream window time: {hhmm!r}")
+        try:
+            h, m = (int(part) for part in parts)
+        except ValueError as exc:
+            raise ValueError(f"invalid dream window time: {hhmm!r}") from exc
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError(f"dream window time out of range: {hhmm!r}")
+        return h, m
 
     sh, sm = parse(start)
     eh, em = parse(end)
@@ -93,19 +101,33 @@ def dream_loop() -> None:
     start = settings.get("dream_window_start") or "02:00"
     end = settings.get("dream_window_end") or "05:00"
     last_day = ""
+    failure_day = ""
+    failures = 0
+    next_retry = 0.0
     while not _stop.is_set():
-        now = datetime.now()
-        day = now.strftime("%Y-%m-%d")
-        if (
-            day != last_day
-            and _in_window(now, start, end)
-            and not should_defer()
-        ):
-            try:
+        day = ""
+        try:
+            now = datetime.now()
+            day = now.strftime("%Y-%m-%d")
+            if day != failure_day:
+                failure_day, failures, next_retry = day, 0, 0.0
+            if (
+                day != last_day
+                and failures < 3
+                and time.time() >= next_retry
+                and _in_window(now, start, end)
+                and not should_defer()
+            ):
                 run_dream(day)
                 last_day = day
-            except Exception as e:
-                BUS.emit("dream_error", error=str(e))
+                failures = 0
+        except Exception as e:
+            # Stay alive, but do not spend a paid provider call every minute
+            # for an entire dream window. Retry twice with widening backoff.
+            failures += 1
+            delay = 300 if failures == 1 else 1800
+            next_retry = time.time() + delay
+            BUS.emit("dream_error", day=day or None, attempt=failures, error=str(e))
         _stop.wait(60)
 
 

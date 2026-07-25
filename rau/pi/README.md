@@ -5,7 +5,7 @@ A bridge from Rau's Python hub to [pi](https://github.com/earendil-works/pi)'s
 
 Two pieces:
 
-- `pi-sidecar/` — a ~515-line Node service that owns one `AgentHarness` per run
+- `pi-sidecar/` — a Node service that owns one `AgentHarness` per run
   and exposes it over local HTTP + SSE.
 - `rau/pi/client.py` — a stdlib-only Python client shaped like
   `orchestrator._run_subagent`: goal in, progress callbacks, cancellable via a
@@ -23,6 +23,19 @@ node src/server.mjs              # PI_SIDECAR_HOST/PI_SIDECAR_PORT, default 127.
 
 Requires Node >= 22.19 (tested on v26.5.0).
 
+The allowed filesystem root defaults to the repository containing
+`pi-sidecar/`; override it with `PI_SIDECAR_ROOT`. A requested `cwd`, every
+file-tool path, and symlinked path component must remain under that root. Bash
+runs under macOS `sandbox-exec` with writes limited to the root and build/temp
+caches. If seatbelt is unavailable bash fails closed unless
+`PI_SIDECAR_ALLOW_UNSANDBOXED=1` is explicitly set.
+
+Loopback binding needs no token. Binding `PI_SIDECAR_HOST` to any non-loopback
+address requires a `PI_SIDECAR_TOKEN` of at least 32 characters; the Python
+client reads the same environment variable and sends it as a bearer token.
+POST bodies must be `application/json`, which also prevents simple browser
+cross-origin requests from starting tools against the local service.
+
 ```python
 from rau.pi import PiSidecar, RunSpec
 
@@ -32,6 +45,7 @@ result = pi.run(
     on_progress=print,
     on_confirm=lambda req: req.tool != "bash",
     cancel=job.cancel,              # the same threading.Event a Rau Job carries
+    # RunSpec also has run_timeout_ms (15 minutes by default).
 )
 result.state    # done | failed | cancelled
 result.result
@@ -55,6 +69,9 @@ sidecar never touches keys.
 
 States are exactly Rau's: `running`, `awaiting_confirm`, `done`, `failed`,
 `cancelled`, with the same rule that a terminal state is immutable.
+Run creation is bounded by request-size, history, active-run, turn, confirm,
+and wall-clock limits. SSE events carry sequence ids and support
+`Last-Event-ID`/`?after=` replay without duplicating already-consumed deltas.
 
 ## Verified end to end
 
@@ -190,20 +207,18 @@ session, Rau owns the prompt, Rau owns when to compact.
 The clean line is: **pi owns a job's transcript, never Rau's conversation.**
 That is also the split the hybrid plan already assumes.
 
-### Skills: name and path cross, body does not
+### Skills: name, path, and body cross
 
 pi's `Skill` is `{name, description, content, filePath}`, but
 `formatSkillsForSystemPrompt` only emits name, description and **location** —
 the model is expected to `read` the file itself. Rau's
 `rau.skills.loader.Skill.prompt_block()` inlines the whole body instead.
 
-`pi_skill()` maps the fields, but the mapping is lossy in practice: `content` is
-carried and then ignored by the prompt builder, so a pi run only really gets a
-skill if `filePath` is readable from the run's `cwd` and the `read` tool is
-enabled. Skills Rau synthesises in memory, or skills whose body matters more
-than their file, do not survive the crossing. Rau's `always: true` skills have
-no pi equivalent at all — pi has no notion of an always-on skill, only
-`disableModelInvocation` to hide one.
+`pi_skill()` maps all four fields. The bridge keeps pi's normal name/location
+listing and also injects supplied `content` into the per-turn system prompt,
+under an aggregate size limit. This preserves synthesized Rau skills and skills
+used by runs without the `read` tool. A supplied `filePath` is still validated
+to be a real file under `PI_SIDECAR_ROOT`.
 
 ### Tools do not cross at all
 
@@ -224,10 +239,9 @@ sidecar reports that text as `result`. It is strictly less structured than
 - **Session storage is in-memory here.** `JsonlSessionRepo` exists and would give
   durable, resumable runs across a sidecar restart; the spike does not use it,
   so a sidecar restart loses every run.
-- **One process, no isolation.** Every run shares the sidecar's process, cwd
-  permissions and `NodeExecutionEnv`. pi ships sandbox examples in
-  `packages/coding-agent/examples/extensions/sandbox`; none of that is wired up.
-  A pi run currently has the same filesystem reach as the sidecar itself.
+- **One process.** Runs still share one sidecar process. File tools are rooted
+  and bash writes are seatbelt-confined, but reads and network remain open by
+  design; this is not per-run container isolation.
 - **97 npm packages** land in `pi-sidecar/node_modules` for a project that
   otherwise ships Python and a Vite frontend. `@earendil-works/pi-ai` pulls in
   `@google/genai` and `protobufjs` transitively. That is the real cost of the
@@ -245,7 +259,8 @@ The seams that must be closed first, in order:
    requiring a hand-started `node`.
 3. Decide the termination contract — either register a pi-side `finish` tool that
    mirrors Rau's, or accept unstructured final text.
-4. Sandbox the run.
+4. Decide whether seatbelt write confinement is sufficient or whether jobs
+   need per-run container isolation.
 
-Steps 1–3 are small. Step 4 is not, and it is the one that decides whether a pi
-run can be trusted with a goal nobody is watching.
+Steps 1–3 are small. Step 4 is not, and it decides how much a run may read or
+reach over the network when nobody is watching.

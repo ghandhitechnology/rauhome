@@ -337,6 +337,23 @@
   color: var(--muted);
 }
 
+.state-dot.offline {
+  background: var(--danger);
+  box-shadow: 0 0 10px var(--danger-a35);
+  animation: breathe 1.8s var(--ease-in-out) infinite;
+}
+
+.compose-error {
+  margin: 0 0 0.5rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: var(--r-md);
+  border: 1px solid var(--danger-a35);
+  background: var(--danger-a12);
+  color: var(--danger);
+  font-size: 0.8rem;
+  animation: fade-in var(--dur-3) var(--ease) both;
+}
+
 .compose-hint {
   margin: 0.55rem 0 0;
   text-align: center;

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from rau.agent.sandbox import PathEscape, resolve_in_root
+from rau.paths import SKILLS_DIR
 
 DANGEROUS_SHELL = re.compile(
     r"\b(rm\s+-rf|sudo\s+|mkfs|dd\s+if=|shutdown|reboot|diskutil\s+erase|"
@@ -21,8 +22,6 @@ DANGEROUS_MCP = re.compile(
 )
 
 DANGEROUS_CUA = {"type", "key", "click", "double_click", "drag"}
-
-
 def _target_path(given: str) -> Path:
     """
     The path the file tools will actually act on.
@@ -42,23 +41,32 @@ def _target_path(given: str) -> Path:
 def classify_tool(name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
     """Return (needs_confirm, summary)."""
     n = (name or "").lower()
-    args = arguments or {}
+    args = arguments if isinstance(arguments, dict) else {}
+    if "_raw" in args:
+        return False, ""
 
     if n in ("run_shell", "shell"):
-        cmd = str(args.get("command") or args.get("cmd") or "")
-        if DANGEROUS_SHELL.search(cmd):
-            return True, f"Dangerous shell: {cmd[:180]}"
-        if re.search(r"\b(rm|mv|chmod|chown|kill|launchctl)\b", cmd, re.I):
-            return True, f"System-altering shell: {cmd[:180]}"
-        return False, ""
+        cmd = str(args.get("command") or args.get("cmd") or "").strip()
+        if not cmd:
+            return False, ""
+        # Shell is an escape hatch with host reads, subprocesses and network;
+        # blocklists are trivially bypassed via an interpreter or generated
+        # script. Every non-empty command therefore requires an explicit yes.
+        preview = cmd if len(cmd) <= 500 else f"{cmd[:240]} … {cmd[-240:]}"
+        label = "Dangerous shell" if DANGEROUS_SHELL.search(cmd) else "Run shell command"
+        return True, f"{label}: {preview}"
 
     if n in ("write_file", "edit_file", "delete_file"):
         path = str(args.get("path") or "")
         target = _target_path(path)
         # Both forms are checked: the model writes the raw one, the tool acts on
         # the resolved one, and a pattern can hide in either.
-        if any(x in f"{path}\n{target}" for x in ("/System", "/usr/", ".ssh", ".env")):
+        target_text = f"{path}\n{target}".lower()
+        if any(x in target_text for x in ("/system", "/usr/", ".ssh", ".env")):
             return True, f"Sensitive file write/delete: {path}"
+        skills_root = SKILLS_DIR.resolve()
+        if target == skills_root or skills_root in target.parents:
+            return True, f"Install or modify executable agent instructions: {path}"
         if n == "delete_file":
             return True, f"Delete file: {path}"
         # A whole-file rewrite of something that already exists is the one write
@@ -68,16 +76,16 @@ def classify_tool(name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
         return False, ""
 
     if n.startswith("composio") or n.startswith("mcp_") or "execute" in n:
+        if n.endswith("search") or n.endswith("list") or n.endswith("status"):
+            return False, ""
         blob = f"{name} {args}"
         if DANGEROUS_MCP.search(blob):
             return True, f"External side-effect via MCP: {name}"
-        # Default confirm for Composio multi-execute writes
-        if "MULTI_EXECUTE" in name.upper() or args.get("danger"):
-            return True, f"Composio/MCP action: {name}"
-        return False, ""
+        # Unknown execute calls are side effects until proven otherwise.
+        return True, f"Run external app action via {name}: {str(args)[:500]}"
 
     if n in ("cua_action", "computer_action"):
-        action = str(args.get("action") or args.get("type") or "")
+        action = str(args.get("action") or args.get("type") or "").lower()
         if action in DANGEROUS_CUA:
             return True, f"Computer use action: {action}"
         return False, ""

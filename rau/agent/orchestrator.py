@@ -27,6 +27,8 @@ DEFAULT_CONTEXT_BUDGET = 100_000
 MAX_JOB_DEPTH = 2
 #: How often a parent blocked on its children re-checks its own cancel flag.
 CHILD_POLL_SEC = 0.2
+MAX_CHILD_GOALS = 8
+MAX_GOAL_CHARS = 100_000
 
 
 @dataclass
@@ -59,17 +61,41 @@ _jobs: Dict[str, Job] = {}
 
 
 def max_parallel_jobs() -> int:
-    return max(
-        1,
-        int(load_settings().get("max_parallel_jobs") or DEFAULT_MAX_PARALLEL_JOBS),
-    )
+    try:
+        configured = int(
+            load_settings().get("max_parallel_jobs") or DEFAULT_MAX_PARALLEL_JOBS
+        )
+    except (TypeError, ValueError):
+        configured = DEFAULT_MAX_PARALLEL_JOBS
+    return min(16, max(1, configured))
+
+
+def _validated_goal(goal: Any) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    if not isinstance(goal, str):
+        return None, {
+            "ok": False,
+            "reason": "invalid_goal",
+            "error": "goal must be a string",
+        }
+    goal = goal.strip()
+    if not goal:
+        return None, {"ok": False, "reason": "empty_goal", "error": "empty goal"}
+    if len(goal) > MAX_GOAL_CHARS:
+        return None, {
+            "ok": False,
+            "reason": "goal_too_large",
+            "error": f"goal exceeds {MAX_GOAL_CHARS} characters",
+        }
+    return goal, None
 
 
 def start_job(goal: str, parent_id: Optional[str] = None) -> Dict[str, Any]:
     """Begin a background goal, optionally beneath one already running."""
-    goal = (goal or "").strip()
-    if not goal:
-        return {"ok": False, "reason": "empty_goal", "error": "empty goal"}
+    validated_goal, error = _validated_goal(goal)
+    if error is not None:
+        return error
+    assert validated_goal is not None
+    goal = validated_goal
     with _lock:
         _reap()
         depth = 1
@@ -103,7 +129,10 @@ def start_job(goal: str, parent_id: Optional[str] = None) -> Dict[str, Any]:
         # The registry is flat, so this counts the whole tree rather than one
         # level of it: a child is a real provider call and costs what any other
         # job costs. Cap 3 means a parent plus two children, not three each.
-        running = [j for j in _jobs.values() if _is_active(j)]
+        # A cancelled job can still be unwinding a provider request. It no
+        # longer appears active to the UI, but it continues to consume a worker
+        # and possibly provider capacity until its thread actually exits.
+        running = [j for j in _jobs.values() if _occupies_slot(j)]
         cap = max_parallel_jobs()
         if len(running) >= cap:
             return {
@@ -119,17 +148,19 @@ def start_job(goal: str, parent_id: Optional[str] = None) -> Dict[str, Any]:
         # The tree edges ride along in the snapshot every reader already polls,
         # so a UI can nest the rows without a second endpoint to correlate.
         state.update_job(job.id, parent_id=parent_id, depth=depth)
+        worker = threading.Thread(
+            target=_job_thread,
+            args=(job,),
+            daemon=True,
+            name=f"rau-job-{job.id[:8]}",
+        )
+        job.thread = worker
 
     # The worker emits progress and confirm requests of its own, so it may not
     # start until this job's opening events are on the bus.
     _emit_hard_task(job, state="running")
     BUS.emit("job_started", id=job.id, goal=goal, parent_id=parent_id, depth=depth)
-    threading.Thread(
-        target=_job_thread,
-        args=(job,),
-        daemon=True,
-        name=f"rau-job-{job.id[:8]}",
-    ).start()
+    worker.start()
     return {
         "ok": True,
         "id": job.id,
@@ -151,10 +182,30 @@ def spawn_children(parent_id: str, goals: Iterable[str]) -> Dict[str, Any]:
     if parent is None:
         return {"ok": False, "error": "unknown parent job", "parent_id": parent_id}
 
+    if isinstance(goals, (str, bytes)):
+        return {"ok": False, "error": "goals must be an array of strings"}
+    requested = list(goals)
+    if not requested:
+        return {"ok": False, "error": "at least one sub-goal is required"}
+    if len(requested) > MAX_CHILD_GOALS:
+        return {
+            "ok": False,
+            "error": f"at most {MAX_CHILD_GOALS} sub-goals may be spawned at once",
+        }
+
     children: List[Job] = []
     refused: List[Dict[str, Any]] = []
-    for goal in goals:
-        started = start_job(str(goal), parent_id=parent_id)
+    for goal in requested:
+        if not isinstance(goal, str):
+            refused.append(
+                {
+                    "goal": repr(goal)[:200],
+                    "reason": "invalid_goal",
+                    "error": "sub-goal must be a string",
+                }
+            )
+            continue
+        started = start_job(goal, parent_id=parent_id)
         if not started.get("ok"):
             refused.append(
                 {
@@ -252,8 +303,11 @@ def redirect_hard_task(goal: str) -> Dict[str, Any]:
     The replacement is vetted first: a redirect the face botched into an empty
     goal would otherwise throw away every running job and start nothing.
     """
-    if not (goal or "").strip():
-        return {"ok": False, "reason": "empty_goal", "error": "empty goal"}
+    validated_goal, error = _validated_goal(goal)
+    if error is not None:
+        return error
+    assert validated_goal is not None
+    goal = validated_goal
     cancelled = cancel_all()
     started = start_job(goal)
     if not started.get("ok"):
@@ -268,12 +322,21 @@ def redirect_hard_task(goal: str) -> Dict[str, Any]:
 
 def _is_active(job: Job) -> bool:
     snap = state.get_job(job.id)
-    return bool(snap) and snap.get("state") in state.ACTIVE_JOB_STATES
+    return snap is not None and snap.get("state") in state.ACTIVE_JOB_STATES
+
+
+def _occupies_slot(job: Job) -> bool:
+    """Whether a job still owns execution capacity, including cancel unwind."""
+    if _is_active(job):
+        return True
+    return bool(job.thread and job.thread.is_alive())
 
 
 def _reap() -> None:
     """Forget jobs the state store has already aged out."""
-    for job_id in [j for j in _jobs if state.get_job(j) is None]:
+    for job_id in [
+        j for j, job in _jobs.items() if state.get_job(j) is None and not _occupies_slot(job)
+    ]:
         _jobs.pop(job_id, None)
 
 
@@ -380,15 +443,47 @@ def _job_thread(job: Job) -> None:
         _emit_hard_task(job, state="failed", result=msg)
         BUS.emit("job_failed", id=job.id, goal=job.goal, error=msg)
     finally:
+        snapshot = state.get_job(job.id) or {}
+        if snapshot.get("state") in state.ACTIVE_JOB_STATES:
+            if job.cancel.is_set():
+                state.set_confirm(job.id, None)
+                state.update_job(
+                    job.id, state="cancelled", progress="cancelled", result=""
+                )
+                _emit_hard_task(job, state="cancelled")
+                BUS.emit(
+                    "job_done",
+                    id=job.id,
+                    goal=job.goal,
+                    state="cancelled",
+                    result="",
+                )
+            else:
+                msg = "Hard task failed: worker exited without a terminal result"
+                state.set_confirm(job.id, None)
+                state.update_job(
+                    job.id, state="failed", progress="error", result=msg
+                )
+                _emit_hard_task(job, state="failed", result=msg)
+                BUS.emit("job_failed", id=job.id, goal=job.goal, error=msg)
         # However this ended, a parent waiting on this job has its answer.
         job.finished.set()
 
 
 def _run_subagent(job: Job) -> None:
     settings = load_settings()
-    timeout = float(settings.get("confirm_timeout_sec") or 45)
-    progress_every = float(settings.get("hard_task_progress_interval_sec") or 25)
-    budget = int(settings.get("subagent_context_budget") or DEFAULT_CONTEXT_BUDGET)
+    timeout = _bounded_number(settings.get("confirm_timeout_sec"), 45.0, 0.1, 600.0)
+    progress_every = _bounded_number(
+        settings.get("hard_task_progress_interval_sec"), 25.0, 0.1, 3600.0
+    )
+    budget = int(
+        _bounded_number(
+            settings.get("subagent_context_budget"),
+            float(DEFAULT_CONTEXT_BUDGET),
+            1000.0,
+            2_000_000.0,
+        )
+    )
     last_progress = time.time()
     goal = job.goal
 
@@ -410,6 +505,7 @@ def _run_subagent(job: Job) -> None:
 
         final_summary = ""
         summarize = provider_summarizer("dream")
+        exhausted = True
         for step in range(24):
             # Cancellation already wrote the cancelled state and its events.
             if job.cancel.is_set():
@@ -448,12 +544,20 @@ def _run_subagent(job: Job) -> None:
                 # no tools — treat content as summary if present
                 if result.content:
                     final_summary = result.content
+                else:
+                    raise RuntimeError("provider returned an empty response")
+                exhausted = False
                 break
 
             for tc in result.tool_calls:
                 if job.cancel.is_set():
                     return
-                needs, summary = classify_tool(tc.name, tc.arguments)
+                arguments = (
+                    tc.arguments
+                    if isinstance(tc.arguments, dict)
+                    else {"_raw": tc.arguments}
+                )
+                needs, summary = classify_tool(tc.name, arguments)
                 # A worker is never told its own job id, so the link that binds
                 # anything it spawns to itself — and to the cancel that reaches
                 # both — travels beside the call rather than through the model.
@@ -468,13 +572,30 @@ def _run_subagent(job: Job) -> None:
                         state.update_job(
                             job.id, state="running", progress=f"running {tc.name}"
                         )
-                        tool_result = run_tool(tc.name, tc.arguments, job_id=job.id)
+                        tool_result = run_tool(
+                            tc.name,
+                            arguments,
+                            job_id=job.id,
+                            cancel=job.cancel,
+                        )
                 else:
-                    tool_result = run_tool(tc.name, tc.arguments, job_id=job.id)
+                    tool_result = run_tool(
+                        tc.name,
+                        arguments,
+                        job_id=job.id,
+                        cancel=job.cancel,
+                    )
+
+                if job.cancel.is_set():
+                    return
 
                 append_trace(
                     "tool",
-                    {"name": tc.name, "args": tc.arguments, "result_ok": tool_result.get("ok")},
+                    {
+                        "name": tc.name,
+                        "args": _trace_arguments(arguments),
+                        "result_ok": tool_result.get("ok"),
+                    },
                 )
                 _emit_progress(job, f"Inner work: {tc.name}")
 
@@ -489,6 +610,9 @@ def _run_subagent(job: Job) -> None:
 
                 if tool_result.get("finished"):
                     final_summary = str(tool_result.get("summary") or "")
+                    if not final_summary.strip():
+                        raise RuntimeError("finish requires a non-empty summary")
+                    exhausted = False
                     break
             else:
                 continue
@@ -497,8 +621,10 @@ def _run_subagent(job: Job) -> None:
         if job.cancel.is_set():
             return
 
+        if exhausted:
+            raise RuntimeError("subagent step budget of 24 exhausted")
         if not final_summary:
-            final_summary = "I finished the deep work, but the summary was thin."
+            raise RuntimeError("subagent finished without a summary")
 
         append_diary("task", final_summary, meta={"goal": goal, "id": job.id})
         state.update_job(job.id, state="done", progress="done", result=final_summary)
@@ -526,3 +652,46 @@ def _run_subagent(job: Job) -> None:
         BUS.emit("job_failed", id=job.id, goal=goal, error=msg)
         if job.parent_id is None:
             state.push_control({"action": "weave_result", "goal": goal, "result": msg})
+
+
+def _bounded_number(
+    value: Any,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        parsed = float(value if value is not None else default)
+    except (TypeError, ValueError):
+        parsed = default
+    if not minimum <= parsed <= maximum:
+        return default
+    return parsed
+
+
+def _trace_arguments(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep tool traces useful without persisting model-supplied payloads."""
+    sensitive = {
+        "content",
+        "text",
+        "old_string",
+        "new_string",
+        "tools",
+        "command",
+        "cmd",
+        "password",
+        "token",
+        "api_key",
+    }
+    traced: Dict[str, Any] = {}
+    for key, value in arguments.items():
+        if key.lower() in sensitive:
+            size = len(value) if hasattr(value, "__len__") else None
+            traced[key] = f"<redacted{f':{size}' if size is not None else ''}>"
+        elif isinstance(value, str):
+            traced[key] = value[:300]
+        elif isinstance(value, (int, float, bool)) or value is None:
+            traced[key] = value
+        else:
+            traced[key] = f"<{type(value).__name__}>"
+    return traced

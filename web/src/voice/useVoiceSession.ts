@@ -43,6 +43,10 @@ const LEVEL_EPSILON = 0.004
 /** Long enough for a permission prompt, short enough to not feel hung. */
 const AUDIO_START_TIMEOUT_MS = 12000
 
+/** Reconnect backoff: 0.5s, 1s, 2s, 4s, then every 8s. */
+const RECONNECT_BASE_MS = 500
+const RECONNECT_MAX_MS = 8000
+
 type ServerMessage = {
   t: string
   phase?: VoicePhase
@@ -107,6 +111,8 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
     const held: ArrayBuffer[] = []
     let ws: WebSocket | null = null
     let disposed = false
+    let retries = 0
+    let retryTimer: number | null = null
 
     const send = (payload: Record<string, unknown>) => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload))
@@ -193,7 +199,11 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
       }
       if (disposed) return
       window.clearTimeout(watchdog)
+      connect()
+    }
 
+    const connect = () => {
+      if (disposed) return
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
       const socket = new WebSocket(`${proto}://${window.location.host}/ws/voice`)
       socket.binaryType = 'arraybuffer'
@@ -201,14 +211,33 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
       wsRef.current = socket
 
       socket.onopen = () => {
+        retries = 0
         setConnected(true)
         setError('')
       }
-      socket.onerror = () => setError('voice connection failed')
+      socket.onerror = () => {
+        if (!disposed) setError('voice connection failed')
+      }
       socket.onclose = () => {
+        if (ws !== socket) return
+        ws = null
+        wsRef.current = null
         setConnected(false)
+        // Everything below describes the connection that just died; carrying
+        // it into the next one would mute its audio or drop its first words.
         streamingRef.current = false
+        bargingRef.current = false
+        mutedRef.current = false
+        held.length = 0
+        vad.reset()
+        playback.reset()
+        setPartial('')
         applyPhase('idle')
+        if (disposed) return
+        // The hub restarting is routine; the session should outlive it.
+        const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** retries)
+        retries += 1
+        retryTimer = window.setTimeout(connect, delay)
       }
       socket.onmessage = (ev: MessageEvent) => {
         if (typeof ev.data !== 'string') {
@@ -217,7 +246,12 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
           if (!mutedRef.current) playback.push(ev.data as ArrayBuffer)
           return
         }
-        const msg = JSON.parse(ev.data) as ServerMessage
+        let msg: ServerMessage
+        try {
+          msg = JSON.parse(ev.data) as ServerMessage
+        } catch {
+          return // one malformed frame must not take the handler down
+        }
         switch (msg.t) {
           case 'phase': {
             const next = msg.phase ?? 'idle'
@@ -271,6 +305,7 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
     return () => {
       disposed = true
       window.clearTimeout(watchdog)
+      if (retryTimer != null) window.clearTimeout(retryTimer)
       capture.onFrame(null)
       playback.onLevel(null)
 
@@ -331,17 +366,20 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
   const stop = useCallback(() => {
     const socket = wsRef.current
     const playback = playbackRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    // Silence him locally regardless of the socket — audio already queued in
+    // the worklet keeps playing even while the connection is down.
     if (phaseRef.current === 'speaking' && playback) {
       mutedRef.current = true
       void playback.flush().then((playedMs) => {
-        if (socket.readyState === WebSocket.OPEN) {
+        if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ t: 'barge', playedMs }))
         }
       })
       return
     }
-    socket.send(JSON.stringify({ t: 'stop' }))
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ t: 'stop' }))
+    }
     streamingRef.current = false
     vadRef.current?.reset()
     applyPhase('idle')

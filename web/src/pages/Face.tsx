@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from '../router'
 import ClawdRoom, { type ClawdRoomApi } from '../components/ClawdRoom'
 import { EMPTY_SIGNALS, type Signals } from '../clawd/director'
 import type { MotionName } from '../clawd/motions'
@@ -173,7 +173,8 @@ export default function Face() {
       await api.chat(text)
       await refresh()
     } catch {
-      /* surfaced by the hub elsewhere */
+      // Hub unreachable — hand the message back rather than dropping it.
+      setDraft((d) => d || text)
     } finally {
       sendingRef.current = false
       setSending(false)
@@ -233,7 +234,7 @@ export default function Face() {
               }}
             />
           </div>
-          <div className="voice-read">
+          <div className="voice-read" role="status" aria-live="polite">
             <span className={`voice-phase ${voice.phase}`}>
               {!voice.connected
                 ? 'connecting…'
@@ -324,8 +325,14 @@ export default function Face() {
               if (e.key === 'Enter') send()
             }}
             placeholder="Say something to Rau…"
+            aria-label="Message Rau"
           />
-          <button className="face-send" disabled={!draft.trim() || sending} onClick={send}>
+          <button
+            className="face-send"
+            disabled={!draft.trim() || sending}
+            onClick={send}
+            aria-label="Send"
+          >
             {sending ? <i className="spinner" /> : '→'}
           </button>
         </div>
