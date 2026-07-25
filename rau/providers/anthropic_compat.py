@@ -1,0 +1,417 @@
+"""Anthropic-compatible HTTP chat (used for Kimi Coding Plan)."""
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from typing import Any, Dict, Generator, List, Optional
+
+from rau.env import get_secret
+from rau.providers.base import (
+    ChatProvider,
+    ChatResult,
+    Message,
+    StreamDone,
+    TextDelta,
+    ToolCall,
+    ToolCallDelta,
+    assemble_tool_calls,
+    orphan_tool_prose,
+    pair_tool_calls,
+)
+
+
+def _push(out: List[Dict[str, Any]], role: str, blocks: List[Dict[str, Any]]) -> None:
+    """
+    Add blocks as `role`, merging into the previous turn when roles repeat.
+
+    Merging is done on block lists rather than joined strings: collapsing two
+    turns into text would destroy the tool_use/tool_result pairing that has to
+    reach the model intact.
+    """
+    if not blocks:
+        return
+    if out and out[-1]["role"] == role:
+        out[-1]["content"].extend(blocks)
+        return
+    out.append({"role": role, "content": list(blocks)})
+
+
+def _to_anthropic_messages(messages: List[Message]) -> tuple[str, List[Dict[str, Any]]]:
+    """
+    Split off the system prompt and encode the rest as Anthropic content blocks.
+
+    Anthropic answers a tool_use only if the very next user turn opens with its
+    tool_result, so pairs are resolved together and emitted adjacently; a
+    result with no call is demoted to text before it can break that contract.
+    """
+    msgs = list(messages)
+    system_parts: List[str] = []
+    out: List[Dict[str, Any]] = []
+
+    i = 0
+    while i < len(msgs):
+        m = msgs[i]
+
+        if m.role == "system":
+            system_parts.append(m.content)
+            i += 1
+            continue
+
+        if m.role == "tool":
+            _push(out, "user", [{"type": "text", "text": orphan_tool_prose(m)}])
+            i += 1
+            continue
+
+        if m.role == "assistant" and m.tool_calls:
+            end = i + 1
+            while end < len(msgs) and msgs[end].role == "tool":
+                end += 1
+            paired, orphans = pair_tool_calls(m, msgs[i + 1 : end])
+
+            blocks: List[Dict[str, Any]] = []
+            if m.content:
+                blocks.append({"type": "text", "text": m.content})
+            blocks += [
+                {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
+                for tc, _ in paired
+            ]
+            _push(out, "assistant", blocks)
+
+            answers: List[Dict[str, Any]] = [
+                {"type": "tool_result", "tool_use_id": tc.id, "content": res.content}
+                for tc, res in paired
+            ]
+            answers += [
+                {"type": "text", "text": orphan_tool_prose(o)} for o in orphans
+            ]
+            _push(out, "user", answers)
+            i = end
+            continue
+
+        role = "assistant" if m.role == "assistant" else "user"
+        if m.content:
+            _push(out, role, [{"type": "text", "text": m.content}])
+        i += 1
+
+    # Anthropic requires alternating starting with user
+    if out and out[0]["role"] != "user":
+        out.insert(0, {"role": "user", "content": [{"type": "text", "text": "(continue)"}]})
+    return "\n\n".join(system_parts).strip(), out
+
+
+def _openai_tools_to_anthropic(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for t in tools or []:
+        fn = (t.get("function") or t) if t.get("type") == "function" else t
+        name = fn.get("name") or ""
+        if not name:
+            continue
+        out.append(
+            {
+                "name": name,
+                "description": fn.get("description") or "",
+                "input_schema": fn.get("parameters")
+                or fn.get("input_schema")
+                or {"type": "object", "properties": {}},
+            }
+        )
+    return out
+
+
+def _parse_anthropic_result(body: Dict[str, Any]) -> ChatResult:
+    text_parts: List[str] = []
+    tool_calls: List[ToolCall] = []
+    for block in body.get("content") or []:
+        btype = block.get("type")
+        if btype == "text":
+            text_parts.append(block.get("text") or "")
+        elif btype == "tool_use":
+            tool_calls.append(
+                ToolCall(
+                    id=block.get("id") or f"tool_{len(tool_calls)}",
+                    name=block.get("name") or "",
+                    arguments=block.get("input") or {},
+                )
+            )
+    return ChatResult(
+        content="".join(text_parts).strip(),
+        tool_calls=tool_calls,
+        raw=body,
+    )
+
+
+class AnthropicCompatProvider(ChatProvider):
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        api_key_env: str,
+        default_headers: Optional[Dict[str, str]] = None,
+    ):
+        self.name = name
+        self.base_url = base_url.rstrip("/")
+        self.api_key_env = api_key_env
+        self.default_headers = default_headers or {}
+
+    def _key(self) -> str:
+        return get_secret(self.api_key_env)
+
+    def available(self) -> bool:
+        return bool(self._key())
+
+    def _headers(self, key: str, streaming: bool = False) -> Dict[str, str]:
+        headers = {
+            "x-api-key": key,
+            "Authorization": f"Bearer {key}",
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            **self.default_headers,
+        }
+        if streaming:
+            headers["Accept"] = "text/event-stream"
+        return headers
+
+    def chat(
+        self,
+        messages: List[Message],
+        *,
+        model: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        effort: Optional[str] = None,
+    ) -> ChatResult:
+        key = self._key()
+        if not key:
+            raise RuntimeError(f"{self.api_key_env} not set for provider {self.name}")
+
+        system, anth_messages = _to_anthropic_messages(messages)
+        payload: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": anth_messages,
+        }
+        if system:
+            payload["system"] = system
+        # Kimi Coding Plan / Anthropic thinking effort: low|high|max (map medium→high)
+        if effort:
+            mapped = {"low": "low", "medium": "high", "high": "high", "max": "max"}.get(
+                effort.lower(), "high"
+            )
+            payload["reasoning_effort"] = mapped
+        anth_tools = _openai_tools_to_anthropic(tools)
+        if anth_tools:
+            payload["tools"] = anth_tools
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/v1/messages",
+            data=data,
+            headers=self._headers(key),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+
+        return _parse_anthropic_result(body)
+
+    def chat_stream(
+        self,
+        messages: List[Message],
+        *,
+        model: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        effort: Optional[str] = None,
+    ) -> Generator[str, None, str]:
+        key = self._key()
+        if not key:
+            raise RuntimeError(f"{self.api_key_env} not set for provider {self.name}")
+
+        system, anth_messages = _to_anthropic_messages(messages)
+        payload: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": anth_messages,
+            "stream": True,
+        }
+        if system:
+            payload["system"] = system
+        if effort:
+            mapped = {"low": "low", "medium": "high", "high": "high", "max": "max"}.get(
+                effort.lower(), "high"
+            )
+            payload["reasoning_effort"] = mapped
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/v1/messages",
+            data=data,
+            headers=self._headers(key, streaming=True),
+            method="POST",
+        )
+        accum: List[str] = []
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", errors="ignore").rstrip("\n")
+                    if not line.startswith("data:"):
+                        continue
+                    payload_str = line[len("data:") :].strip()
+                    if not payload_str or payload_str == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(payload_str)
+                    except json.JSONDecodeError:
+                        continue
+                    etype = event.get("type")
+                    if etype == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        token = delta.get("text") or ""
+                        if token:
+                            accum.append(token)
+                            yield token
+                    elif etype == "message_delta":
+                        pass
+        except urllib.error.HTTPError as e:
+            # Fall back to non-stream if streaming unsupported
+            err = e.read().decode("utf-8", errors="replace")
+            if e.code in (400, 404, 415, 501):
+                result = self.chat(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    effort=effort,
+                )
+                if result.content:
+                    yield result.content
+                return result.content
+            raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+
+        return "".join(accum)
+
+    def stream_turn(
+        self,
+        messages: List[Message],
+        *,
+        model: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        effort: Optional[str] = None,
+    ) -> Generator[Any, None, None]:
+        """Stream prose and tool_use blocks together."""
+        key = self._key()
+        if not key:
+            raise RuntimeError(f"{self.api_key_env} not set for provider {self.name}")
+
+        system, anth_messages = _to_anthropic_messages(messages)
+        payload: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": anth_messages,
+            "stream": True,
+        }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = _openai_tools_to_anthropic(tools)
+        if effort:
+            payload["reasoning_effort"] = {
+                "low": "low",
+                "medium": "high",
+                "high": "high",
+                "max": "max",
+            }.get(effort.lower(), "high")
+
+        req = urllib.request.Request(
+            f"{self.base_url}/v1/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=self._headers(key, streaming=True),
+            method="POST",
+        )
+
+        text: List[str] = []
+        parts: Dict[int, Dict[str, str]] = {}
+
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", errors="ignore").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    blob = line[len("data:") :].strip()
+                    if not blob or blob == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(blob)
+                    except json.JSONDecodeError:
+                        continue
+
+                    etype = event.get("type")
+                    idx = int(event.get("index") or 0)
+
+                    if etype == "content_block_start":
+                        block = event.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            # Anthropic announces name/id up front, then streams
+                            # the arguments as partial JSON fragments.
+                            parts[idx] = {
+                                "id": block.get("id") or "",
+                                "name": block.get("name") or "",
+                                "args": "",
+                            }
+                            yield ToolCallDelta(
+                                index=idx,
+                                id=block.get("id") or "",
+                                name=block.get("name") or "",
+                            )
+                    elif etype == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            token = delta.get("text") or ""
+                            if token:
+                                text.append(token)
+                                yield TextDelta(token)
+                        elif dtype == "input_json_delta":
+                            frag = delta.get("partial_json") or ""
+                            if frag:
+                                slot = parts.setdefault(
+                                    idx, {"id": "", "name": "", "args": ""}
+                                )
+                                slot["args"] += frag
+                                yield ToolCallDelta(index=idx, args_fragment=frag)
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", errors="replace")
+            if e.code in (400, 404, 415, 501):
+                # Streaming unsupported — fall back to one blocking call.
+                result = self.chat(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tools=tools,
+                    effort=effort,
+                )
+                if result.content:
+                    yield TextDelta(result.content)
+                yield StreamDone(result)
+                return
+            raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+
+        yield StreamDone(
+            ChatResult(
+                content="".join(text).strip(),
+                tool_calls=assemble_tool_calls(parts),
+            )
+        )

@@ -1,0 +1,254 @@
+.dash h2 {
+  font-size: 1.7rem;
+  margin: 0;
+}
+
+.dash h3 {
+  font-size: 1.2rem;
+  margin: 0 0 0.5rem;
+}
+
+.dash-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.dash-sub {
+  margin: 0 0 1.1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.line {
+  min-height: 1.5em;
+  margin: 0.9rem 0 1.1rem;
+  color: var(--ink-2);
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+
+/* deep work */
+
+.hard-goal {
+  margin: 0 0 0.5rem;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.hard-progress {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding-left: 0.85rem;
+  border-left: 2px solid var(--accent-a25);
+  animation: fade-in var(--dur-3) var(--ease) both;
+}
+
+.hard-result {
+  margin-bottom: 1.1rem;
+  max-height: 220px;
+}
+
+.section-title {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+/* confirm */
+
+.confirm-box {
+  margin-top: 1.25rem;
+  padding: 1rem 1.1rem;
+  background: var(--accent-a12);
+  border: 1px solid var(--accent-a40);
+  border-radius: var(--r-md);
+  animation: pop-in var(--dur-3) var(--spring) both;
+}
+
+.confirm-box h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.15rem;
+}
+
+.confirm-box p {
+  margin: 0 0 0.85rem;
+  color: var(--ink-2);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+/* systems grid */
+
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+}
+
+@media (max-width: 480px) {
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.status-grid div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  font-size: 0.85rem;
+  transition:
+    border-color var(--dur-3) var(--ease),
+    background var(--dur-3) var(--ease);
+}
+
+.status-grid div:hover {
+  border-color: var(--line-2);
+}
+
+.status-grid div.on {
+  border-color: var(--accent-a25);
+  background: var(--accent-a12);
+}
+
+.status-grid span {
+  color: var(--muted);
+}
+
+.status-grid b {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.status-grid div.on b {
+  color: var(--accent);
+}
+
+.effort-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.55rem 0;
+}
+
+.effort-label {
+  width: 5.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.effort-seg {
+  display: flex;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(0,0,0,0.2);
+}
+
+.effort-btn {
+  flex: 1;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.45rem 0.2rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.effort-btn + .effort-btn {
+  border-left: 1px solid var(--line);
+}
+
+.effort-btn.active {
+  background: var(--accent-a12);
+  color: var(--accent);
+}
+
+.effort-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skills-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.5rem;
+}
+
+.skill-chip {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(0,0,0,0.2);
+  font-size: 0.8rem;
+}
+
+.skill-chip code {
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+
+.goal-box {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--accent-a25);
+  background: var(--accent-a12);
+}
+
+.btn.sm {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+/* Per-job rows — several goals can run at once. */
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.8rem;
+}
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--accent-a25);
+  background: var(--accent-a12);
+  font-size: 0.85rem;
+}
+
+.job-goal {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-state {
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}

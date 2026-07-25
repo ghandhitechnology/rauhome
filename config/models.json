@@ -1,0 +1,33 @@
+{
+  "face": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "max_tokens": 512,
+    "temperature": 0.9,
+    "effort": "high"
+  },
+  "subagent": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "max_tokens": 4096,
+    "temperature": 0.3,
+    "effort": "high"
+  },
+  "dream": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "max_tokens": 2048,
+    "temperature": 0.5,
+    "effort": "medium"
+  },
+  "tts": {
+    "provider": "elevenlabs",
+    "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+    "model": "eleven_flash_v2_5"
+  },
+  "stt": {
+    "provider": "local",
+    "model": "small",
+    "language": ""
+  }
+}

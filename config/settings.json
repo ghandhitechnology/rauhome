@@ -1,0 +1,11 @@
+{
+  "hub_host": "127.0.0.1",
+  "hub_port": 8765,
+  "dream_window_start": "02:00",
+  "dream_window_end": "05:00",
+  "confirm_timeout_sec": 45,
+  "presence_backoff_after_misses": 2,
+  "hard_task_progress_interval_sec": 25,
+  "trace_ttl_days": 7,
+  "face_history_turns": 24
+}

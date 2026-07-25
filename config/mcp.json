@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "composio": {
+      "enabled": true,
+      "type": "remote",
+      "url": "https://connect.composio.dev/mcp",
+      "api_key_env": "COMPOSIO_API_KEY"
+    }
+  }
+}

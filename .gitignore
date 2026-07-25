@@ -12,8 +12,10 @@ models/
 *.sqlite-*
 .env
 .env.*
+!.env.example
 secrets/
 memories/
+identity/soul*.bak.md
 backups/
-__pycache__/
-.env
+skills/
+node_modules/

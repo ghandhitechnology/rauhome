@@ -1,0 +1,29 @@
+.identity h2 {
+  font-size: 1.7rem;
+  margin: 0;
+}
+
+.identity .field textarea {
+  min-height: 6rem;
+}
+
+.soul-panel {
+  position: sticky;
+  top: 5.5rem;
+}
+
+@media (max-width: 900px) {
+  .soul-panel {
+    position: static;
+  }
+}
+
+.soul-view {
+  max-height: min(62vh, 640px);
+}
+
+.msg-line.bad {
+  border-color: var(--danger-a35);
+  background: var(--danger-a12);
+  color: var(--danger);
+}

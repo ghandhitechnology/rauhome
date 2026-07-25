@@ -1,97 +1,88 @@
-# Rau Home
+# Rau
 
-A voice-controlled companion robot that runs on a Mac mini (Apple M4, 16 GB) sitting in a
-home, with a microphone, speaker, and display plugged directly into it. You talk to it, it
-listens, thinks for a moment, and replies in a robot voice with beeps, whirs, and animated
-eyes on a local web page.
+A continuous local companion that lives on a Mac mini: one voice, durable memory,
+daily dreaming, pluggable model providers, Composio MCP, and on-demand computer use.
 
-The project started as a WALL-E build; the current persona is Rocky (an engineer-scientist
-character inspired by *Project Hail Mary*), defined in `prompts/system-prompt.md`.
+Rau is a single being — not a team of agents. Hard work runs as silent inner subagents
+while Rau keeps talking. Dangerous actions ask for confirm (voice or dashboard).
 
-This repository is the deployment source only. It deliberately excludes machine-local state:
-API keys, downloaded models, sound-effect files, timing history, and memories are all
-gitignored.
+## Layout
 
-## How it works
-
-The main entry point is `scripts/voice-pipeline-v2.py`, a threaded pipeline where each stage
-runs in its own thread and stages hand off through queues:
-
-```
-Mic (ffmpeg capture) → Silero VAD v5 → faster-whisper (STT)
-    → DeepSeek API (LLM, streaming) → emotion tag parse → SFX overlay
-    → ElevenLabs flash TTS → pedalboard robot FX → Speaker
-```
-
-- **Audio capture** — ffmpeg (`avfoundation`) reads the mic directly, which sidesteps the
-  macOS microphone-permission problems Python has.
-- **Voice activity detection** — Silero VAD v5, with an energy-based fallback if the
-  `silero-vad` package is missing.
-- **Speech-to-text** — faster-whisper, `small` model on CPU (int8). Handles Korean and
-  English; `small` was chosen over `tiny` because Korean accuracy matters.
-- **LLM** — DeepSeek (`deepseek-chat`) over the cloud API, streaming, with the character
-  system prompt. The reply ends with an emotion tag like `[HAPPY]` or `[CURIOUS]`.
-- **Emotion tags** — parsed out of the reply and mapped to a sound effect
-  (`assets/sfx/*.wav`) and an eye expression on the web UI.
-- **Text-to-speech** — ElevenLabs `eleven_flash_v2_5`, then a pedalboard FX chain (pitch
-  shift, bitcrush, distortion, reverb) to make it sound like a robot instead of a person.
-
-A note on "offline": the original goal was a fully local build, and earlier iterations in
-this repo (Ollama + kokoro-onnx) did exactly that. The current pipeline moved the LLM and
-TTS to cloud APIs for quality and latency, so it needs internet access and two API keys.
-Audio capture, VAD, STT, and all sound effects still run locally on the machine.
-
-## Repository layout
-
-- `launch.sh` — one-command launcher (see below)
-- `scripts/voice-pipeline-v2.py` — the current voice pipeline (this is what actually runs)
-- `scripts/eye-server.py` — local web server on `http://127.0.0.1:8765`
-- `scripts/llm.py` — DeepSeek backend, streaming and non-streaming
-- `scripts/elevenlabs_tts.py` — ElevenLabs TTS client
-- `scripts/engine.py`, `scripts/cache.py` — keyword-matched response cache for instant
-  replies to common inputs, bypassing the LLM
-- `scripts/profile.py` — per-stage latency profiling for the pipeline
-- `scripts/voice-pipeline.py`, `scripts/voice-chat.py`, `scripts/launch.py`,
-  `scripts/test-chat.py` — earlier iterations kept for reference (local Ollama + kokoro
-  stack); not the current path
-- `prompts/` — character system prompts
-- `dashboard/` — control dashboard served by the eye server (chat log, emotion state,
-  status, controls)
-- `ui/eyes.html` — the original standalone eye-animation page, used as a fallback if
-  `dashboard/` is absent
-- `research-notes.md`, `competitive-research.md` — dated background research from the
-  planning phase; useful context, but describe earlier stacks, not the current one
+- `rau/` — Python runtime (hub, face, providers, agent, MCP, CUA, memory, dream, heartbeat)
+- `web/` — Vite + React + TypeScript UI (setup, home, identity, settings)
+- `identity/` — `identity.md`, `backstory.md`, living `soul.md` (rotating `soul*.bak.md` backups are gitignored)
+- `memories/` — diary, traces, daily dream logs (gitignored)
+- `config/` — models, MCP, settings (non-secrets)
+- `legacy/` — previous WALL-E scripts kept for reference
 
 ## Quick start
 
-Full setup details are in [SETUP.md](SETUP.md). In short:
-
 ```bash
 python3 -m venv venv && source venv/bin/activate
-pip install numpy sounddevice faster-whisper silero-vad torch pedalboard elevenlabs
-brew install ffmpeg
+pip install -r requirements.txt
+cd web && npm install && npm run build && cd ..
 
-# .env in the repo root:
-#   DEEPSEEK_API_KEY=...
+# .env in repo root (examples):
+#   OPENROUTER_API_KEY=...
 #   ELEVENLABS_API_KEY=...
+#   COMPOSIO_API_KEY=...
+#   DEEPSEEK_API_KEY=...
+#   KIMI_API_KEY=...           # Moonshot platform (pay-as-you-go)
+#   KIMI_CODING_API_KEY=...    # Kimi Coding Plan membership (api.kimi.com/coding)
+#   OPENAI_API_KEY=...         # codex / openai provider
 
-bash launch.sh                 # full voice pipeline + eye server
-bash launch.sh --eyes-only     # just the web UI on :8765
-bash launch.sh --test          # canned prompts through the LLM
-bash launch.sh --text-only     # text chat, no audio
+bash launch.sh                 # hub + voice face
+bash launch.sh --hub           # UI + API only
+bash launch.sh --text          # hub without mic loop
 ```
 
-Two caveats worth knowing:
+Open `http://127.0.0.1:8765` — first visit forces Setup (Fresh or Hard startup).
 
-- `launch.sh` checks for a local Ollama install with `gemma3:4b` before starting any mode,
-  a leftover from the previous local-LLM stack. The voice pipeline itself does not use
-  Ollama; running `python3 scripts/voice-pipeline-v2.py` directly skips that check.
-- `--test` and `--text-only` route through the older Ollama-based scripts, so those two
-  modes genuinely need Ollama (with `gemma3:4b` / `qwen3:14b` pulled).
+## How it works
 
-## Status
+```
+Mic → VAD → Whisper STT → Face model (soul + memory + skills/tools)
+    ↘ start_hard_task → local subagent (MCP / CUA / shell) → weave result
+Eyes/dashboard ← hub (HTTP + WebSocket)
+Heartbeat (adaptive presence) + daily dream (soul rewrite + daily log)
+```
 
-Working prototype on a single machine. The v2 voice pipeline, eye server, and dashboard are
-the current state; vision (webcam input) is not implemented. Everything runs against real
-hardware (USB mic, speaker, a browser pointed at the eye server), so the repo contains no
-automated tests — `scripts/profile.py` and `bash launch.sh --test` are the sanity checks.
+## Two modes
+
+**Shift+Space** switches between them anywhere in the UI.
+
+- **Chat** — type and read.
+- **Voice** — live listening, interruptible. Audio runs in the browser tab so
+  the OS echo canceller can strip Rau's own output from the mic; that is what
+  lets you talk over him without him cutting himself off. Replies are
+  synthesised sentence by sentence, so he starts speaking before he has
+  finished thinking, and interrupting him trims his memory to only what you
+  actually heard.
+
+```
+Browser mic ─(PCM16 16k)─▶ /ws/voice ─▶ STT ─▶ face model (streaming + tools)
+                                                    │
+Browser speakers ◀─(PCM16 24k)─ sentence TTS ◀──────┘
+      ▲ local VAD detects you talking → flush + {barge} → cancel everything
+```
+
+Speech-to-text is a pluggable slot (Deepgram, ElevenLabs Scribe, OpenAI, or
+local whisper) — see **Settings → Hearing** and [SETUP.md](SETUP.md).
+
+### Always-available skills
+
+Skills live in `skills/*/SKILL.md` and are always injectable. In talk:
+
+| Slash | Purpose |
+|-------|---------|
+| `/grill-me` | One-question-at-a-time design interview |
+| `/plan` | Concrete ordered plan |
+| `/read` `/write` | Local file work |
+| `/goal` | Set / show / clear the active goal |
+| `/shell` `/search` `/remember` `/computer` `/summarize` | Essentials |
+| `/skills` | List them |
+| `/effort low\|medium\|high\|max` | Thinking depth |
+
+Dashboard also has **Model effort** knobs (face / subagent / dream) and a skills list.
+
+See [SETUP.md](SETUP.md) for hardware and dependency notes.

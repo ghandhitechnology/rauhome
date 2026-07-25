@@ -1,0 +1,109 @@
+.settings h2 {
+  font-size: 1.7rem;
+  margin: 0;
+}
+
+.settings h3 {
+  font-size: 1.15rem;
+  margin: 0;
+  text-transform: capitalize;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.35rem;
+}
+
+.panel-sub {
+  margin: 0.3rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  max-width: 44ch;
+}
+
+/* model slots */
+
+.settings .slot {
+  padding: 1.05rem 1.1rem;
+  margin-bottom: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--sunken);
+  animation: rise var(--dur-3) var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+  transition: border-color var(--dur-3) var(--ease);
+}
+
+.settings .slot:hover {
+  border-color: var(--line-2);
+}
+
+.slot-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.85rem;
+}
+
+.slot-note {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.settings .slot-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+
+.settings .slot-fields .field {
+  margin-bottom: 0.8rem;
+}
+
+@media (max-width: 560px) {
+  .settings .slot-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sticky-save {
+  position: sticky;
+  bottom: 0.5rem;
+  margin-top: 1.1rem;
+}
+
+/* maintenance */
+
+.settings .section-title {
+  margin-top: 1.6rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  margin-bottom: 0.85rem;
+}
+
+/* Link styled as a button needs the button's own typography reset. */
+a.btn {
+  text-decoration: none;
+  color: var(--ink);
+}
+
+a.btn:hover {
+  color: var(--ink);
+}
+
+.msg-line {
+  margin-top: 1.1rem;
+  padding: 0.75rem 0.95rem;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: pop-in var(--dur-3) var(--spring) both;
+}

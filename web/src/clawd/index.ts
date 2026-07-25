@@ -1,0 +1,8 @@
+export { ClawdRig, type GazeAim, type RigOptions } from './rig'
+export { Director, EMPTY_SIGNALS, type Signals, type DirectorMode } from './director'
+export { Scene, drawBubble, type SceneOptions } from './scene'
+export { MOTIONS, type MotionName } from './motions'
+export { STATIONS, STAGE, FLOOR_Y, station, type StationId, type RoomState } from './room'
+export { drawClawd, clawdBounds, GRID } from './sprite'
+export { defaultParams, type ParamSet } from './params'
+export { CLAWD, ROOM, skyAt } from './palette'

@@ -1,86 +1,120 @@
 # Setup
 
-Target machine: an Apple-silicon Mac (developed on an M4 Mac mini with 16 GB RAM) with a
-USB microphone, a speaker, and a display or browser for the eye UI. These steps are written
-for that machine; nothing here is meant to be portable.
+Target: Apple-silicon Mac with mic, speaker, and a browser for the Rau UI.
 
-## 1. System dependencies
+## 1. System
 
 ```bash
-brew install ffmpeg python@3.11
+brew install ffmpeg python@3.11 node
 ```
 
-- `ffmpeg` is required — the voice pipeline captures microphone audio through it
-  (`avfoundation`), not through Python's audio stack.
-- Ollama (`brew install ollama`) is only needed for the legacy modes `--test` and
-  `--text-only`, and because `launch.sh` still checks for it on startup. See "Caveats" in
-  the README.
+`ffmpeg` is required for microphone capture (`avfoundation`).
 
-## 2. Python environment
+Optional for desktop clicks if PyObjC/Quartz is unavailable: `brew install cliclick`.
+Grant Accessibility / Screen Recording to Terminal (or your host) for computer use.
 
-The launcher expects the virtualenv at `venv/` in the repo root:
+## 2. Python
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install numpy sounddevice faster-whisper silero-vad torch pedalboard elevenlabs
+pip install -r requirements.txt
 ```
 
-What each is for:
-
-| Package | Used by |
-|---|---|
-| `numpy`, `sounddevice` | audio buffers and speaker playback |
-| `faster-whisper` | speech-to-text (`small`, CPU int8) |
-| `silero-vad`, `torch` | voice activity detection (falls back to energy-based VAD if absent) |
-| `pedalboard` | robot voice FX (pitch shift, bitcrush, distortion, reverb) |
-| `elevenlabs` | text-to-speech client |
-
-The faster-whisper `small` model downloads on first run (a few hundred MB) and is cached
-by the library outside the repo.
-
-## 3. API keys
-
-The current pipeline uses two cloud services. Create a `.env` file in the repo root
-(it is gitignored):
-
-```
-DEEPSEEK_API_KEY=sk-...
-ELEVENLABS_API_KEY=...
-```
-
-Both are also read from the environment if set there. Without them the pipeline starts but
-cannot generate or speak replies.
-
-## 4. Sound effects
-
-Emotion tags in LLM replies (`[HAPPY]`, `[CURIOUS]`, `[EXCITED]`, `[SAD]`, `[COMPACT]`,
-`[SCARED]`, `[AMAZED]`, `[LOVE]`, `[DETERMINED]`) map to WAV files in `assets/sfx/`
-(see `SFX_MAP` in `scripts/voice-pipeline-v2.py`). That directory is gitignored, so drop
-your own robot beeps/whirs there — 16-bit PCM WAV. Missing files are skipped silently; the
-pipeline works fine with none, just without sound effects.
-
-## 5. Run
+## 3. Web UI
 
 ```bash
-bash launch.sh                 # voice pipeline + eye server (http://127.0.0.1:8765)
-bash launch.sh --eyes-only     # eye server alone
-bash launch.sh --test          # canned prompts through the LLM (needs Ollama)
-bash launch.sh --text-only     # keyboard chat, no audio (needs Ollama)
+cd web && npm install && npm run build && cd ..
 ```
 
-To skip the launcher's Ollama check entirely, run the pipeline directly:
+Dev UI (proxied to hub):
 
 ```bash
-source venv/bin/activate
-python3 scripts/voice-pipeline-v2.py
+# terminal A
+PYTHONPATH=. python -m rau hub
+# terminal B
+cd web && npm run dev
 ```
 
-Open `http://127.0.0.1:8765` in a browser for the dashboard: it shows the current emotion,
-the chat log, and service status, and accepts control commands.
+## 4. Secrets (`.env`)
 
-## 6. Verify
+```
+OPENROUTER_API_KEY=
+ELEVENLABS_API_KEY=
+COMPOSIO_API_KEY=
+DEEPSEEK_API_KEY=
+KIMI_API_KEY=
+KIMI_CODING_API_KEY=
+OPENAI_API_KEY=
+DEEPGRAM_API_KEY=   # optional — streaming speech-to-text for voice mode
 
-- `python3 scripts/profile.py` — per-stage latency benchmark of the pipeline.
-- `python3 scripts/test_elevenlabs.py` — quick check that the ElevenLabs key works.
-- `python3 scripts/llm.py` — streaming benchmark against the DeepSeek API.
+# Kimi Coding Plan (membership) is separate from Moonshot pay-as-you-go.
+# In Settings, pick provider `kimi_code` and a model such as:
+#   kimi-for-coding | kimi-for-coding-highspeed | k3 | k3-256k
+# Docs: https://www.kimi.com/code/docs/en/
+```
+
+Configure face / subagent / dream models live in **Settings** (writes `config/models.json`).
+
+## 5. Identity
+
+First open of `http://127.0.0.1:8765` runs Setup:
+
+- **Fresh state** — minimal seed + synthesized `soul.md`
+- **Hard startup** — paste `identity.md` + `backstory.md` → `soul.md`
+
+Later: **Identity** page hard-steers (re-synthesize with backup). Dreaming may rewrite `soul.md` overnight.
+
+## 6. Run
+
+```bash
+bash launch.sh
+```
+
+Modes: `--hub`, `--text`, `--no-audio`, `--face`.
+
+## 7. Voice mode
+
+Rau has two conversational modes. **Shift+Space** switches between them from
+anywhere in the UI.
+
+- **Chat** — type, as before.
+- **Voice** — live listening, Rau speaks as he generates, and you can talk over
+  him to cut him off mid-sentence.
+
+Voice mode runs its audio **in the browser tab**, not through the Python
+pipeline. That is deliberate: the browser gives us hardware echo cancellation,
+which is the only thing that stops Rau hearing his own voice through your
+speakers and interrupting himself. The first time you enter voice mode the
+browser will ask for microphone permission.
+
+### Hearing (speech-to-text)
+
+Configured in **Settings → Hearing**. Four backends:
+
+| Backend | Key needed | Live transcript |
+|---|---|---|
+| Deepgram | `DEEPGRAM_API_KEY` | yes — words appear as you speak |
+| ElevenLabs Scribe | reuses `ELEVENLABS_API_KEY` | no |
+| OpenAI | reuses `OPENAI_API_KEY` | no |
+| Local (faster-whisper) | none | no |
+
+Only Deepgram streams interim results; the others transcribe once you stop
+talking. Local whisper needs no key and never sends your voice anywhere, but is
+the slowest.
+
+If the configured backend's key is missing, voice mode falls back to local
+whisper rather than failing — Settings tells you when that will happen.
+
+### Speaking (text-to-speech)
+
+Needs `ELEVENLABS_API_KEY`. Replies are synthesised sentence by sentence, so
+Rau starts talking before he has finished thinking. Without the key, voice mode
+still listens and replies in text.
+
+### Notes
+
+- Headphones are not required, but they make barge-in more reliable in a loud
+  room.
+- While a browser voice session is open, the host-side mic loop is suspended so
+  the two do not both transcribe you.
