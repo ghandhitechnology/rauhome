@@ -510,8 +510,16 @@ def api_settings():
 
 @app.post("/api/chat")
 def api_chat(body: ChatIn):
-    """Text face turn (dashboard / --text mode)."""
-    from rau.face import brain
+    """
+    Text face turn (dashboard / --text mode).
+
+    The reply still comes back whole in the HTTP response — every existing
+    caller keeps working — but it is also streamed over `/ws` as turn-scoped
+    `chat_started` / `chat_delta` / `chat_done` events, so a body plan anchored
+    to a phrase fires when that phrase actually becomes visible rather than
+    when the whole answer lands at once.
+    """
+    from rau.face import brain, choreography
     from rau.heartbeat.presence import note_user_reply
 
     text = (body.text or "").strip()
@@ -519,14 +527,16 @@ def api_chat(body: ChatIn):
         return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
     note_user_reply()
     state.add_log("user", text)
+    turn_id = choreography.new_turn_id()
     try:
-        reply = brain.chat(text)
+        # The broadcast lives inside chat_streaming; nothing extra to do here.
+        reply = str(brain.chat_streaming(text, on_token=lambda _t: None, turn_id=turn_id))
     except Exception as e:
         reply = f"I hit a snag thinking: {e}"
     state.add_log("rau", reply)
     state.set_emotion("curious", reply)
     state.push_control({"action": "speak", "text": reply})
-    return {"ok": True, "reply": reply}
+    return {"ok": True, "reply": reply, "turn_id": turn_id}
 
 
 @app.get("/api/events/history")

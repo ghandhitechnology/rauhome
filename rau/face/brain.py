@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 from rau.agent import compaction
 from rau.agent import orchestrator
 from rau.agent import tools as agent_tools
 from rau.agent.danger import classify_tool
+from rau.events import BUS
+from rau.face import choreography
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, recent_context
 from rau.providers.base import Message, StreamDone, TextDelta, tool_result_text
@@ -188,6 +191,7 @@ FACE_TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    choreography.BODY_CHOREOGRAPHY_TOOL,
 ]
 
 #: The face model is chosen for latency, so its window is held far below what
@@ -211,6 +215,61 @@ _pending_stream_messages: set[int] = set()
 # Held for the duration of a fold, so a fast exchange cannot start a second
 # summarizer on top of the one already thinking.
 _compacting = threading.Lock()
+
+#: Floor on the gap between `chat_delta` broadcasts. The event bus evicts the
+#: oldest item from a slow subscriber's queue, so a per-token firehose would
+#: lose text on exactly the client that most needs it. Every delta therefore
+#: carries the whole reply so far, and they are throttled to a rate a browser
+#: can actually paint.
+DELTA_INTERVAL_SEC = 0.06
+
+
+class _TurnBroadcast:
+    """
+    Emits `chat_started` / `chat_delta` / `chat_done` for one face turn.
+
+    Deltas are cumulative on purpose: a dropped intermediate event costs a
+    frame of smoothness rather than a hole in the text that phrase-anchored
+    body cues are matched against.
+    """
+
+    def __init__(self, turn_id: str, user_text: str) -> None:
+        self.turn_id = turn_id
+        self._seen: List[str] = []
+        self._sent_len = -1
+        self._next_at = 0.0
+        BUS.emit("chat_started", turn_id=turn_id, text=user_text)
+
+    @property
+    def text(self) -> str:
+        return "".join(self._seen)
+
+    def token(self, token: str) -> None:
+        self._seen.append(token)
+        now = time.monotonic()
+        if now < self._next_at:
+            return
+        self._next_at = now + DELTA_INTERVAL_SEC
+        self.flush()
+
+    def flush(self) -> None:
+        text = self.text
+        if len(text) == self._sent_len:
+            return
+        self._sent_len = len(text)
+        BUS.emit("chat_delta", turn_id=self.turn_id, text=text)
+
+    def done(self, spoken: str) -> None:
+        self.flush()
+        BUS.emit("chat_done", turn_id=self.turn_id, text=spoken)
+
+    def error(self, detail: str) -> None:
+        choreography.cancel_turn(self.turn_id, "error")
+        BUS.emit("chat_error", turn_id=self.turn_id, detail=str(detail)[:500])
+
+    def cancelled(self, heard: str) -> None:
+        choreography.cancel_turn(self.turn_id, "interrupted")
+        BUS.emit("chat_done", turn_id=self.turn_id, text=heard, interrupted=True)
 
 
 def reset_history() -> None:
@@ -339,6 +398,7 @@ def _system_prompt(extra: str = "") -> str:
         "\n## Recent memory excerpt\n" + (mem or "(empty)"),
         "\nYou have always-available skills. Prefer tools over guessing. "
         "Escalate multi-step work with start_hard_task. Only you speak.",
+        "\n" + choreography.PROMPT,
     ]
     if extra:
         parts.append("\n" + extra)
@@ -356,6 +416,10 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return use_skill_tool(str(args.get("name") or ""))
     if name == "list_skills":
         return {"ok": True, "skills": skills_public()}
+    if name == "body_choreography":
+        # Local, visual and reversible — nothing here leaves the machine, so it
+        # never needs the confirmation the face has nowhere to wait for.
+        return choreography.submit_plan(args)
     if name == "set_goal":
         goal = goal_store.set_goal(str(args.get("text") or ""))
         if goal.get("ok") is False:
@@ -444,19 +508,25 @@ def _call_face(provider, slot, messages):
     )
 
 
-def chat(user_text: str) -> str:
-    """Non-streaming face reply (handles skills + tools)."""
-    prep = prepare_turn(user_text)
-    if prep.immediate_reply and prep.activate == []:
-        # Pure meta commands like /skills /effort — hub/pipeline own the chat log
-        append_diary("user", user_text)
-        append_diary("rau", prep.immediate_reply)
-        return prep.immediate_reply
+def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
+    """
+    Non-streaming face reply (handles skills + tools).
 
-    if prep.immediate_reply and "goal" in prep.activate:
-        # /goal executed — still return the confirmation; keep history light
+    `turn_id` names the turn any `body_choreography` call is scoped to. Callers
+    that need it up front (the hub, so it can answer with it) pass their own;
+    everything else gets one generated here, so no path can produce a reply the
+    model was unable to choreograph.
+    """
+    turn = turn_id or choreography.new_turn_id()
+    broadcast = _TurnBroadcast(turn, user_text)
+
+    prep = prepare_turn(user_text)
+    if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
+        # Meta commands like /skills, /effort and /goal — hub/pipeline own the
+        # chat log, and there is no model turn to choreograph.
         append_diary("user", user_text)
         append_diary("rau", prep.immediate_reply)
+        broadcast.done(prep.immediate_reply)
         return prep.immediate_reply
 
     provider, slot = chat_for_slot("face")
@@ -467,13 +537,18 @@ def chat(user_text: str) -> str:
     ] + snapshot_history()
 
     spoken = ""
-    for _ in range(6):
-        result = _call_face(provider, slot, messages)
-        if result.tool_calls:
-            _record_tool_round(messages, result, prep.system_extra)
-            continue
-        spoken = (result.content or "").strip()
-        break
+    try:
+        with choreography.turn_scope(turn):
+            for _ in range(6):
+                result = _call_face(provider, slot, messages)
+                if result.tool_calls:
+                    _record_tool_round(messages, result, prep.system_extra)
+                    continue
+                spoken = (result.content or "").strip()
+                break
+    except Exception as exc:
+        broadcast.error(str(exc))
+        raise
 
     if not spoken:
         spoken = "Okay. I'm with you."
@@ -481,6 +556,7 @@ def chat(user_text: str) -> str:
     _maybe_compact_history()
     append_diary("user", user_text)
     append_diary("rau", spoken)
+    broadcast.done(spoken)
     return spoken
 
 
@@ -492,11 +568,13 @@ class Cancelled(Exception):
         pending: Optional[Message] = None,
         generated: str = "",
         user_text: str = "",
+        turn_id: str = "",
     ) -> None:
         super().__init__("streaming turn cancelled")
         self.pending = pending
         self.generated = generated
         self.user_text = user_text
+        self.turn_id = turn_id
 
 
 class StreamingReply(str):
@@ -505,6 +583,7 @@ class StreamingReply(str):
     history_message: Optional[Message]
     user_text: str
     diary_deferred: bool
+    turn_id: str
 
     def __new__(
         cls,
@@ -512,11 +591,13 @@ class StreamingReply(str):
         history_message: Optional[Message],
         user_text: str,
         diary_deferred: bool,
+        turn_id: str = "",
     ):
         obj = str.__new__(cls, value)
         obj.history_message = history_message
         obj.user_text = user_text
         obj.diary_deferred = diary_deferred
+        obj.turn_id = turn_id
         return obj
 
 
@@ -581,6 +662,7 @@ def chat_streaming(
     on_tool: Optional[Callable[[str, Dict[str, Any], Dict[str, Any]], None]] = None,
     cancel: Optional[threading.Event] = None,
     defer_diary: bool = False,
+    turn_id: Optional[str] = None,
 ) -> str:
     """
     Streaming face turn that keeps full tool access.
@@ -590,19 +672,29 @@ def chat_streaming(
     tokens and rounds. Tool plumbing never reaches `on_token`; only assistant
     prose does, or Rau would read protocol out loud.
 
+    `turn_id` scopes any `body_choreography` the model calls, and is echoed on
+    every `chat_*` event so a client can tie a plan to the text it anchors to.
+
     Returns everything generated. The caller is responsible for trimming the
     history to what was actually spoken if it cancelled (see
     `truncate_last_assistant`).
     """
+    turn = turn_id or choreography.new_turn_id()
+    broadcast = _TurnBroadcast(turn, user_text)
 
     def stop() -> bool:
         return cancel is not None and cancel.is_set()
 
+    def emit(token: str) -> None:
+        broadcast.token(token)
+        on_token(token)
+
     prep = prepare_turn(user_text)
     if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
         on_token(prep.immediate_reply)
+        broadcast.done(prep.immediate_reply)
         if defer_diary:
-            return StreamingReply(prep.immediate_reply, None, user_text, True)
+            return StreamingReply(prep.immediate_reply, None, user_text, True, turn)
         append_diary("user", user_text)
         append_diary("rau", prep.immediate_reply)
         return prep.immediate_reply
@@ -620,59 +712,65 @@ def chat_streaming(
     heard: List[str] = []
 
     try:
-        for _ in range(6):
-            if stop():
-                raise Cancelled(pending, "".join(heard).strip(), user_text)
-
-            chunks: List[str] = []
-            result = None
-            for event in provider.stream_turn(
-                messages,
-                model=slot.get("model") or "deepseek-v4-flash",
-                max_tokens=int(slot.get("max_tokens") or 512),
-                temperature=float(slot.get("temperature") or 0.9),
-                tools=FACE_TOOLS,
-                effort=str(slot.get("effort") or "medium"),
-            ):
+        with choreography.turn_scope(turn):
+            for _ in range(6):
                 if stop():
-                    raise Cancelled(pending, "".join(heard).strip(), user_text)
-                if isinstance(event, TextDelta):
-                    chunks.append(event.text)
-                    heard.append(event.text)
-                    on_token(event.text)
-                elif isinstance(event, StreamDone):
-                    result = event.result
-            if result is None:
+                    raise Cancelled(pending, "".join(heard).strip(), user_text, turn)
+
+                chunks: List[str] = []
+                result = None
+                for event in provider.stream_turn(
+                    messages,
+                    model=slot.get("model") or "deepseek-v4-flash",
+                    max_tokens=int(slot.get("max_tokens") or 512),
+                    temperature=float(slot.get("temperature") or 0.9),
+                    tools=FACE_TOOLS,
+                    effort=str(slot.get("effort") or "medium"),
+                ):
+                    if stop():
+                        raise Cancelled(
+                            pending, "".join(heard).strip(), user_text, turn
+                        )
+                    if isinstance(event, TextDelta):
+                        chunks.append(event.text)
+                        heard.append(event.text)
+                        emit(event.text)
+                    elif isinstance(event, StreamDone):
+                        result = event.result
+                if result is None:
+                    break
+
+                if result.tool_calls:
+                    _record_tool_round(messages, result, prep.system_extra, on_tool)
+                    continue
+
+                if not chunks and result.content:
+                    # Provider returned prose only in the terminal event.
+                    heard.append(result.content)
+                    emit(result.content)
                 break
-
-            if result.tool_calls:
-                _record_tool_round(messages, result, prep.system_extra, on_tool)
-                continue
-
-            if not chunks and result.content:
-                # Provider returned prose only in the terminal event.
-                heard.append(result.content)
-                on_token(result.content)
-            break
     except Cancelled:
+        broadcast.cancelled("".join(heard).strip())
         raise
-    except Exception:
+    except Exception as exc:
         # A provider can fail after yielding prose. Preserve that partial reply
         # in the reserved slot; an empty failure must not leave a ghost turn.
         _finish_stream_turn(pending, "".join(heard).strip())
+        broadcast.error(str(exc))
         raise
 
     spoken = "".join(heard).strip()
     if not spoken:
         spoken = "Okay. I'm with you."
-        on_token(spoken)
+        emit(spoken)
     history_message = _finish_stream_turn(pending, spoken)
     if not defer_diary:
         _maybe_compact_history()
     if not defer_diary:
         append_diary("user", user_text)
         append_diary("rau", spoken)
-    return StreamingReply(spoken, history_message, user_text, defer_diary)
+    broadcast.done(spoken)
+    return StreamingReply(spoken, history_message, user_text, defer_diary, turn)
 
 
 def chat_stream(user_text: str) -> Generator[str, None, str]:

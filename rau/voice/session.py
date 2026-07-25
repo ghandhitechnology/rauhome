@@ -25,9 +25,9 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from rau.events import BUS
-from rau.face import brain
+from rau.face import brain, choreography
 from rau.voice.stt import get_stt_provider, resolve_stt
-from rau.voice.tts_stream import SR, pcm_duration_ms, speak_stream
+from rau.voice.tts_stream import SR, SentenceTiming, pcm_duration_ms, speak_stream
 from rau import state
 
 #: How long a new turn waits for the previous one to wind down. Long enough for
@@ -100,11 +100,15 @@ class _MicStream:
 class _Turn:
     ident: int
     text: str
+    #: Server-generated id every body plan and chat event for this turn carries.
+    turn_id: str = ""
     cancel: threading.Event = field(default_factory=threading.Event)
     utterance: Utterance = field(default_factory=Utterance)
     played_ms: float = 0.0
     pending_sentence: str = ""
     announced_sentence: str = ""
+    #: Where the sentence currently being synthesised starts in the timeline.
+    sentence_start_ms: float = 0.0
     first_audio_at: float = 0.0
     thread: Optional[threading.Thread] = None
     producer: Optional[threading.Thread] = None
@@ -443,8 +447,13 @@ class VoiceSession:
                     # hold the follow-up behind blocked third-party HTTP I/O.
                     await asyncio.to_thread(previous.thread.join, TURN_HANDOVER_SEC)
 
+            if previous is not None and previous.turn_id:
+                # Whatever the superseded turn had planned is now about a reply
+                # nobody will hear the rest of.
+                choreography.cancel_turn(previous.turn_id, "superseded")
+
             self._turn_seq += 1
-            turn = _Turn(self._turn_seq, text)
+            turn = _Turn(self._turn_seq, text, turn_id=choreography.new_turn_id())
             # Construct the worker before publishing the turn, so another
             # caller can always cancel/join the active object it observes.
             turn.thread = threading.Thread(
@@ -478,6 +487,7 @@ class VoiceSession:
                     ),
                     cancel=turn.cancel,
                     defer_diary=True,
+                    turn_id=turn.turn_id,
                 )
             except brain.Cancelled as cancelled:
                 brain.finish_interrupted_turn(cancelled, turn.heard_text())
@@ -510,12 +520,34 @@ class VoiceSession:
             if turn.announced_sentence != sentence:
                 turn.announced_sentence = sentence
                 self.set_phase_threadsafe("speaking", turn=turn)
-                self.send_threadsafe(turn=turn, t="say", text=sentence)
+                self.send_threadsafe(
+                    turn=turn, t="say", text=sentence, turn_id=turn.turn_id
+                )
             with turn.lock:
                 if not turn.first_audio_at:
                     turn.first_audio_at = time.monotonic()
-                turn.utterance.add(sentence, pcm)
+                chunk = turn.utterance.add(sentence, pcm)
+                # Chunks of one sentence merge into a single timeline item, so
+                # this stays the sentence's own start however many PCM
+                # fragments the provider streamed for it.
+                turn.sentence_start_ms = chunk.start_ms
             self.send_audio_threadsafe(pcm, turn=turn)
+
+        def on_timing(timing: SentenceTiming) -> None:
+            """Hand the browser where each character lands in the timeline."""
+            if turn.cancel.is_set() or not self._is_current(turn):
+                return
+            with turn.lock:
+                offset_ms = turn.sentence_start_ms
+            self.send_threadsafe(
+                turn=turn,
+                t="say_align",
+                turn_id=turn.turn_id,
+                text=timing.text,
+                offset_ms=round(offset_ms, 1),
+                duration_ms=round(timing.duration_ms, 1),
+                char_ms=[round(t, 1) for t in timing.char_ms],
+            )
 
         audio_sent = False
 
@@ -531,6 +563,7 @@ class VoiceSession:
                 tokens.iter(),
                 on_audio=tracked_audio,
                 on_sentence=on_sentence,
+                on_timing=on_timing,
                 cancel=turn.cancel,
             ):
                 pass
@@ -567,7 +600,11 @@ class VoiceSession:
                     # Nothing was audible; hand the text over so the UI can
                     # still show what he said.
                     self.send_threadsafe(
-                        turn=turn, t="say", text=full, silent=True
+                        turn=turn,
+                        t="say",
+                        text=full,
+                        silent=True,
+                        turn_id=turn.turn_id,
                     )
             elif tts_failed:
                 self.send_threadsafe(
@@ -575,7 +612,9 @@ class VoiceSession:
                     t="error",
                     detail="model returned no text after TTS failed",
                 )
-            self.send_threadsafe(turn=turn, t="say_end", interrupted=False)
+            self.send_threadsafe(
+                turn=turn, t="say_end", interrupted=False, turn_id=turn.turn_id
+            )
             self.set_phase_threadsafe("idle", turn=turn)
 
     # ── barge-in ─────────────────────────────────────────────────────
@@ -596,7 +635,11 @@ class VoiceSession:
         played = min(max(0.0, played), 3_600_000.0)
         turn.set_played_ms(played)
         turn.cancel.set()
-        await self.send(t="cancelled")
+        # Unfired cues belong to a sentence that will now never be spoken. Do
+        # this before the browser is told anything else, so no avatar acts out
+        # a gesture for text the user cut off.
+        choreography.cancel_turn(turn.turn_id, "interrupted")
+        await self.send(t="cancelled", turn_id=turn.turn_id)
         await self._notify_interrupted(turn)
         BUS.emit("voice_interrupted", played_ms=played)
 
@@ -606,7 +649,9 @@ class VoiceSession:
         heard = turn.heard_text()
         if heard:
             state.add_log("rau", heard)
-        await self.send(t="say_end", interrupted=True, heard=heard)
+        await self.send(
+            t="say_end", interrupted=True, heard=heard, turn_id=turn.turn_id
+        )
 
     def _notify_interrupted_threadsafe(self, turn: _Turn) -> None:
         self._schedule(self._notify_interrupted(turn))
@@ -627,6 +672,7 @@ class VoiceSession:
         turn = self._active_turn
         if turn is not None:
             turn.cancel.set()
+            choreography.cancel_turn(turn.turn_id, "closed")
         await self.stop_stt()
         self.closed = True
         if turn is not None:

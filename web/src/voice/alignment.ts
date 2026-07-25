@@ -1,0 +1,45 @@
+/**
+ * Where a spoken reply has got to.
+ *
+ * The hub sends one `say_align` per sentence: its text, where the sentence
+ * starts in the reply's audio timeline, and when each of its characters starts
+ * within it. Audio arrives over the socket seconds before it is heard, so a
+ * body cue anchored to a phrase has to be matched against playback position,
+ * not against arrival.
+ */
+
+/** One spoken sentence, placed in the reply's own audio timeline. */
+export type AlignedSentence = {
+  turnId: string
+  text: string
+  /** Where this sentence starts, milliseconds into the reply. */
+  offsetMs: number
+  durationMs: number
+  /** When each character of `text` starts, milliseconds into the sentence. */
+  charMs: number[]
+}
+
+/**
+ * How much of the reply has actually been heard by `playedMs`.
+ *
+ * Sentences already past are whole; the one in flight is revealed character by
+ * character against its own timestamps. Sentences are rejoined with a single
+ * space, which is how they were split — phrase matching normalises whitespace,
+ * so that is enough to match a phrase spanning a sentence boundary.
+ */
+export function spokenSoFar(sentences: AlignedSentence[], playedMs: number): string {
+  const parts: string[] = []
+  for (const sentence of sentences) {
+    if (playedMs >= sentence.offsetMs + sentence.durationMs) {
+      parts.push(sentence.text)
+      continue
+    }
+    if (playedMs <= sentence.offsetMs) break
+    const local = playedMs - sentence.offsetMs
+    let count = 0
+    while (count < sentence.charMs.length && sentence.charMs[count] <= local) count++
+    if (count > 0) parts.push(sentence.text.slice(0, count))
+    break
+  }
+  return parts.join(' ')
+}

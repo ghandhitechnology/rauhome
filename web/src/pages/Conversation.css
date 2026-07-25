@@ -202,6 +202,36 @@
   margin: 0;
 }
 
+/* The reply still arriving: a caret on the last line, and no entrance
+   animation — it is already on screen, it is only getting longer. */
+
+.convo-msg.is-streaming {
+  animation: none;
+}
+
+.convo-msg.is-streaming .chat-md > :last-child::after {
+  content: '';
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: caret-blink 1s steps(1, end) infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .convo-msg.is-streaming .chat-md > :last-child::after {
+    animation: none;
+  }
+}
+
 /* typing dots */
 
 .convo-typing {

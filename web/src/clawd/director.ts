@@ -6,6 +6,7 @@
  * aims the eyes and moves `worldX`. Everything else falls out of the rig.
  */
 
+import { GAZE_AIMS, type BodyCue } from './body'
 import { clamp, damp } from './easing'
 import { MOTIONS, ONE_SHOTS, WALK_SPEED, type MotionName } from './motions'
 import type { ClawdRig, GazeAim } from './rig'
@@ -91,6 +92,9 @@ const TAG_BEATS: Record<string, MotionName> = {
 
 type GazeIntent = 'camera' | 'away' | 'lock'
 
+/** What the eyes are currently obeying. `cue` is a model-authored aim. */
+type GazeSource = GazeIntent | 'cue'
+
 const GAZES: Record<GazeIntent, GazeAim> = {
   camera: { x: 0, y: 0.08, speed: 7, wander: 0.35 },
   // People break eye contact while they recall. Slow, high and off to one side.
@@ -144,7 +148,14 @@ export class Director {
   private reactionReadyAt = 0
   private lastTag: string | null = null
   private lastInterrupt = 0
-  private gazeIntent: GazeIntent | null = null
+  private gazeIntent: GazeSource | null = null
+
+  /** The model-authored cue currently holding the body, or null. */
+  private cue: BodyCue | null = null
+  /** Whether this cue's motion has been played yet — deferred until arrival. */
+  private cuePlayed = false
+  /** Which semantic gaze the current cue installed, so it is set only once. */
+  private cueGazeName: string | null = null
 
   private rig: ClawdRig
   /** Where he goes back to once the conversation has gone quiet. */
@@ -210,6 +221,56 @@ export class Director {
     this.startleUntil = this.clock + 0.4
   }
 
+  /** True while a model-authored cue owns the body. */
+  get cued(): boolean {
+    return this.cue !== null
+  }
+
+  /**
+   * Take the body for one cue from the face model.
+   *
+   * A cue with somewhere to be walks there first and gestures on arrival:
+   * playing the clip and then sliding across the room reads as two unrelated
+   * things happening rather than one intention.
+   */
+  applyCue(cue: BodyCue) {
+    this.cue = cue
+    this.cuePlayed = false
+    // A cue outranks the leftover lockout from a click or a reaction.
+    this.startleUntil = 0
+    if (cue.station) {
+      this.target = cue.station
+      this.arrived = false
+    }
+    if (!cue.station && cue.motion) this.playCueMotion()
+  }
+
+  /** Hand the body back to autonomous behaviour. */
+  releaseCue() {
+    if (!this.cue) return
+    const hadGaze = this.cueGazeName !== null
+    this.cue = null
+    this.cuePlayed = false
+    this.cueGazeName = null
+    // Deliberately no snap-back: he keeps the spot he was sent to, and the
+    // ambient clock gets a beat before it decides to wander off again.
+    this.nextDecisionAt = Math.max(this.nextDecisionAt, this.clock + 2.5)
+    if (hadGaze) {
+      // The behaviour layer often wants no aim at all, and "no aim" is not a
+      // change it would notice — so the cue's aim has to be cleared here or he
+      // keeps staring at the floor for the rest of the session.
+      this.gazeIntent = null
+      this.rig.setGaze(null)
+    }
+  }
+
+  private playCueMotion() {
+    const name = this.cue?.motion
+    if (!name) return
+    this.cuePlayed = true
+    this.rig.play(name, { force: true, restart: true })
+  }
+
   update(dt: number, s: Signals) {
     this.clock += dt
     const rig = this.rig
@@ -227,8 +288,12 @@ export class Director {
         // Roughly reading speed, clamped to something watchable.
         this.speakUntil = this.clock + clamp(1.8 + s.speech.length * 0.045, 2.5, 11)
       }
-      this.target = this.mode === 'roam' ? this.target : 'centre'
-      this.arrived = this.mode === 'roam'
+      // A cue already said where he should be for this reply; pulling him back
+      // to the middle of the room would undo the plan mid-sentence.
+      if (!this.cue) {
+        this.target = this.mode === 'roam' ? this.target : 'centre'
+        this.arrived = this.mode === 'roam'
+      }
       if (HAPPY.has(s.emotion)) this.react('celebrate')
     } else if (this.clock > this.speakUntil) {
       this.speech = null
@@ -245,6 +310,13 @@ export class Director {
 
     if (this.manual) {
       this.settleWalk(dt, 0)
+      return
+    }
+
+    // A model-authored cue outranks both conversation posture and ambient
+    // wandering for as long as it holds the body.
+    if (this.cue) {
+      this.followCue(dt, s)
       return
     }
 
@@ -296,6 +368,41 @@ export class Director {
   }
 
   /**
+   * Carry out the cue that currently owns the body.
+   *
+   * Walk first if it named a station, gesture on arrival, then hold whatever
+   * pose it asked for until the controller takes the body back. A one-shot
+   * that has finished settles into the conversation pose rather than freezing
+   * on its last frame for the rest of the hold.
+   */
+  private followCue(dt: number, s: Signals) {
+    const cue = this.cue
+    if (!cue) return
+
+    if (cue.station) {
+      const spot = station(cue.station)
+      if (this.travelTo(spot.x, dt)) return
+      if (!this.arrived) {
+        this.arrived = true
+        this.rig.facing = spot.facing
+      }
+      if (!this.cuePlayed) {
+        this.playCueMotion()
+        return
+      }
+    }
+
+    this.settleWalk(dt, 0)
+
+    if (!cue.motion) {
+      this.setLoop(this.conversationPose(s))
+      return
+    }
+    if (this.rig.busy) return
+    this.setLoop(ONE_SHOTS.includes(cue.motion) ? this.conversationPose(s) : cue.motion)
+  }
+
+  /**
    * Conversation mode: hold the centre of the room, face the camera and cycle
    * listen → think → talk. Wandering off to water the plant halfway through an
    * answer is the single fastest way to break the illusion of attention.
@@ -337,11 +444,14 @@ export class Director {
 
     if (mode !== this.mode) {
       this.mode = mode
-      this.arrived = false
+      // A cue owns where he stands and what he is doing; switching behaviour
+      // underneath it must not walk him back to the middle of the room or
+      // stomp the clip it just started.
+      if (!this.cue) this.arrived = false
       if (mode === 'conversing') {
-        this.target = 'centre'
+        if (!this.cue) this.target = 'centre'
         this.nextIdleBeatAt = this.clock + 10
-      } else if (!this.manual) {
+      } else if (!this.manual && !this.cue) {
         // A looping clip never reports finished, so the conversation pose would
         // outrank everything the ambient behaviour tries next.
         this.rig.play('idle', { force: true })
@@ -355,6 +465,19 @@ export class Director {
     this.rig.talkLevel = s.rauSpeaking ? s.rauLevel : 0
 
     this.rig.breathRate = damp(this.rig.breathRate, this.breathRateFor(s), 1.6, dt)
+
+    // A cue that named somewhere to look owns the eyes for its whole hold —
+    // including through the walk, so he looks where he is going.
+    const cueGaze = this.cue?.gaze
+    if (cueGaze) {
+      if (this.gazeIntent !== 'cue' || this.cueGazeName !== cueGaze) {
+        this.gazeIntent = 'cue'
+        this.cueGazeName = cueGaze
+        this.rig.setGaze(GAZE_AIMS[cueGaze])
+      }
+      return
+    }
+    this.cueGazeName = null
 
     const intent = this.gazeFor(s)
     if (intent !== this.gazeIntent) {
@@ -437,6 +560,8 @@ export class Director {
    */
   private react(name: MotionName, cooldown = REACTION_GAP, urgent = false): boolean {
     if (this.manual) return false
+    // Ambient beats sit below a deliberate cue; being cut off does not.
+    if (this.cue && !urgent) return false
     if (!urgent && (this.rig.busy || this.clock < this.reactionReadyAt)) return false
     this.rig.play(name, { force: true, restart: true })
     this.reactionReadyAt = this.clock + cooldown
