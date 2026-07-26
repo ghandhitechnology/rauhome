@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { bodyController } from '../clawd/body'
 import { spokenSentence, spokenSoFar, type AlignedSentence } from './alignment'
+import { classifyEndpoint, ENDPOINT_SCALE } from './endpoint'
 import { FRAME_MS, MicCapture } from './capture'
 import { TtsPlayback } from './playback'
 import { Vad } from './vad'
@@ -331,12 +332,21 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
             aligned.sort((a, b) => a.offsetMs - b.offsetMs)
             break
           }
-          case 'partial':
-            setPartial(msg.text ?? '')
+          case 'partial': {
+            const text = msg.text ?? ''
+            setPartial(text)
+            // The partial lands a beat before the silence runs out, which is
+            // the only window in which the endpointer can still act on it.
+            vad.setHangoverScale(ENDPOINT_SCALE[classifyEndpoint(text)])
             break
+          }
           case 'final':
             setPartial('')
             setFinalText(msg.text ?? '')
+            // The next utterance is a different sentence with different
+            // timing; carrying this one's patience into it would either cut
+            // it off early or leave a long silence after a plain question.
+            vad.setHangoverScale(1)
             break
           case 'say':
             setLastSay(msg.text ?? '')

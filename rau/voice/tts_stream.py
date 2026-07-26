@@ -30,9 +30,23 @@ _SENTENCE = re.compile(r"(?<=[.!?…])\s+|(?<=[.!?…])$|\n{2,}")
 #: Don't ship a fragment shorter than this to TTS — one-word chunks sound
 #: clipped and cost a request each. Waits for more text instead.
 MIN_CHARS = 24
+#: ...except the very first fragment of a reply, which is held to a lower bar.
+#:
+#: Nothing is audible until the opening chunk has been synthesised in full, so
+#: every character it waits for is silence the user sits through. Later chunks
+#: are synthesised while earlier ones play and cost nothing to make longer, so
+#: only the first one trades phrasing for latency — and it is the only one
+#: where that trade is worth making.
+FIRST_MIN_CHARS = 10
+#: Boundaries the opening fragment may also break on. A clause end is a place
+#: a voice can stop without sounding cut off; mid-clause is not.
+_SOFT_BREAK = re.compile(r"[,;:—–]\s")
 #: ...unless it already ends a sentence, or we have this much queued.
 MAX_CHARS = 220
 MAX_SENTENCE_PCM_BYTES = SR * 2 * 120
+#: A hesitation is two words. A provider that returns more than a couple of
+#: seconds for one has misunderstood the request, and the clip is discarded.
+MAX_REACTION_BYTES = SR * 2 * 3
 #: Short hesitation openers ("음…") may flush under MIN_CHARS.
 _SHORT_HESITATION = re.compile(
     r"^(음|그|어|아|well|um|uh|hmm)\s*[.…]+$",
@@ -92,6 +106,10 @@ class SentenceBuffer:
 
     def __init__(self) -> None:
         self._buf = ""
+        self._opened = False
+
+    def _min_chars(self) -> int:
+        return MIN_CHARS if self._opened else FIRST_MIN_CHARS
 
     def push(self, token: str) -> List[str]:
         self._buf += token
@@ -102,9 +120,23 @@ class SentenceBuffer:
                 head = self._buf[: match.end()].strip()
                 rest = self._buf[match.end() :]
                 short_hesitation = bool(_SHORT_HESITATION.match(head))
-                if len(head) >= MIN_CHARS or len(rest) > 0 or short_hesitation:
+                if len(head) >= self._min_chars() or len(rest) > 0 or short_hesitation:
                     out.append(head)
                     self._buf = rest
+                    self._opened = True
+                    continue
+            # Only ever for the opening fragment, and only once the sentence
+            # is long enough that waiting for its full stop is the expensive
+            # option. A short opener reaches the ear soon anyway; a long one
+            # would hold everything silent until its last word was written.
+            if not self._opened and len(self._buf) >= MIN_CHARS:
+                soft = _SOFT_BREAK.search(self._buf)
+                # "Right," is a real lead-in and a fine thing to say on its
+                # own; a two-character stub before a comma is not.
+                if soft and soft.start() >= FIRST_MIN_CHARS // 3:
+                    out.append(self._buf[: soft.start() + 1].strip())
+                    self._buf = self._buf[soft.end() :]
+                    self._opened = True
                     continue
             if len(self._buf) >= MAX_CHARS:
                 # No punctuation in sight — cut at the last space so we do not
@@ -114,6 +146,7 @@ class SentenceBuffer:
                     cut = MAX_CHARS
                 out.append(self._buf[:cut].strip())
                 self._buf = self._buf[cut:]
+                self._opened = True
                 continue
             break
         return [s for s in out if s]
@@ -121,6 +154,7 @@ class SentenceBuffer:
     def flush(self) -> Optional[str]:
         tail = self._buf.strip()
         self._buf = ""
+        self._opened = True
         return tail or None
 
 
@@ -175,6 +209,43 @@ class RobotVoice:
             return (np.clip(out, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
         except Exception:
             return pcm
+
+
+#: Length of the ramp applied to each end of a whole-sentence buffer.
+#:
+#: Sentences are emitted as separate PCM buffers and played back to back. If
+#: one ends mid-waveform and the next starts mid-waveform, the step between
+#: them is a discontinuity, and a discontinuity is a click. At 1.5 ms the ramp
+#: is far too short to hear as a fade — well under one cycle of the lowest
+#: voiced pitch — but long enough to bring both ends to zero.
+EDGE_FADE_MS = 1.5
+
+
+def soften_edges(pcm: bytes, sample_rate: int = SR) -> bytes:
+    """
+    Ramp a whole-sentence buffer to zero at both ends.
+
+    Only safe on buffers that are complete utterances. Applying it to the raw
+    streaming chunks — which cut mid-phoneme — would put a notch in the middle
+    of words and read as tremolo rather than as cleanliness.
+    """
+    if not pcm or len(pcm) % 2:
+        return pcm
+    try:
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        n = int(sample_rate * EDGE_FADE_MS / 1000.0)
+        # Nothing to do for a clip shorter than two ramps.
+        if n < 2 or samples.size < n * 2:
+            return pcm
+        out = samples.astype(np.float32)
+        # Raised cosine rather than linear: its slope is zero at both ends, so
+        # the ramp itself introduces no corner for the ear to find.
+        ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, n, dtype=np.float32))
+        out[:n] *= ramp
+        out[-n:] *= ramp[::-1]
+        return np.clip(out, -32768, 32767).astype(np.int16).tobytes()
+    except Exception:
+        return pcm
 
 
 def _client():
@@ -492,7 +563,7 @@ def speak_stream(
             return False
         if parts:
             raw_ms = pcm_duration_ms(bytes(parts))
-            processed = fx.process_pcm(bytes(parts))
+            processed = soften_edges(fx.process_pcm(bytes(parts)))
             on_audio(processed)
             if on_timing:
                 out_ms = pcm_duration_ms(processed)

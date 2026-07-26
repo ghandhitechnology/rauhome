@@ -814,10 +814,13 @@ async def ws_voice(ws: WebSocket):
     Live voice: binary frames up are mic PCM16 @16k, binary frames down are
     TTS PCM16 @24k. Control travels as JSON alongside.
     """
-    from rau.voice.session import VoiceSession, session_info
+    from rau.voice.session import VoiceSession, session_info, warm_reactions
 
     await ws.accept()
     session = VoiceSession(ws.send_json, ws.send_bytes)
+    # In the background: the first turn is where latency is most visible, so
+    # it should not also be the one turn whose hesitation is still downloading.
+    warm_reactions()
 
     # The host-side mic loop and a browser session must not both listen, or
     # every utterance is transcribed twice.

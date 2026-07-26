@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .DS_Store
 assets/sfx/
+# Hesitation clips, synthesised on demand and keyed by voice.
+assets/reactions/
 models/
 *.wav
 *.jsonl
