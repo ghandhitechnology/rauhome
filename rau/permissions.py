@@ -66,18 +66,37 @@ def get_permissions() -> Dict[str, str]:
     return normalize_permissions(settings.get("permissions"))
 
 
+#: Risk order, least to most permissive. Used when scopes disagree.
+_RISK_ORDER = ("readonly", "auto", "bypass")
+
+
 def global_mode(perms: Optional[Dict[str, str]] = None) -> str:
-    """Single UI mode. If scopes diverge, prefer room then majority → auto."""
+    """
+    The single mode the UI shows.
+
+    When scopes disagree — only reachable by editing settings.json by hand,
+    since the UI sets them together — report the *most permissive* one. A
+    status pill that reads "Auto" while subagents are on bypass is worse than
+    no pill at all: it is an assurance that is not true.
+    """
     p = perms if perms is not None else get_permissions()
     values = [p.get(s, "auto") for s in SCOPES]
     if len(set(values)) == 1:
         return values[0]
-    return str(p.get("room") or "auto")
+    return max(values, key=lambda m: _RISK_ORDER.index(m) if m in _RISK_ORDER else 1)
 
 
 def mode_for(scope: str) -> str:
-    """Effective mode for a scope — follows the global mode."""
-    return global_mode()
+    """
+    Effective mode for one scope.
+
+    This honours the scope it is given. It previously returned the global mode
+    regardless, which made the whole per-scope model decorative: settings.json
+    persists three keys and every call site passes a distinct scope, but
+    `permissions.subagents = "readonly"` would run with the room's mode — and
+    silently grant *more* than was asked for whenever the room was looser.
+    """
+    return get_permissions().get(scope, "auto")
 
 
 def set_permissions(partial: Dict[str, Any]) -> Dict[str, str]:
@@ -90,8 +109,13 @@ def set_permissions(partial: Dict[str, Any]) -> Dict[str, str]:
             mode = _normalize_mode(global_raw)
             if mode is None:
                 raise ValueError(f"invalid mode: {global_raw!r}")
+            # `mode` is the global setter the UI uses: it moves every scope.
             merged = {scope: mode for scope in SCOPES}
         else:
+            # Explicit per-scope keys are applied as given. They used to be
+            # collapsed onto whichever scope happened to be listed first, so
+            # asking for {"subagents": "bypass", "room": "readonly"} silently
+            # granted bypass to nothing and read-only to everything.
             for scope in SCOPES:
                 if scope not in partial:
                     continue
@@ -99,15 +123,6 @@ def set_permissions(partial: Dict[str, Any]) -> Dict[str, str]:
                 if mode is None:
                     raise ValueError(f"invalid mode for {scope}: {partial.get(scope)!r}")
                 merged[scope] = mode
-            # Keep scopes in lockstep for the global UI.
-            if any(scope in partial for scope in SCOPES):
-                lock = _normalize_mode(
-                    partial.get("room")
-                    or partial.get("subagents")
-                    or partial.get("heartbeats")
-                )
-                if lock:
-                    merged = {scope: lock for scope in SCOPES}
     settings = load_settings()
     settings["permissions"] = merged
     save_settings(settings)

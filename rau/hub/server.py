@@ -175,10 +175,20 @@ async def _startup() -> None:
     start_dreamer()
     start_heartbeat()
     settings = load_settings()
-    host = settings.get("hub_host") or "127.0.0.1"
     port = int(settings.get("hub_port") or 8765)
-    if start_pet(f"http://{host}:{port}"):
-        print(f"Desktop pet: {pet_binary()}")
+    # The pet is a client, so it needs an address it can dial. A wildcard bind
+    # is a listening address, not a destination — handing it through leaves the
+    # pet trying to connect to 0.0.0.0 and silently never arriving.
+    host = str(settings.get("hub_host") or "127.0.0.1")
+    if host in ("", "0.0.0.0", "::", "[::]"):
+        host = "127.0.0.1"
+    try:
+        if start_pet(f"http://{host}:{port}"):
+            print(f"Desktop pet: {pet_binary()}")
+    except Exception as exc:  # noqa: BLE001
+        # A cosmetic companion window must never be the reason the hub —
+        # and with it the whole app — refuses to come up.
+        print(f"Desktop pet not started: {exc}")
 
 
 @app.get("/api/status")

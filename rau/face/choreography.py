@@ -47,7 +47,7 @@ MOTIONS: Tuple[str, ...] = (
 )
 
 #: Places in the room. Mirrors `STATIONS` in web/src/clawd/room.ts.
-STATIONS: Tuple[str, ...] = ("window", "plant", "centre", "desk", "shelf")
+STATIONS: Tuple[str, ...] = ("window", "plant", "rug", "centre", "desk", "shelf")
 
 #: Semantic gaze targets. The renderer turns each into an eye aim; the model
 #: never gets to write eye coordinates.

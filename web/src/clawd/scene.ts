@@ -48,7 +48,7 @@ export class Scene {
   readonly camera: Camera = { x: 0, y: 0, zoom: 1 }
   private grainSeed = 0
   /** classic = original flat room; enhanced = materials/architecture pass. */
-  roomVisual: RoomVisual = 'classic'
+  roomVisual: RoomVisual = 'enhanced'
 
   /** Canvas pixels per stage unit, recomputed each resize. */
   unit = 1

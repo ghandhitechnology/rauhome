@@ -132,5 +132,113 @@ class PersistPermissionsTests(unittest.TestCase):
                     self.assertEqual(loaded["subagents"], "readonly")
 
 
+class ScopeIsolationTests(unittest.TestCase):
+    """Each scope answers for itself, and never grants more than it was asked."""
+
+    def _stored(self, **modes: str):
+        from rau import permissions as perm
+
+        base = dict(perm.DEFAULT_PERMISSIONS)
+        base.update(modes)
+        return mock.patch.object(perm, "get_permissions", return_value=base)
+
+    def test_a_loose_room_does_not_loosen_the_subagents(self) -> None:
+        """
+        The security-relevant case: `mode_for` used to return the global mode
+        whatever scope it was handed, so read-only subagents inherited the
+        room's bypass and ran shell commands with no confirmation at all.
+        """
+        from rau.permissions import mode_for, tool_decision
+
+        with self._stored(room="bypass", subagents="readonly"):
+            self.assertEqual(mode_for("subagents"), "readonly")
+            self.assertEqual(mode_for("room"), "bypass")
+            self.assertEqual(
+                tool_decision("subagents", "run_shell", {"command": "rm -rf /"}),
+                "deny",
+            )
+            self.assertEqual(
+                tool_decision("room", "run_shell", {"command": "rm -rf /"}),
+                "allow",
+            )
+
+    def test_a_tight_room_does_not_tighten_the_heartbeats(self) -> None:
+        from rau.permissions import heartbeat_nudge_allowed, jobs_allowed
+
+        with self._stored(room="readonly", subagents="auto", heartbeats="auto"):
+            self.assertTrue(jobs_allowed())
+            self.assertTrue(heartbeat_nudge_allowed())
+
+    def test_an_unknown_scope_fails_closed_to_auto(self) -> None:
+        from rau.permissions import mode_for
+
+        with self._stored(room="bypass", subagents="bypass", heartbeats="bypass"):
+            self.assertEqual(mode_for("does_not_exist"), "auto")
+
+    def test_global_mode_reports_the_riskiest_scope(self) -> None:
+        from rau.permissions import global_mode
+
+        # A pill reading "Auto" while subagents are on bypass is an assurance
+        # that is not true, so divergence reports the most permissive mode.
+        self.assertEqual(
+            global_mode({"room": "auto", "subagents": "bypass", "heartbeats": "readonly"}),
+            "bypass",
+        )
+        self.assertEqual(
+            global_mode({"room": "readonly", "subagents": "auto", "heartbeats": "readonly"}),
+            "auto",
+        )
+        self.assertEqual(
+            global_mode({"room": "auto", "subagents": "auto", "heartbeats": "auto"}),
+            "auto",
+        )
+
+    def test_explicit_per_scope_writes_are_kept_as_written(self) -> None:
+        from rau import permissions as perm
+        from rau.providers import registry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            with mock.patch.object(registry, "SETTINGS_CONFIG", path):
+                with mock.patch.object(registry, "_settings", {}):
+                    out = perm.set_permissions(
+                        {"subagents": "bypass", "room": "readonly"}
+                    )
+                    # Previously both collapsed onto whichever scope was listed
+                    # first, silently discarding the other half of the request.
+                    self.assertEqual(out["subagents"], "bypass")
+                    self.assertEqual(out["room"], "readonly")
+                    self.assertEqual(out["heartbeats"], "auto")
+                    self.assertEqual(perm.get_permissions()["subagents"], "bypass")
+
+
+class ReadonlyAllowlistTests(unittest.TestCase):
+    def test_unknown_tools_are_denied_rather_than_allowed(self) -> None:
+        from rau.permissions import is_readonly_allowed
+
+        for name in ("run_shell", "write_file", "edit_file", "some_new_tool", ""):
+            self.assertFalse(is_readonly_allowed(name), name)
+
+    def test_inspection_tools_are_allowed(self) -> None:
+        from rau.permissions import is_readonly_allowed
+
+        for name in ("read_file", "memory_read", "list_skills", "body_choreography"):
+            self.assertTrue(is_readonly_allowed(name), name)
+
+    def test_remote_tools_allow_only_lookups(self) -> None:
+        from rau.permissions import is_readonly_allowed
+
+        self.assertTrue(is_readonly_allowed("composio_gmail_search"))
+        self.assertFalse(is_readonly_allowed("composio_gmail_send"))
+        self.assertFalse(is_readonly_allowed("mcp_calendar_create_event"))
+
+    def test_computer_use_allows_looking_but_not_touching(self) -> None:
+        from rau.permissions import is_readonly_allowed
+
+        self.assertTrue(is_readonly_allowed("cua_action", {"action": "screenshot"}))
+        self.assertFalse(is_readonly_allowed("cua_action", {"action": "click"}))
+        self.assertFalse(is_readonly_allowed("cua_action", {"action": "type"}))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -207,6 +207,175 @@ class DragTests(unittest.TestCase):
         self.assertIn("dragged", kinds)
 
 
+    def _fake_quartz(self, posted: List[Dict[str, Any]]):
+        class FakeQuartz:
+            kCGEventLeftMouseDown = "down"
+            kCGEventLeftMouseUp = "up"
+            kCGEventLeftMouseDragged = "dragged"
+            kCGMouseButtonLeft = 0
+            kCGHIDEventTap = 0
+
+            @staticmethod
+            def CGPointMake(x, y):
+                return (x, y)
+
+            @staticmethod
+            def CGEventCreateMouseEvent(_src, kind, point, _btn):
+                return {"kind": kind, "point": point}
+
+            @staticmethod
+            def CGEventPost(_tap, event):
+                posted.append(dict(event))
+
+        return FakeQuartz
+
+    def test_cancelled_drag_releases_where_it_stopped(self) -> None:
+        """
+        A cancel that releases at the destination completes the very move it
+        was meant to stop — the dragged file lands in the target folder anyway.
+        """
+        import threading
+
+        posted: List[Dict[str, Any]] = []
+        cancel = threading.Event()
+
+        calls = {"n": 0}
+
+        def creep(_seconds):
+            # Let the drag travel a little, then pull the plug mid-flight.
+            calls["n"] += 1
+            if calls["n"] >= 4:
+                cancel.set()
+
+        with mock.patch.dict(sys.modules, {"Quartz": self._fake_quartz(posted)}):
+            with mock.patch.object(cua.time, "sleep", side_effect=creep):
+                ok, detail = cua._drag(0, 0, 1000, 500, cancel=cancel)
+
+        self.assertFalse(ok)
+        self.assertEqual(detail, "action cancelled")
+        release = [e for e in posted if e["kind"] == "up"]
+        self.assertEqual(len(release), 1, "the button must be released exactly once")
+        self.assertNotEqual(
+            release[0]["point"], (1000.0, 500.0), "released at the destination"
+        )
+        dragged = [e for e in posted if e["kind"] == "dragged"]
+        self.assertEqual(release[0]["point"], dragged[-1]["point"])
+
+    def test_drag_without_quartz_refuses_without_clicking(self) -> None:
+        """Two clicks are not a drag, and 'refused' must mean nothing happened."""
+        clicked: List[Any] = []
+
+        with mock.patch.dict(sys.modules, {"Quartz": None}):
+            with mock.patch.object(
+                cua, "_click", side_effect=lambda *a, **k: clicked.append(a) or (True, "")
+            ):
+                ok, detail = cua._drag(10, 10, 50, 40)
+
+        self.assertFalse(ok)
+        self.assertEqual(clicked, [], "refusing a drag must not click anything")
+        self.assertIn("refused", detail)
+
+
+class ClickStateTests(unittest.TestCase):
+    def test_double_click_sets_the_click_state(self) -> None:
+        """
+        macOS reads "double click" off the event's click state, not off two
+        clicks arriving close together. Without it Finder and most text views
+        see two ordinary clicks.
+        """
+        posted: List[Dict[str, Any]] = []
+
+        class FakeQuartz:
+            kCGEventLeftMouseDown = "down"
+            kCGEventLeftMouseUp = "up"
+            kCGMouseButtonLeft = 0
+            kCGHIDEventTap = 0
+            kCGMouseEventClickState = "clickState"
+
+            @staticmethod
+            def CGPointMake(x, y):
+                return (x, y)
+
+            @staticmethod
+            def CGEventCreateMouseEvent(_src, kind, point, _btn):
+                return {"kind": kind, "point": point, "clickState": 1}
+
+            @staticmethod
+            def CGEventSetIntegerValueField(event, field, value):
+                event[field] = value
+
+            @staticmethod
+            def CGEventPost(_tap, event):
+                posted.append(dict(event))
+
+        with mock.patch.dict(sys.modules, {"Quartz": FakeQuartz}):
+            with mock.patch.object(cua.time, "sleep", return_value=None):
+                ok, _ = cua._click(5, 5, double=True)
+
+        self.assertTrue(ok)
+        self.assertEqual([e["clickState"] for e in posted], [1, 1, 2, 2])
+
+    def test_single_click_stays_at_click_state_one(self) -> None:
+        posted: List[Dict[str, Any]] = []
+
+        class FakeQuartz:
+            kCGEventLeftMouseDown = "down"
+            kCGEventLeftMouseUp = "up"
+            kCGMouseButtonLeft = 0
+            kCGHIDEventTap = 0
+            kCGMouseEventClickState = "clickState"
+
+            @staticmethod
+            def CGPointMake(x, y):
+                return (x, y)
+
+            @staticmethod
+            def CGEventCreateMouseEvent(_src, kind, point, _btn):
+                return {"kind": kind, "point": point, "clickState": 1}
+
+            @staticmethod
+            def CGEventSetIntegerValueField(event, field, value):
+                event[field] = value
+
+            @staticmethod
+            def CGEventPost(_tap, event):
+                posted.append(dict(event))
+
+        with mock.patch.dict(sys.modules, {"Quartz": FakeQuartz}):
+            with mock.patch.object(cua.time, "sleep", return_value=None):
+                cua._click(5, 5)
+        self.assertEqual([e["clickState"] for e in posted], [1, 1])
+
+
+class StatusProbeTests(unittest.TestCase):
+    def test_status_probes_never_wait_the_full_automation_timeout(self) -> None:
+        """
+        `cua_status` exists to answer "am I allowed to drive this machine".
+        An osascript that needs Accessibility blocks until timeout when the
+        permission is missing — exactly the case status is asked about — so at
+        the automation timeout the answer arrived half a minute late.
+        """
+        seen: List[float] = []
+
+        def fake_osascript(script, timeout=cua.AUTOMATION_TIMEOUT_SEC):
+            seen.append(timeout)
+            return 124, "osascript timed out"
+
+        with mock.patch.object(cua, "_osascript", side_effect=fake_osascript):
+            with mock.patch.object(cua, "capture_screenshot", return_value={"ok": False}):
+                with mock.patch.object(cua, "list_displays", return_value=[]):
+                    with mock.patch.dict(sys.modules, {"ApplicationServices": None}):
+                        status = cua.cua_status()
+
+        self.assertTrue(status["ok"])
+        self.assertTrue(seen, "status should probe at least once")
+        self.assertTrue(
+            all(t <= cua.STATUS_PROBE_TIMEOUT_SEC for t in seen),
+            f"status probed with long timeouts: {seen}",
+        )
+        self.assertLess(cua.STATUS_PROBE_TIMEOUT_SEC, cua.AUTOMATION_TIMEOUT_SEC)
+
+
 class DisplayCoordTests(unittest.TestCase):
     def test_to_global_adds_origin(self) -> None:
         gx, gy = cua.to_global(5, 7, {"x": 100, "y": 200})

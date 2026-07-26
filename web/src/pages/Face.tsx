@@ -25,7 +25,7 @@ const MOTION_BUTTONS: { id: MotionName; label: string }[] = [
   { id: 'walk', label: 'Walk in place' },
 ]
 
-const STATION_BUTTONS = ['window', 'plant', 'centre', 'desk', 'shelf'] as const
+const STATION_BUTTONS = ['window', 'plant', 'rug', 'centre', 'desk', 'shelf'] as const
 
 /**
  * Coarse tag for the sentence Rau is about to say, so his body reacts to what

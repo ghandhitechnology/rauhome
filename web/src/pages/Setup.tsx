@@ -16,6 +16,7 @@ import {
   type StepProps,
   type VerifyState,
 } from './setup/types'
+import '../components/AuthCard.css'
 import './Setup.css'
 
 const DRAFT_KEY = 'rau.setup.draft.v2'

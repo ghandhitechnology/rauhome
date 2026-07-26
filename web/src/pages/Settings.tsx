@@ -8,6 +8,7 @@ import {
   type VoicePreset,
   type VoiceStatus,
 } from '../api'
+import '../components/AuthCard.css'
 import './Settings.css'
 
 /** Chat slots — the three that share a provider/model picker. */

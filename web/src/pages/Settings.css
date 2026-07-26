@@ -56,12 +56,23 @@
 
 .settings .slot-fields {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* A <select> is as wide as its longest option and will not shrink on its
+     own, so a bare 1fr track lets a long model name push the control out
+     through the side of the panel. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.8rem;
 }
 
 .settings .slot-fields .field {
   margin-bottom: 0.8rem;
+  min-width: 0;
+}
+
+.settings .slot-fields .field select,
+.settings .slot-fields .field input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 @media (max-width: 560px) {

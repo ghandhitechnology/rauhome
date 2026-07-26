@@ -60,7 +60,7 @@ export default function ClawdRoom({
   hourOverride = null,
   lampOn,
   conversing = false,
-  roomVisual = 'classic',
+  roomVisual = 'enhanced',
   showRoom = true,
   charScale = 1,
   onHitRect,

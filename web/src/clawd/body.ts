@@ -50,6 +50,7 @@ export const BODY_MOTIONS = [
 export const BODY_STATIONS = [
   'window',
   'plant',
+  'rug',
   'centre',
   'desk',
   'shelf',

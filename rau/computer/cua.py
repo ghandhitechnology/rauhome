@@ -23,6 +23,15 @@ from rau.memory.store import append_trace
 log = logging.getLogger("rau.computer.cua")
 
 AUTOMATION_TIMEOUT_SEC = 15
+#: Probes used only to *report* capability, never to act.
+#:
+#: An `osascript` that needs Accessibility blocks until it times out when the
+#: permission has not been granted — which is exactly the state `cua_status`
+#: exists to detect. At the automation timeout that made status, the call the
+#: model is told to make first, stall for half a minute before answering the
+#: question "am I allowed to do anything?". A probe that has not answered in
+#: this long has answered: no.
+STATUS_PROBE_TIMEOUT_SEC = 2.0
 MAX_WAIT_SEC = 30.0
 MAX_TEXT_CHARS = 8_000
 TYPE_CHUNK_CHARS = 80
@@ -191,10 +200,11 @@ def to_global(x: int, y: int, display: Dict[str, Any]) -> Tuple[int, int]:
 # ── window targeting ──────────────────────────────────────────────────
 
 
-def _frontmost_app_name() -> str:
+def _frontmost_app_name(timeout: float = AUTOMATION_TIMEOUT_SEC) -> str:
     code, out = _osascript(
         'tell application "System Events" to get name of first application process '
-        "whose frontmost is true"
+        "whose frontmost is true",
+        timeout=timeout,
     )
     return out if code == 0 else ""
 
@@ -412,8 +422,11 @@ def cua_status() -> Dict[str, Any]:
     except Exception:
         try:
             code, _ = _osascript(
-                'tell application "System Events" to get name of first process'
+                'tell application "System Events" to get name of first process',
+                timeout=STATUS_PROBE_TIMEOUT_SEC,
             )
+            # 124 is our own timeout code: the probe is blocked, which for the
+            # purposes of "can I drive this machine" is a no, not an unknown.
             accessibility = code == 0
         except Exception:
             accessibility = None
@@ -434,7 +447,7 @@ def cua_status() -> Dict[str, Any]:
         "screen_recording": screen_recording,
         "coordinate_space": "logical_points",
         "displays": list_displays(),
-        "frontmost_app": _frontmost_app_name(),
+        "frontmost_app": _frontmost_app_name(timeout=STATUS_PROBE_TIMEOUT_SEC),
         "hints": [
             "Grant Accessibility and Screen Recording to the host process (Terminal or Rau).",
             "Click/type coordinates are logical points; screenshots are sized to match.",
@@ -446,13 +459,13 @@ def cua_status() -> Dict[str, Any]:
 # ── low-level input ───────────────────────────────────────────────────
 
 
-def _osascript(script: str) -> Tuple[int, str]:
+def _osascript(script: str, timeout: float = AUTOMATION_TIMEOUT_SEC) -> Tuple[int, str]:
     try:
         r = subprocess.run(
             ["osascript", "-e", script],
             capture_output=True,
             text=True,
-            timeout=AUTOMATION_TIMEOUT_SEC,
+            timeout=timeout,
         )
         return r.returncode, (r.stdout or r.stderr or "").strip()
     except FileNotFoundError:
@@ -496,21 +509,27 @@ def _click(x: int, y: int, double: bool = False) -> Tuple[bool, str]:
         import Quartz  # type: ignore
 
         point = Quartz.CGPointMake(float(x), float(y))
-        events = [
-            Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft
-            ),
-            Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft
-            ),
-        ]
-        for ev in events:
+
+        def post(kind: Any, click_state: int) -> None:
+            ev = Quartz.CGEventCreateMouseEvent(
+                None, kind, point, Quartz.kCGMouseButtonLeft
+            )
+            # macOS decides "double click" from the event's click state, not
+            # from two clicks arriving close together. Without this, Finder and
+            # most text views read a double_click as two ordinary clicks and
+            # the action silently does the wrong thing.
+            setter = getattr(Quartz, "CGEventSetIntegerValueField", None)
+            field = getattr(Quartz, "kCGMouseEventClickState", None)
+            if click_state > 1 and setter is not None and field is not None:
+                setter(ev, field, click_state)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
             time.sleep(0.01)
+
+        post(Quartz.kCGEventLeftMouseDown, 1)
+        post(Quartz.kCGEventLeftMouseUp, 1)
         if double:
-            for ev in events:
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
-                time.sleep(0.01)
+            post(Quartz.kCGEventLeftMouseDown, 2)
+            post(Quartz.kCGEventLeftMouseUp, 2)
         return True, ""
     except Exception:
         pass
@@ -546,12 +565,18 @@ def _drag(
         )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
         time.sleep(0.02)
+        # Where the pointer actually is, so a cancel can put the button down
+        # here rather than somewhere it never travelled to.
+        last_x, last_y = float(x), float(y)
         for step in range(1, DRAG_STEPS + 1):
             if cancel is not None and cancel.is_set():
+                # Release where the drag got to. Releasing at the destination
+                # would complete the very move the cancel was meant to stop —
+                # the dragged file lands in the target folder anyway.
                 up = Quartz.CGEventCreateMouseEvent(
                     None,
                     Quartz.kCGEventLeftMouseUp,
-                    Quartz.CGPointMake(float(x2), float(y2)),
+                    Quartz.CGPointMake(last_x, last_y),
                     Quartz.kCGMouseButtonLeft,
                 )
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
@@ -559,6 +584,7 @@ def _drag(
             t = step / DRAG_STEPS
             cx = x + (x2 - x) * t
             cy = y + (y2 - y) * t
+            last_x, last_y = float(cx), float(cy)
             pt = Quartz.CGPointMake(float(cx), float(cy))
             drag = Quartz.CGEventCreateMouseEvent(
                 None, Quartz.kCGEventLeftMouseDragged, pt, Quartz.kCGMouseButtonLeft
@@ -572,16 +598,14 @@ def _drag(
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
         return True, ""
     except Exception as exc:
-        # Last resort: not a real drag, but better than silent wrong success.
-        first, detail = _click(x, y)
-        if not first:
-            return False, detail or f"drag start failed: {exc}"
-        if cancel is not None and cancel.wait(timeout=0.05):
-            return False, "action cancelled"
-        second, second_detail = _click(x2, y2)
-        if not second:
-            return False, second_detail or "drag endpoint failed"
-        return False, f"Quartz drag unavailable ({exc}); refused fake two-click drag"
+        # No Quartz, no drag. Two clicks are not a drag — they are two clicks,
+        # landing on whatever happens to be under the pointer at each end, and
+        # this used to perform both of them before reporting that it had
+        # "refused". Refusing means doing nothing.
+        return False, (
+            f"drag needs Quartz, which is unavailable ({exc}); "
+            "refused rather than substituting two clicks"
+        )
 
 
 def _type_text_quartz(

@@ -722,7 +722,12 @@ h3 {
 
 .grid-2 {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  /* minmax(0, …) rather than a bare fr: an `fr` track is minmax(auto, fr), so
+     its floor is the content's min-content width. One wide select in the left
+     column — a long model name that cannot wrap — was enough to push it to
+     796px and squeeze the right column down to 314px, wrapping every provider
+     blurb after two words. */
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
   gap: 1.25rem;
   align-items: start;
 }

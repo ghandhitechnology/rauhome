@@ -11,6 +11,7 @@ Run: python -m unittest tests.test_body_choreography -v
 """
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import unittest
@@ -115,6 +116,17 @@ class ToolRegistrationTests(unittest.TestCase):
         room_ts = (web / "room.ts").read_text()
         for station in choreography.STATIONS:
             self.assertIn(f"id: '{station}'", room_ts, f"{station} is not a real place")
+
+        # ...and the reverse. A station the renderer knows about but the tool
+        # does not is a place in the room the model can never be sent to, which
+        # is invisible until someone wonders why it never uses it.
+        declared_stations = re.findall(r"\{ id: '(\w+)',", room_ts)
+        self.assertTrue(declared_stations, "could not parse STATIONS from room.ts")
+        self.assertEqual(
+            sorted(set(declared_stations)),
+            sorted(choreography.STATIONS),
+            "room.ts and choreography.py disagree about where Rau can stand",
+        )
 
 
 class ValidationTests(unittest.TestCase):
