@@ -9,13 +9,13 @@ import {
 	err,
 	ExecutionError,
 	FileError,
-	InMemorySessionStorage,
+	JsonlSessionStorage,
 	NodeExecutionEnv,
 	ok,
 	Session,
 } from "@earendil-works/pi-agent-core/node";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { resolveModel } from "./models.mjs";
@@ -200,6 +200,8 @@ export class PiRun {
 		this.env = undefined;
 		this.toolPhases = new Map();
 		this.closed = false;
+		this.structuredResult = undefined;
+		this.sessionPath = "";
 		this.completion = new Promise((resolve) => {
 			this.resolveCompletion = resolve;
 		});
@@ -219,6 +221,8 @@ export class PiRun {
 			confirm: this.pendingConfirm
 				? { id: this.pendingConfirm.id, tool: this.pendingConfirm.tool, summary: this.pendingConfirm.summary }
 				: null,
+			completion: this.structuredResult ?? null,
+			session_path: this.sessionPath,
 		};
 	}
 
@@ -282,9 +286,17 @@ export class PiRun {
 			if (!ACTIVE_STATES.has(this.state)) return;
 			const env = new ConfinedExecutionEnv({ cwd: this.cwd, root: this.options.root });
 			this.env = env;
-			const session = new Session(
-				new InMemorySessionStorage({ metadata: { id: this.id, createdAt: new Date().toISOString() } }),
-			);
+			const sessionDir = resolve(this.options.root, "memories", "pi-sessions");
+			await mkdir(sessionDir, { recursive: true });
+			this.sessionPath = resolve(sessionDir, `${this.id}.jsonl`);
+			const storage = existsSync(this.sessionPath)
+				? await JsonlSessionStorage.open(env, this.sessionPath)
+				: await JsonlSessionStorage.create(env, this.sessionPath, {
+						cwd: this.cwd,
+						sessionId: this.id,
+						metadata: { runId: this.id, createdAt: new Date().toISOString() },
+					});
+			const session = new Session(storage);
 			const tools = this.options.tools.map((name) => {
 				const factory = TOOL_FACTORIES[name];
 				if (!factory) throw new Error(`unknown tool: ${name}`);
@@ -294,6 +306,7 @@ export class PiRun {
 				// deterministic ordering, so serialize the entire batch.
 				return { ...tool, executionMode: "sequential" };
 			});
+			tools.push(this.createFinishTool());
 			this.harness = new AgentHarness({
 				session,
 				models,
@@ -312,6 +325,13 @@ export class PiRun {
 			}
 			this.harness.subscribe((event) => this.onAgentEvent(event));
 			this.harness.on("tool_call", (event) => this.onToolCall(event));
+			this.harness.on("before_provider_request", () => {
+				if (this.turns >= this.options.maxTurns) {
+					this.overBudget = true;
+					throw new Error(`turn budget of ${this.options.maxTurns} exhausted`);
+				}
+				return undefined;
+			});
 
 			const message = await this.harness.prompt(this.goal);
 			this.settle(message);
@@ -335,6 +355,45 @@ export class PiRun {
 		}
 	}
 
+	createFinishTool() {
+		return {
+			name: "finish",
+			label: "finish",
+			description: "Return the structured completion contract after verification.",
+			executionMode: "sequential",
+			parameters: {
+				type: "object",
+				required: ["outcome", "summary"],
+				properties: {
+					outcome: { type: "string", enum: ["completed", "failed", "blocked"] },
+					summary: { type: "string" },
+					artifacts: { type: "array", items: { type: "string" } },
+					mutations: { type: "array", items: { type: "string" } },
+					verification: { type: "array", items: { type: "string" } },
+					blockers: { type: "array", items: { type: "string" } },
+					remaining_risks: { type: "array", items: { type: "string" } },
+				},
+			},
+			execute: async (_callId, input) => {
+				const fields = ["artifacts", "mutations", "verification", "blockers", "remaining_risks"];
+				const completion = {
+					outcome: String(input.outcome ?? "completed"),
+					summary: String(input.summary ?? "").slice(0, 100_000),
+				};
+				for (const field of fields) {
+					completion[field] = Array.isArray(input[field])
+						? input[field].filter((value) => typeof value === "string").slice(0, 100)
+						: [];
+				}
+				this.structuredResult = completion;
+				return {
+					content: [{ type: "text", text: "Structured completion recorded." }],
+					details: completion,
+				};
+			},
+		};
+	}
+
 	/** pi never injects the skill listing itself — the application owns that block. */
 	buildSystemPrompt(resources) {
 		const available = resources.skills ?? [];
@@ -347,7 +406,12 @@ export class PiRun {
 			.filter((skill) => skill.content)
 			.map((skill) => `## Skill: ${skill.name}\n${skill.content}`)
 			.join("\n\n");
-		return [this.options.systemPrompt, skills, bodies].filter(Boolean).join("\n\n");
+		return [
+			this.options.systemPrompt,
+			"Before stopping, call finish with outcome, summary, artifacts, mutations, verification, blockers, and remaining risks.",
+			skills,
+			bodies,
+		].filter(Boolean).join("\n\n");
 	}
 
 	onAgentEvent(event) {
@@ -397,7 +461,6 @@ export class PiRun {
 			// turn budget inside it, so the ceiling has to be enforced from out here.
 			if (this.turns >= this.options.maxTurns) {
 				this.overBudget = true;
-				this.abortHarness();
 			}
 		}
 	}
@@ -491,6 +554,10 @@ export class PiRun {
 			return;
 		}
 		if (message.stopReason === "error") {
+			if (this.overBudget) {
+				this.finish("failed", text, `turn budget of ${this.options.maxTurns} exhausted`);
+				return;
+			}
 			this.finish("failed", text, message.errorMessage || "provider error");
 			return;
 		}
@@ -498,11 +565,17 @@ export class PiRun {
 			this.finish("failed", text, "provider response hit the output token limit");
 			return;
 		}
-		if (!text) {
+		if (!text && !this.structuredResult?.summary) {
 			this.finish("failed", "", "provider returned an empty final response");
 			return;
 		}
-		this.finish("done", text, "");
+		const summary = this.structuredResult?.summary || text;
+		const outcome = this.structuredResult?.outcome;
+		if (outcome === "failed" || outcome === "blocked") {
+			this.finish("failed", summary, outcome === "blocked" ? "blocked" : "worker reported failure");
+			return;
+		}
+		this.finish("done", summary, "");
 	}
 
 	fail(error) {
@@ -517,7 +590,13 @@ export class PiRun {
 		this.progress = state;
 		this.updated = Date.now();
 		this.emit("state", { state, progress: this.progress });
-		this.emit("result", { state, result, error });
+		this.emit("result", {
+			state,
+			result,
+			error,
+			completion: this.structuredResult ?? null,
+			session_path: this.sessionPath,
+		});
 	}
 }
 

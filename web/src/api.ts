@@ -54,11 +54,55 @@ export type ElevenVoice = {
 export type Job = {
   id: string
   goal: string
-  state: 'running' | 'awaiting_confirm' | 'done' | 'failed' | 'cancelled'
+  state: 'queued' | 'planning' | 'running' | 'verifying' | 'awaiting_confirm' | 'done' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
   progress: string
   result: string
   created: number
   updated: number
+  executor?: 'python' | 'pi'
+  plan?: { steps?: AgentStep[] }
+  budget?: Record<string, number>
+  parent_id?: string | null
+  lifecycle_state?: string
+}
+
+export type AgentStep = {
+  id: string
+  ordinal: number
+  title: string
+  state: string
+  executor: string
+  dependencies: string[]
+  evidence: Array<Record<string, unknown>>
+  attempt: number
+  strategy: string
+  result: Record<string, unknown>
+}
+
+export type Schedule = {
+  id: string
+  name: string
+  enabled: boolean | number
+  goal: string
+  trigger_kind: 'once' | 'interval' | 'cron'
+  trigger: Record<string, unknown>
+  timezone: string
+  resource_profile: 'eco' | 'balanced' | 'performance'
+  permission_policy: 'readonly' | 'approval'
+  next_run_at?: number | null
+  revision: number
+}
+
+export type ScheduleRun = {
+  id: string
+  schedule_id: string
+  state: string
+  nominal_at: number
+  enqueued_at: number
+  coalesced_count: number
+  attempt: number
+  job_id?: string | null
+  outcome: Record<string, unknown>
 }
 
 export type BrowseProviderMeta = {
@@ -269,10 +313,34 @@ export const api = {
     req<any>('/api/hard-task', { method: 'POST', body: JSON.stringify({ goal }) }),
   cancelHardTask: () => req<any>('/api/hard-task/cancel', { method: 'POST', body: '{}' }),
   jobs: () => req<{ jobs: Job[]; max_parallel: number }>('/api/jobs'),
+  job: (id: string) => req<{ job: Job; steps: AgentStep[] }>(`/api/jobs/${id}`),
   startJob: (goal: string) =>
     req<any>('/api/jobs', { method: 'POST', body: JSON.stringify({ goal }) }),
   cancelJob: (id: string) =>
     req<any>(`/api/jobs/${id}/cancel`, { method: 'POST', body: '{}' }),
+  confirmations: () => req<{ confirmations: any[] }>('/api/confirmations?state_filter=pending'),
+  schedules: () => req<{ schedules: Schedule[] }>('/api/schedules'),
+  scheduleRuns: (id: string) =>
+    req<{ runs: ScheduleRun[] }>(`/api/schedules/${id}/runs`),
+  createSchedule: (body: Record<string, unknown>) =>
+    req<any>('/api/schedules', { method: 'POST', body: JSON.stringify(body) }),
+  updateSchedule: (id: string, body: Record<string, unknown>) =>
+    req<any>(`/api/schedules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteSchedule: (id: string) =>
+    req<any>(`/api/schedules/${id}`, { method: 'DELETE' }),
+  runSchedule: (id: string) =>
+    req<any>(`/api/schedules/${id}/run`, { method: 'POST', body: '{}' }),
+  pauseSchedule: (id: string) =>
+    req<any>(`/api/schedules/${id}/pause`, { method: 'POST', body: '{}' }),
+  resumeSchedule: (id: string) =>
+    req<any>(`/api/schedules/${id}/resume`, { method: 'POST', body: '{}' }),
+  computerSessions: () => req<any>('/api/computer/sessions'),
+  resourceProfile: () => req<any>('/api/resource-profile'),
+  putResourceProfile: (profile: 'eco' | 'balanced' | 'performance') =>
+    req<any>('/api/resource-profile', {
+      method: 'PUT',
+      body: JSON.stringify({ profile }),
+    }),
   mcp: () => req<any>('/api/mcp/status'),
   memory: () => req<any>('/api/memory'),
   dream: () => req<any>('/api/dream/run', { method: 'POST', body: '{}' }),

@@ -20,6 +20,7 @@ from rau.providers.openai_compat import PROVIDERS
 _lock = threading.RLock()
 _models: Dict[str, Any] = {}
 _settings: Dict[str, Any] = {}
+_reliable_providers: Dict[str, ChatProvider] = {}
 log = logging.getLogger("rau.providers.registry")
 
 
@@ -43,7 +44,7 @@ def _default_models() -> Dict[str, Any]:
             "model": "openai/gpt-5.6-sol",
             "max_tokens": 4096,
             "temperature": 0.3,
-            "effort": "high",
+            "effort": "medium",
         },
         "dream": {
             "provider": "openrouter",
@@ -89,6 +90,8 @@ def _default_settings() -> Dict[str, Any]:
         "confirm_timeout_sec": 45,
         "presence_backoff_after_misses": 2,
         "hard_task_progress_interval_sec": 25,
+        "resource_profile": "balanced",
+        "pi_executor_enabled": False,
         "trace_ttl_days": 7,
         "face_history_turns": 24,
         "permissions": {
@@ -369,7 +372,14 @@ def get_provider(name: str) -> ChatProvider:
     prov = PROVIDERS.get(name)
     if not prov:
         raise KeyError(f"Unknown provider: {name}")
-    return prov
+    with _lock:
+        wrapped = _reliable_providers.get(name)
+        if wrapped is None or getattr(wrapped, "inner", None) is not prov:
+            from rau.providers.reliability import CircuitBreakerProvider
+
+            wrapped = CircuitBreakerProvider(prov)
+            _reliable_providers[name] = wrapped
+        return wrapped
 
 
 def provider_status() -> Dict[str, Any]:

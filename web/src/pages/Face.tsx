@@ -20,6 +20,7 @@ import {
 import { useMode } from '../mode'
 import { useVoiceSession } from '../voice'
 import { api } from '../api'
+import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
 import { panelStore, type PanelSummary } from '../panels'
 import './Face.css'
@@ -214,10 +215,24 @@ export default function Face() {
 
   useEffect(() => {
     refresh()
-    // In voice mode the socket is the source of truth for the conversation;
-    // polling only keeps the ambient room state fresh, so it can slow down.
-    const id = setInterval(refresh, mode === 'voice' ? 4000 : 1500)
-    return () => clearInterval(id)
+    const id = setInterval(() => {
+      if (!live.isConnected()) void refresh()
+    }, 15_000)
+    const off = live.subscribe((event) => {
+      if (
+        event.kind === 'chat_done' ||
+        event.kind === 'chat_error' ||
+        event.kind === 'hard_task' ||
+        event.kind === 'confirm_request' ||
+        event.kind === 'confirm_result'
+      ) {
+        void refresh()
+      }
+    })
+    return () => {
+      clearInterval(id)
+      off()
+    }
   }, [refresh, mode])
 
   async function send() {

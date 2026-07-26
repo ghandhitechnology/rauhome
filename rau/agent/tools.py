@@ -184,6 +184,13 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Continue the persisted session returned by an "
+                            "earlier legacy screenshot/action."
+                        ),
+                    },
                     "action": {
                         "type": "string",
                         "description": (
@@ -235,6 +242,247 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "computer_status",
+            "description": "Check stable computer-use capabilities or one persisted session.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_id": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_observe",
+            "description": (
+                "Start or refresh a computer session. Returns a screenshot, "
+                "window/display identity, and bounded Accessibility tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "app": {"type": "string"},
+                    "frontmost": {"type": "boolean"},
+                    "display_id": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_inspect_ui",
+            "description": "Read the latest Accessibility observation for a session.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_id": {"type": "string"}},
+                "required": ["session_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_focus",
+            "description": "Focus an application in an active computer session, then observe it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "app": {"type": "string"},
+                },
+                "required": ["session_id", "app"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_act",
+            "description": (
+                "Perform one confirmed, verified computer mutation. target.kind "
+                "is semantic (role/title/label/identifier/id) or visual "
+                "(observation_id,x,y,display_id). Observe before acting."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "activate",
+                            "click",
+                            "double_click",
+                            "type",
+                            "key",
+                            "drag",
+                            "move",
+                        ],
+                    },
+                    "target": {"type": "object"},
+                    "text": {"type": "string"},
+                    "key": {"type": "string"},
+                    "postcondition": {"type": "object"},
+                },
+                "required": ["session_id", "action", "target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_wait_for",
+            "description": "Observe until an Accessibility condition becomes true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "condition": {"type": "object"},
+                    "timeout_sec": {"type": "number"},
+                },
+                "required": ["session_id", "condition"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_assert",
+            "description": "Check an Accessibility postcondition without mutating the Mac.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "condition": {"type": "object"},
+                },
+                "required": ["session_id", "condition"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_finish",
+            "description": "Release a persisted computer session with an outcome and summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["completed", "failed", "cancelled"],
+                    },
+                    "summary": {"type": "string"},
+                },
+                "required": ["session_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_schedules",
+            "description": "List Rau's durable one-time, interval, and cron schedules.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_schedule",
+            "description": (
+                "Create durable scheduled work. trigger is {kind:'once',at:ISO}, "
+                "{kind:'interval',seconds,anchor?}, or "
+                "{kind:'cron',expression:'m h dom mon dow'}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "goal": {"type": "string"},
+                    "trigger": {"type": "object"},
+                    "timezone": {"type": "string"},
+                    "resource_profile": {
+                        "type": "string",
+                        "enum": ["eco", "balanced", "performance"],
+                    },
+                    "permission_policy": {
+                        "type": "string",
+                        "enum": ["readonly", "approval"],
+                    },
+                },
+                "required": ["name", "goal", "trigger"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_schedule",
+            "description": "Update a durable schedule by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "changes": {"type": "object"},
+                },
+                "required": ["id", "changes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_schedule",
+            "description": "Delete a durable schedule while retaining its run history.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pause_schedule",
+            "description": "Pause a durable schedule.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "resume_schedule",
+            "description": "Resume a durable schedule from its next future occurrence.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_schedule_now",
+            "description": "Queue a schedule immediately without changing its next occurrence.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "spawn_subagent",
             "description": (
                 "Split this goal into independent sub-goals and run them as "
@@ -259,10 +507,27 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "finish",
-            "description": "Complete the hard task with a final summary for Rau to speak.",
+            "description": (
+                "Complete the hard task with a structured result. Include actual "
+                "artifacts, mutations, verification, blockers, and remaining risks."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"summary": {"type": "string"}},
+                "properties": {
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["completed", "failed", "blocked"],
+                    },
+                    "summary": {"type": "string"},
+                    "artifacts": {"type": "array", "items": {"type": "string"}},
+                    "mutations": {"type": "array", "items": {"type": "string"}},
+                    "verification": {"type": "array", "items": {"type": "string"}},
+                    "blockers": {"type": "array", "items": {"type": "string"}},
+                    "remaining_risks": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
                 "required": ["summary"],
             },
         },
@@ -405,7 +670,102 @@ def run_tool(
         action = args.get("action")
         if not isinstance(action, str):
             return {"ok": False, "error": "action must be a string"}
-        return execute_action(args, cancel=cancel, auto_verify=True)
+        from rau.computer.session import compatibility_cua_action
+
+        return compatibility_cua_action(args, job_id=job_id, cancel=cancel)
+
+    if name.startswith("computer_"):
+        from rau.computer.session import COMPUTER
+
+        session_id = str(args.get("session_id") or "")
+        try:
+            if name == "computer_status":
+                return COMPUTER.status(session_id or None)
+            if name == "computer_observe":
+                if not session_id:
+                    started = COMPUTER.start(
+                        job_id=job_id,
+                        app=str(args.get("app") or "") or None,
+                        frontmost=bool(args.get("frontmost", True)),
+                    )
+                    session_id = str(started["id"])
+                return COMPUTER.observe(
+                    session_id,
+                    app=str(args.get("app") or "") or None,
+                    frontmost=args.get("frontmost")
+                    if isinstance(args.get("frontmost"), bool)
+                    else None,
+                    display_id=args.get("display_id")
+                    if isinstance(args.get("display_id"), int)
+                    else None,
+                )
+            if name == "computer_inspect_ui":
+                return COMPUTER.inspect_ui(session_id)
+            if name == "computer_focus":
+                return COMPUTER.focus(session_id, str(args.get("app") or ""))
+            if name == "computer_act":
+                return COMPUTER.act(session_id, args, cancel=cancel)
+            if name == "computer_wait_for":
+                condition = args.get("condition")
+                if not isinstance(condition, dict):
+                    return {"ok": False, "error": "condition must be an object"}
+                return COMPUTER.wait_for(
+                    session_id,
+                    condition,
+                    timeout_sec=float(args.get("timeout_sec") or 15.0),
+                    cancel=cancel,
+                )
+            if name == "computer_assert":
+                condition = args.get("condition")
+                if not isinstance(condition, dict):
+                    return {"ok": False, "error": "condition must be an object"}
+                return COMPUTER.assert_condition(session_id, condition)
+            if name == "computer_finish":
+                return COMPUTER.finish(
+                    session_id,
+                    outcome=str(args.get("outcome") or "completed"),
+                    summary=str(args.get("summary") or ""),
+                )
+            return {"ok": False, "error": f"unknown computer tool {name}"}
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    if name in {
+        "list_schedules",
+        "create_schedule",
+        "update_schedule",
+        "delete_schedule",
+        "pause_schedule",
+        "resume_schedule",
+        "run_schedule_now",
+    }:
+        from rau.scheduler import SCHEDULER
+
+        if name == "list_schedules":
+            return {"ok": True, "schedules": SCHEDULER.store.list_schedules()}
+        schedule_id = str(args.get("id") or "")
+        try:
+            if name == "create_schedule":
+                return {"ok": True, "schedule": SCHEDULER.create(args)}
+            if name == "update_schedule":
+                changes = args.get("changes")
+                if not isinstance(changes, dict):
+                    return {"ok": False, "error": "changes must be an object"}
+                return {
+                    "ok": True,
+                    "schedule": SCHEDULER.update(schedule_id, changes),
+                }
+            if name == "delete_schedule":
+                return {"ok": SCHEDULER.delete(schedule_id), "id": schedule_id}
+            if name == "pause_schedule":
+                return {"ok": True, "schedule": SCHEDULER.pause(schedule_id)}
+            if name == "resume_schedule":
+                return {"ok": True, "schedule": SCHEDULER.resume(schedule_id)}
+            return {"ok": True, "run": SCHEDULER.run_now(schedule_id)}
+        except KeyError:
+            return {"ok": False, "error": "unknown schedule", "id": schedule_id}
+        except (RuntimeError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
 
     if name == "spawn_subagent":
         # Imported here because the orchestrator owns the loop that calls this
@@ -423,7 +783,30 @@ def run_tool(
         return spawn_children(job_id or "", goals)
 
     if name == "finish":
-        return {"ok": True, "finished": True, "summary": str(args.get("summary") or "")}
+        fields = (
+            "artifacts",
+            "mutations",
+            "verification",
+            "blockers",
+            "remaining_risks",
+        )
+        completion: Dict[str, Any] = {
+            "outcome": str(args.get("outcome") or "completed"),
+            "summary": str(args.get("summary") or ""),
+        }
+        for field_name in fields:
+            values = args.get(field_name) or []
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) for value in values
+            ):
+                return {"ok": False, "error": f"{field_name} must be an array of strings"}
+            completion[field_name] = [value[:1000] for value in values[:100]]
+        return {
+            "ok": True,
+            "finished": True,
+            "summary": completion["summary"],
+            "completion": completion,
+        }
 
     if name == "use_skill":
         from rau.skills.runtime import use_skill_tool

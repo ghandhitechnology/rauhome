@@ -6,7 +6,9 @@ absence phrasing, real heartbeat activity, and session-boundary cues.
 from __future__ import annotations
 
 import json
+import os
 import random
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -295,7 +297,20 @@ def save_presence() -> None:
         "mood": mood,
         "heartbeat_events": get_heartbeat_events(),
     }
-    PRESENCE_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{PRESENCE_FILE.name}.", suffix=".tmp", dir=PRESENCE_FILE.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, PRESENCE_FILE)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def load_presence() -> Dict[str, Any]:
@@ -586,34 +601,34 @@ def maybe_nudge() -> None:
 
 def heartbeat_loop() -> None:
     while not _stop.is_set():
-        try:
-            maybe_nudge()
-            # progress reminders while hard task runs
-            ht = state.get_hard_task()
-            if ht.get("state") == "running":
-                progress = str(ht.get("progress") or "still working")
-                BUS.emit(
-                    "hard_task_progress",
-                    progress=progress,
-                    id=ht.get("id"),
-                )
-                gap = gap_since_last_user()
-                if gap is not None and gap >= REENTRY_SOFT_SEC:
-                    append_heartbeat_event("task_progress", progress)
-        except Exception:
-            pass
+        _heartbeat_tick()
         _stop.wait(90)
 
 
 def start_heartbeat() -> None:
-    global _thread
     load_presence()
-    if _thread and _thread.is_alive():
-        return
-    _stop.clear()
-    _thread = threading.Thread(target=heartbeat_loop, daemon=True, name="rau-heart")
-    _thread.start()
+    from rau.scheduler import SCHEDULER
+
+    SCHEDULER.register_timer(
+        "presence", _heartbeat_tick, interval_sec=90.0, initial_delay_sec=2.0
+    )
 
 
 def stop_heartbeat() -> None:
-    _stop.set()
+    from rau.scheduler import SCHEDULER
+
+    SCHEDULER.unregister_timer("presence")
+
+
+def _heartbeat_tick() -> None:
+    try:
+        maybe_nudge()
+        ht = state.get_hard_task()
+        if ht.get("state") == "running":
+            progress = str(ht.get("progress") or "still working")
+            BUS.emit("hard_task_progress", progress=progress, id=ht.get("id"))
+            gap = gap_since_last_user()
+            if gap is not None and gap >= REENTRY_SOFT_SEC:
+                append_heartbeat_event("task_progress", progress)
+    except Exception:
+        pass

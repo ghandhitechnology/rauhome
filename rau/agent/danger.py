@@ -90,6 +90,20 @@ def classify_tool(name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
             return True, f"Computer use action: {action}"
         return False, ""
 
+    if n == "computer_act":
+        action = str(args.get("action") or "").lower()
+        return True, f"Verified computer use action: {action or 'unknown'}"
+
+    if n in {
+        "create_schedule",
+        "update_schedule",
+        "delete_schedule",
+        "run_schedule_now",
+        "pause_schedule",
+        "resume_schedule",
+    }:
+        return True, f"Change durable scheduled work via {name}: {str(args)[:500]}"
+
     if args.get("requires_confirm"):
         return True, str(args.get("summary") or name)
 

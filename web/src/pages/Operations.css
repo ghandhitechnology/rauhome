@@ -1,0 +1,113 @@
+.operations {
+  display: grid;
+  gap: 1rem;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+
+.ops-head,
+.ops-card-head,
+.ops-form-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: flex-start;
+}
+
+.ops-head h1,
+.operations h2 {
+  margin: 0;
+}
+
+.ops-head p,
+.ops-card p {
+  margin: 0.3rem 0;
+  color: var(--muted);
+}
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.ops-form-row > * {
+  flex: 1;
+}
+
+.ops-list {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.8rem;
+}
+
+.ops-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--sunken);
+  padding: 0.8rem;
+}
+
+.ops-card.warning {
+  border-color: var(--accent-a40);
+  background: var(--accent-a12);
+}
+
+.ops-card small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.ops-card .row {
+  margin-top: 0.65rem;
+}
+
+.step-row {
+  display: grid;
+  grid-template-columns: 1.7rem 1fr;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+  padding: 0.55rem;
+  border-left: 2px solid var(--accent-a40);
+}
+
+.step-row > span {
+  color: var(--accent);
+}
+
+.job-children {
+  margin: 0.7rem 0 0 1rem;
+}
+
+.run-strip {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.7rem;
+}
+
+.run-strip span {
+  padding: 0.35rem 0.5rem;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.takeover,
+.ops-error {
+  display: block;
+  color: var(--danger);
+  margin-top: 0.55rem;
+}
+
+@media (max-width: 760px) {
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+  .ops-card-head,
+  .ops-form-row {
+    flex-direction: column;
+  }
+}

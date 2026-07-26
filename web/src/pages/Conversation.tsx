@@ -230,7 +230,9 @@ export default function Conversation() {
 
   useEffect(() => {
     refresh()
-    const id = setInterval(refresh, 1200)
+    const id = setInterval(() => {
+      if (!live.isConnected()) void refresh()
+    }, 15_000)
     return () => clearInterval(id)
   }, [])
 
@@ -268,9 +270,16 @@ export default function Conversation() {
           // Hold the finished text until the polled log catches up with it,
           // otherwise the reply blinks out and back in again.
           setStreaming((prev) => (prev && prev.turnId !== turnId ? prev : { turnId, text }))
+          void refresh()
           break
         case 'chat_error':
           setStreaming((prev) => (prev && prev.turnId !== turnId ? prev : null))
+          void refresh()
+          break
+        case 'hard_task':
+        case 'confirm_request':
+        case 'confirm_result':
+          void refresh()
           break
       }
     }),

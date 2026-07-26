@@ -22,13 +22,16 @@ export function useClawdCanvas(
     if (!ctx) return
 
     let raf = 0
+    let timer: ReturnType<typeof setTimeout> | null = null
     let last = performance.now()
     let width = 0
     let height = 0
     let disposed = false
 
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const profile = document.documentElement.dataset.resourceProfile || 'balanced'
+      const maxDpr = profile === 'eco' ? 1 : profile === 'performance' ? 2 : 1.5
+      const dpr = Math.min(window.devicePixelRatio || 1, maxDpr)
       const rect = canvas.getBoundingClientRect()
       width = Math.max(1, Math.round(rect.width))
       height = Math.max(1, Math.round(rect.height))
@@ -41,6 +44,19 @@ export function useClawdCanvas(
     const ro = new ResizeObserver(resize)
     ro.observe(canvas)
 
+    const targetFps = () => {
+      const profile = document.documentElement.dataset.resourceProfile || 'balanced'
+      const active = document.documentElement.dataset.rauActive === 'true'
+      return profile === 'performance' ? 60 : active ? 30 : profile === 'eco' ? 15 : 24
+    }
+
+    const scheduleFrame = () => {
+      timer = setTimeout(() => {
+        timer = null
+        raf = requestAnimationFrame(frame)
+      }, 1000 / targetFps())
+    }
+
     const frame = (now: number) => {
       if (disposed) return
       // 100ms ceiling: long enough to absorb a hitch, short enough that a
@@ -51,9 +67,9 @@ export function useClawdCanvas(
         ctx.clearRect(0, 0, width, height)
         drawRef.current(ctx, dt, width, height)
       }
-      raf = requestAnimationFrame(frame)
+      scheduleFrame()
     }
-    raf = requestAnimationFrame(frame)
+    scheduleFrame()
 
     const onVisible = () => {
       last = performance.now()
@@ -63,6 +79,7 @@ export function useClawdCanvas(
     return () => {
       disposed = true
       cancelAnimationFrame(raf)
+      if (timer) clearTimeout(timer)
       ro.disconnect()
       document.removeEventListener('visibilitychange', onVisible)
     }
