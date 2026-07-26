@@ -265,24 +265,32 @@ class OpenAICompatProvider(ChatProvider):
         )
         accum: List[str] = []
         malformed = 0
-        with self._open(req, timeout=120) as resp:
-            for raw in _stream_lines(resp, self.name):
-                line = raw.decode("utf-8", errors="ignore").rstrip("\n")
-                if not line.startswith("data:"):
-                    continue
-                payload_str = line[len("data:") :].strip()
-                if payload_str == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload_str)
-                except json.JSONDecodeError:
-                    malformed = _malformed(self.name, malformed)
-                    continue
-                delta = _choice_delta(chunk)
-                token = delta.get("content") or ""
-                if isinstance(token, str) and token:
-                    accum.append(token)
-                    yield token
+        try:
+            with self._open(req, timeout=120) as resp:
+                for raw in _stream_lines(resp, self.name):
+                    line = raw.decode("utf-8", errors="ignore").rstrip("\n")
+                    if not line.startswith("data:"):
+                        continue
+                    payload_str = line[len("data:") :].strip()
+                    # Bare "data:" lines are keep-alives, not malformed events.
+                    if not payload_str:
+                        continue
+                    if payload_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload_str)
+                    except json.JSONDecodeError:
+                        malformed = _malformed(self.name, malformed)
+                        continue
+                    delta = _choice_delta(chunk)
+                    token = delta.get("content") or ""
+                    if isinstance(token, str) and token:
+                        accum.append(token)
+                        yield token
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
+        except OSError as e:
+            raise RuntimeError(f"{self.name} connection failed: {e}") from e
         return "".join(accum)
 
     def stream_turn(
@@ -334,77 +342,85 @@ class OpenAICompatProvider(ChatProvider):
         reasoning_details: List[Dict[str, Any]] = []
         malformed = 0
 
-        with self._open(req, timeout=120) as resp:
-            for raw in _stream_lines(resp, self.name):
-                line = raw.decode("utf-8", errors="ignore").strip()
-                if not line.startswith("data:"):
-                    continue
-                blob = line[len("data:") :].strip()
-                if blob == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(blob)
-                except json.JSONDecodeError:
-                    malformed = _malformed(self.name, malformed)
-                    continue
-
-                delta = _choice_delta(chunk)
-
-                thought, continuation = _readable_reasoning(delta)
-                if continuation:
-                    reasoning_details.extend(continuation)
-                if thought:
-                    reasoning.append(thought)
-                    yield ReasoningDelta(
-                        thought,
-                        "deepseek"
-                        if self.name == "deepseek"
-                        else "openrouter",
-                    )
-
-                token = delta.get("content") or ""
-                if isinstance(token, str) and token:
-                    text.append(token)
-                    yield TextDelta(token)
-
-                calls = delta.get("tool_calls") or []
-                if not isinstance(calls, list):
-                    malformed = _malformed(self.name, malformed)
-                    continue
-                for tc in calls:
-                    if not isinstance(tc, dict):
+        try:
+            with self._open(req, timeout=120) as resp:
+                for raw in _stream_lines(resp, self.name):
+                    line = raw.decode("utf-8", errors="ignore").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    blob = line[len("data:") :].strip()
+                    # Bare "data:" lines are keep-alives, not malformed events.
+                    if not blob:
+                        continue
+                    if blob == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(blob)
+                    except json.JSONDecodeError:
                         malformed = _malformed(self.name, malformed)
                         continue
-                    # Some providers omit `index` when there is only one call.
-                    idx = _tool_index(tc.get("index"))
-                    if idx is None:
+
+                    delta = _choice_delta(chunk)
+
+                    thought, continuation = _readable_reasoning(delta)
+                    if continuation:
+                        reasoning_details.extend(continuation)
+                    if thought:
+                        reasoning.append(thought)
+                        yield ReasoningDelta(
+                            thought,
+                            "deepseek"
+                            if self.name == "deepseek"
+                            else "openrouter",
+                        )
+
+                    token = delta.get("content") or ""
+                    if isinstance(token, str) and token:
+                        text.append(token)
+                        yield TextDelta(token)
+
+                    calls = delta.get("tool_calls") or []
+                    if not isinstance(calls, list):
                         malformed = _malformed(self.name, malformed)
                         continue
-                    fn = tc.get("function") or {}
-                    if not isinstance(fn, dict):
-                        malformed = _malformed(self.name, malformed)
-                        continue
-                    slot = parts.setdefault(idx, {"id": "", "name": "", "args": ""})
-                    tc_id = tc.get("id")
-                    tc_id = tc_id if isinstance(tc_id, str) else ""
-                    fn_name = fn.get("name")
-                    fn_name = fn_name if isinstance(fn_name, str) else ""
-                    if tc_id:
-                        slot["id"] = tc_id
-                    if fn_name:
-                        slot["name"] = fn_name
-                    frag = fn.get("arguments") or ""
-                    if isinstance(frag, str) and frag:
-                        slot["args"] += frag
-                    elif frag:
-                        malformed = _malformed(self.name, malformed)
-                        continue
-                    yield ToolCallDelta(
-                        index=idx,
-                        id=tc_id,
-                        name=fn_name,
-                        args_fragment=frag if isinstance(frag, str) else "",
-                    )
+                    for tc in calls:
+                        if not isinstance(tc, dict):
+                            malformed = _malformed(self.name, malformed)
+                            continue
+                        # Some providers omit `index` when there is only one call.
+                        idx = _tool_index(tc.get("index"))
+                        if idx is None:
+                            malformed = _malformed(self.name, malformed)
+                            continue
+                        fn = tc.get("function") or {}
+                        if not isinstance(fn, dict):
+                            malformed = _malformed(self.name, malformed)
+                            continue
+                        slot = parts.setdefault(idx, {"id": "", "name": "", "args": ""})
+                        tc_id = tc.get("id")
+                        tc_id = tc_id if isinstance(tc_id, str) else ""
+                        fn_name = fn.get("name")
+                        fn_name = fn_name if isinstance(fn_name, str) else ""
+                        if tc_id:
+                            slot["id"] = tc_id
+                        if fn_name:
+                            slot["name"] = fn_name
+                        frag = fn.get("arguments") or ""
+                        if isinstance(frag, str) and frag:
+                            slot["args"] += frag
+                        elif frag:
+                            malformed = _malformed(self.name, malformed)
+                            continue
+                        yield ToolCallDelta(
+                            index=idx,
+                            id=tc_id,
+                            name=fn_name,
+                            args_fragment=frag if isinstance(frag, str) else "",
+                        )
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
+        except OSError as e:
+            raise RuntimeError(f"{self.name} connection failed: {e}") from e
 
         yield StreamDone(
             ChatResult(

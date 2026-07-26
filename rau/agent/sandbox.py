@@ -61,7 +61,13 @@ def resolve_in_root(given: str) -> Path:
     if not p.is_absolute():
         p = REAL_ROOT / p
 
-    resolved = Path(os.path.realpath(p))
+    try:
+        resolved = Path(os.path.realpath(p))
+    except ValueError:
+        # An embedded null byte (anything the OS refuses to stat) can never be
+        # proven inside the root, so it is refused like an escape rather than
+        # raised as an error the tool layer does not handle.
+        raise PathEscape(raw, p) from None
     if resolved != REAL_ROOT and REAL_ROOT not in resolved.parents:
         raise PathEscape(raw, resolved)
     return resolved

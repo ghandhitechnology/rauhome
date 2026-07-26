@@ -119,12 +119,17 @@ def accessibility_tree(
     handles: Dict[str, Any] = {}
     queue: List[Tuple[Any, str, int]] = [(root, "0", 0)]
     seen: set[int] = set()
+    # id() dedup is only sound while every element stays alive: a freed
+    # element's address can be reused by the next AXUIElement wrapper, and
+    # the live node would then be skipped as already seen.
+    seen_refs: List[Any] = []
     while queue and len(nodes) < max(1, min(MAX_AX_NODES, int(max_nodes))):
         element, path, depth = queue.pop(0)
         identity = id(element)
         if identity in seen:
             continue
         seen.add(identity)
+        seen_refs.append(element)
         role = _ax_text(_ax_value(element, AS.kAXRoleAttribute), 100)
         title = _ax_text(_ax_value(element, AS.kAXTitleAttribute))
         description = _ax_text(_ax_value(element, AS.kAXDescriptionAttribute))
@@ -525,7 +530,10 @@ class ComputerSessionManager:
                     for candidate in current_nodes
                     if _matches(candidate, target)
                 ]
-                index = int(target.get("index") or 0)
+                try:
+                    index = int(target.get("index") or 0)
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "target.index must be an integer"}
                 node = (
                     candidates[index]
                     if 0 <= index < len(candidates)
@@ -920,7 +928,18 @@ def compatibility_cua_action(
         else None,
     )
     if not observed.get("ok") or action == "screenshot":
-        if action != "screenshot":
+        if created_here:
+            # A screenshot has no effects to verify, but the session it
+            # borrowed still holds the single active lease. Leaving it
+            # active makes every later start() fail with "another
+            # computer-use session owns the machine" until the lease ages
+            # out, so one-shot callers release it here too.
+            COMPUTER.finish(
+                session_id,
+                outcome="completed" if observed.get("ok") else "failed",
+                summary=str(observed.get("error") or "legacy CUA compatibility action"),
+            )
+        elif action != "screenshot":
             COMPUTER.finish(session_id, outcome="failed", summary=str(observed.get("error") or ""))
         return {**observed, "session_id": session_id}
     observation_id = str(observed["observation"]["id"])
@@ -941,14 +960,18 @@ def compatibility_cua_action(
             if key in args
         },
     }
-    result = COMPUTER.act(session_id, request, cancel=cancel)
     # Preserve an explicitly continued session so subsequent compatibility
     # calls can observe and verify within the same exclusive lease. One-shot
-    # callers keep their old behavior and release the machine immediately.
-    if created_here:
-        COMPUTER.finish(
-            session_id,
-            outcome="completed" if result.get("ok") else "failed",
-            summary="legacy CUA compatibility action",
-        )
+    # callers keep their old behavior and release the machine immediately —
+    # including when act() raises, or the lease would leak the same way.
+    result: Dict[str, Any] = {"ok": False}
+    try:
+        result = COMPUTER.act(session_id, request, cancel=cancel)
+    finally:
+        if created_here:
+            COMPUTER.finish(
+                session_id,
+                outcome="completed" if result.get("ok") else "failed",
+                summary="legacy CUA compatibility action",
+            )
     return {**result, "session_id": session_id}

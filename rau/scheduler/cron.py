@@ -38,10 +38,15 @@ def _field(text: str, minimum: int, maximum: int, *, dow: bool = False) -> Froze
             except ValueError as exc:
                 raise CronError(f"invalid cron value: {part}") from exc
         if dow:
-            if start == 7:
-                start = 0
-            if end == 7:
-                end = 0
+            # POSIX spells Sunday as 0 or 7. Expand on the raw numbers so a
+            # range ending in 7 (5-7 = Fri-Sun) still spans the week, then fold
+            # 7 back to 0 — mapping first turns 5-7 into a descending range.
+            if start < minimum or start > 7 or end < minimum or end > 7:
+                raise CronError(f"cron value outside {minimum}-7: {part}")
+            if start > end:
+                raise CronError(f"descending cron range is unsupported: {part}")
+            values.update(0 if value == 7 else value for value in range(start, end + 1, step))
+            continue
         if start < minimum or start > maximum or end < minimum or end > maximum:
             raise CronError(f"cron value outside {minimum}-{maximum}: {part}")
         if start > end:

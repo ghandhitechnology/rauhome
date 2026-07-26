@@ -31,6 +31,8 @@ function invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
 }
 
 export function isPetShell(): boolean {
+  // The same guard tauri() applies: outside a browser there is no window.
+  if (typeof window === 'undefined') return false
   return !!tauri() || !!(window as TauriWindow).__TAURI_INTERNALS__
 }
 

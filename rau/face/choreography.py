@@ -379,14 +379,16 @@ def _validate_cue(raw: Any, index: int) -> Dict[str, Any]:
     else:
         if isinstance(hold, bool) or not isinstance(hold, (int, float)):
             raise PlanError("malformed_hold", "hold_ms must be a number", index)
-        hold = int(hold)
+        # Range-checked before truncation: int() on a NaN raises a bare
+        # ValueError, which escapes submit_plan and kills the whole turn
+        # instead of coming back as a correction the model can act on.
         if not MIN_HOLD_MS <= hold <= MAX_HOLD_MS:
             raise PlanError(
                 "hold_out_of_range",
                 f"hold_ms must be between {MIN_HOLD_MS} and {MAX_HOLD_MS}",
                 index,
             )
-        cue["hold_ms"] = hold
+        cue["hold_ms"] = int(hold)
 
     return cue
 

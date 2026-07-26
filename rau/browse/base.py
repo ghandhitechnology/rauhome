@@ -132,6 +132,10 @@ def post_json(
             raise BrowseError("rate limited by the provider", code="rate_limited") from exc
         raise BrowseError(f"provider returned {exc.code}: {detail}", code="http_error") from exc
     except urllib.error.URLError as exc:
+        # urllib wraps any OSError from the connect/read in URLError, so a
+        # socket timeout arrives here as the reason rather than as TimeoutError.
+        if isinstance(exc.reason, TimeoutError):
+            raise BrowseError("the provider timed out", code="timeout") from exc
         raise BrowseError(f"could not reach the provider: {exc.reason}", code="unreachable") from exc
     except TimeoutError as exc:
         raise BrowseError("the provider timed out", code="timeout") from exc

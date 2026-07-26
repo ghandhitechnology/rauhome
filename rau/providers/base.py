@@ -315,6 +315,24 @@ def pair_tool_calls(
     return paired, [result for result in results if id(result) not in used]
 
 
+def _openai_reasoning_details(
+    details: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """
+    Keep only OpenAI-format reasoning continuation items.
+
+    `reasoning_details` is echoed back verbatim so the same provider can resume
+    its chain of thought; blocks in a foreign format (e.g. Anthropic `thinking`
+    after a mid-conversation provider switch) are meaningless here and can be
+    rejected outright.
+    """
+    return [
+        item
+        for item in details or []
+        if isinstance(item, dict) and str(item.get("type") or "").startswith("reasoning")
+    ]
+
+
 def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
     """
     Encode a conversation in OpenAI wire form.
@@ -339,8 +357,10 @@ def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
             encoded: Dict[str, Any] = {"role": m.role, "content": m.content}
             if m.role == "assistant" and m.reasoning:
                 encoded["reasoning_content"] = m.reasoning
-            if m.role == "assistant" and m.reasoning_details:
-                encoded["reasoning_details"] = m.reasoning_details
+            if m.role == "assistant":
+                details = _openai_reasoning_details(m.reasoning_details)
+                if details:
+                    encoded["reasoning_details"] = details
             out.append(encoded)
             i += 1
             continue
@@ -368,8 +388,9 @@ def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
             }
             if m.reasoning:
                 assistant_payload["reasoning_content"] = m.reasoning
-            if m.reasoning_details:
-                assistant_payload["reasoning_details"] = m.reasoning_details
+            details = _openai_reasoning_details(m.reasoning_details)
+            if details:
+                assistant_payload["reasoning_details"] = details
             out.append(assistant_payload)
             # Every result has to land before any other role resumes.
             out.extend(

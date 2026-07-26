@@ -98,7 +98,13 @@ export default function Setup({ onDone }: { onDone: () => void }) {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+    // Storage can be unavailable (private windows, blocked contexts); the
+    // wizard still works, the draft just does not survive a reload.
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+    } catch {
+      /* keep the draft in memory only */
+    }
   }, [draft])
 
   const patch = useCallback((p: Partial<Draft>) => setDraft((d) => ({ ...d, ...p })), [])

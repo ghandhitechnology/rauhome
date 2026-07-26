@@ -308,9 +308,12 @@ export class Director {
   }
 
   private playCueMotion() {
+    // Mark even an empty motion as played: without this a station-only cue
+    // never gets past this point, and the walk clip carries on marching on
+    // the spot for the rest of the hold.
+    this.cuePlayed = true
     const name = this.cue?.motion
     if (!name) return
-    this.cuePlayed = true
     this.rig.play(name, { force: true, restart: true })
   }
 
@@ -459,8 +462,14 @@ export class Director {
       if (!this.arrived) this.markStationArrival(spot.facing)
       this.signalCueArrival()
       if (!this.cuePlayed) {
-        this.playCueMotion()
-        return
+        // A gait has been playing its clip through the whole walk here —
+        // restarting it for the one frame before the pose swap reads as a
+        // stumble on the doorstep, not as arriving.
+        if (cue.motion && this.isGait(cue.motion)) this.cuePlayed = true
+        else {
+          this.playCueMotion()
+          return
+        }
       }
     }
 
@@ -673,7 +682,10 @@ export class Director {
    * everything that comes after it.
    */
   private setLoop(name: MotionName, restart = false) {
-    if (this.rig.currentMotion === name && !restart) return
+    // A finished one-shot still reports its id, so "already playing" must mean
+    // actually playing — otherwise re-picking it leaves him frozen on its last
+    // frame until the next decision comes around.
+    if (this.rig.currentMotion === name && !restart && !this.rig.player.isFinished) return
     this.rig.play(name, { force: true, restart })
   }
 

@@ -1398,6 +1398,32 @@ class ControlStore:
                     ),
                 ),
             )
+            # A run whose job already reached a terminal state (or whose job
+            # row is gone) will never be settled by the completion event that
+            # was lost in the crash. Leaving it active would wedge the
+            # schedule: every later occurrence is held back as overlap.
+            db.execute(
+                f"""
+                UPDATE schedule_runs
+                SET state='interrupted', updated=?, outcome_json=?
+                WHERE state IN ('running','awaiting_confirm','verifying')
+                  AND (job_id IS NULL OR job_id NOT IN (
+                    SELECT id FROM jobs WHERE state IN ({marks})
+                  ))
+                """,
+                (
+                    stamp,
+                    _json(
+                        {
+                            "reason": (
+                                "process restart before the finished job "
+                                "settled this occurrence"
+                            )
+                        }
+                    ),
+                    *ACTIVE_STATES,
+                ),
+            )
             cur = db.execute(
                 f"""
                 UPDATE jobs

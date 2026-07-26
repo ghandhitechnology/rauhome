@@ -152,6 +152,9 @@ def browse_web(args: Dict[str, Any]) -> Dict[str, Any]:
         if query:
             if not browser.can_search:
                 _, view = resolve_browse()
+                # An instant refusal is still the end of the activity: without
+                # this he stands at the desk until the watchdog notices.
+                _finish(activity, ok=False, detail="backend cannot search")
                 return {
                     "ok": False,
                     "code": "unsupported",

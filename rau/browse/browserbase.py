@@ -116,8 +116,9 @@ class _Cdp:
                 continue
             error = data.get("error")
             if error:
+                detail = error.get("message") if isinstance(error, dict) else None
                 raise BrowseError(
-                    f"{method} failed: {error.get('message') or error}",
+                    f"{method} failed: {detail or error}",
                     code="provider_error",
                 )
             result = data.get("result")

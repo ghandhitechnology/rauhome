@@ -1,6 +1,7 @@
 """Background job registry + local subagent loop."""
 from __future__ import annotations
 
+import inspect
 import os
 import threading
 import time
@@ -137,7 +138,7 @@ def start_job(
     *,
     scheduled_run_id: Optional[str] = None,
     permission_policy: str = "",
-    resource_profile: str = "balanced",
+    resource_profile: str = "",
     budget: Optional[Dict[str, Any]] = None,
     executor: str = "auto",
     origin_turn_id: Optional[str] = None,
@@ -359,40 +360,44 @@ def spawn_children(parent_id: str, goals: Iterable[str]) -> Dict[str, Any]:
     children: List[Job] = []
     refused: List[Dict[str, Any]] = []
     parent.coordinating_children = True
-    for goal in requested:
-        if not isinstance(goal, str):
-            refused.append(
-                {
-                    "goal": repr(goal)[:200],
-                    "reason": "invalid_goal",
-                    "error": "sub-goal must be a string",
-                }
-            )
-            continue
-        started = start_job(goal, parent_id=parent_id)
-        if not started.get("ok"):
-            refused.append(
-                {
-                    "goal": goal,
-                    "reason": started.get("reason"),
-                    "error": started.get("error"),
-                }
-            )
-            continue
-        with _lock:
-            child = _jobs.get(started["id"])
-        if child is not None:
-            children.append(child)
+    try:
+        for goal in requested:
+            if not isinstance(goal, str):
+                refused.append(
+                    {
+                        "goal": repr(goal)[:200],
+                        "reason": "invalid_goal",
+                        "error": "sub-goal must be a string",
+                    }
+                )
+                continue
+            started = start_job(goal, parent_id=parent_id)
+            if not started.get("ok"):
+                refused.append(
+                    {
+                        "goal": goal,
+                        "reason": started.get("reason"),
+                        "error": started.get("error"),
+                    }
+                )
+                continue
+            with _lock:
+                child = _jobs.get(started["id"])
+            if child is not None:
+                children.append(child)
 
-    if not children:
+        if not children:
+            return {"ok": False, "error": "no sub-goal could start", "refused": refused}
+
+        _emit_progress(parent, f"Split into {len(children)} sub-goals")
+        for child in children:
+            while not (child.finished.is_set() or parent.cancel.is_set()):
+                child.finished.wait(timeout=CHILD_POLL_SEC)
+    finally:
+        # Owning no slot while coordinating is what lets an eco parent's single
+        # child start; leaking the flag would exempt a running parent from the
+        # capacity count for the rest of its life.
         parent.coordinating_children = False
-        return {"ok": False, "error": "no sub-goal could start", "refused": refused}
-
-    _emit_progress(parent, f"Split into {len(children)} sub-goals")
-    for child in children:
-        while not (child.finished.is_set() or parent.cancel.is_set()):
-            child.finished.wait(timeout=CHILD_POLL_SEC)
-    parent.coordinating_children = False
     if parent.cancel.is_set():
         # Cancelling the parent already cancelled these, so there is nothing
         # worth reporting to a worker that is being torn down anyway.
@@ -721,6 +726,11 @@ def _await_confirm(
     ok = job.confirm_ready.wait(timeout=timeout)
     state.set_confirm(job.id, None)
     approved = ok and job.confirm_decision is True
+    # The parked window ends here whether the answer was yes, no or silence:
+    # the job is about to spend provider/tool capacity again, so it must own
+    # its slot and read as running rather than still awaiting a decision. A
+    # cancelled job is terminal and update_job leaves it untouched.
+    state.update_job(job.id, state="running", progress=summary)
     if state.durable_enabled() and not ok:
         from rau.control import control_store
 
@@ -1097,7 +1107,29 @@ def _invoke_step_runner(
     goal: str,
     dependency_results: Dict[str, str],
 ) -> Any:
-    """Call the new step contract, retaining old one-argument adapters."""
+    """Call the new step contract, retaining old one-argument adapters.
+
+    The contract is chosen from the runner's signature where possible. A
+    signature that accepts anything may still wrap a one-argument callable
+    (a mock's side_effect, a partial), so a refusal naming one of this
+    contract's own keywords falls back to the legacy call. Any other
+    TypeError came from *inside* the runner and must propagate: re-calling
+    the runner then would execute the whole step — side effects included —
+    a second time.
+    """
+    try:
+        parameters = inspect.signature(runner).parameters
+    except (TypeError, ValueError):
+        parameters = None
+    if (
+        parameters is not None
+        and not any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        and not ({"step_goal", "dependency_results", "finalize"} & set(parameters))
+    ):
+        return runner(job)
     try:
         return runner(
             job,
@@ -1107,7 +1139,10 @@ def _invoke_step_runner(
         )
     except TypeError as exc:
         message = str(exc)
-        if "unexpected keyword" not in message:
+        if "unexpected keyword" not in message or not any(
+            f"'{name}'" in message
+            for name in ("step_goal", "dependency_results", "finalize")
+        ):
             raise
         return runner(job)
 
@@ -1841,6 +1876,22 @@ def _run_pi_subagent(
             cancel=job.cancel,
         )
         PI_SUPERVISOR.touch()
+        # The reservation above charged this run the whole remaining aggregate
+        # budget so no second plan node could oversubscribe it. Now that the
+        # run has settled, hand back what it did not spend — otherwise every
+        # later step of a multi-step plan finds the budget "exhausted" by its
+        # own job. When the actual spend cannot be learned, the full charge
+        # stands: a run of unknown cost must not free budget it may have used.
+        reported: Any = None
+        try:
+            reported = client.snapshot(result.id).get("turns")
+        except Exception:  # noqa: BLE001 — an unknown spend keeps the charge
+            pass
+        if isinstance(reported, int) and not isinstance(reported, bool):
+            spent = min(max_turns, max(0, reported))
+            if spent < max_turns:
+                with _lock:
+                    job.turns_used -= max_turns - spent
         if job.cancel.is_set() or result.state == "cancelled":
             return
         if not result.ok:
