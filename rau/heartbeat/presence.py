@@ -322,7 +322,12 @@ def load_presence() -> Dict[str, Any]:
         data = json.loads(PRESENCE_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"loaded": False, "error": "unreadable"}
-    last_ts = float(data.get("last_user_ts") or 0)
+    if not isinstance(data, dict):
+        return {"loaded": False, "error": "unreadable"}
+    try:
+        last_ts = float(data.get("last_user_ts") or 0)
+    except (TypeError, ValueError):
+        last_ts = 0.0
     if last_ts <= 0:
         at = data.get("last_user_at")
         if isinstance(at, str) and at.strip():
@@ -335,10 +340,20 @@ def load_presence() -> Dict[str, Any]:
         updates["last_user_ts"] = last_ts
     mood = data.get("mood")
     if isinstance(mood, dict):
+        # Per-field guards, like get_mood: one corrupt value must not make the
+        # whole presence file unloadable (and take the hub down with it).
+        try:
+            intensity = float(mood.get("intensity") or 0.0)
+        except (TypeError, ValueError):
+            intensity = 0.0
+        try:
+            updated_at = float(mood.get("updated_at") or 0.0)
+        except (TypeError, ValueError):
+            updated_at = 0.0
         updates["mood"] = {
             "label": str(mood.get("label") or "idle").lower(),
-            "intensity": float(mood.get("intensity") or 0.0),
-            "updated_at": float(mood.get("updated_at") or 0.0),
+            "intensity": intensity,
+            "updated_at": updated_at,
         }
     events = data.get("heartbeat_events")
     if isinstance(events, list):

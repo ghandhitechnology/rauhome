@@ -246,7 +246,12 @@ export function drawBubble(
     Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2,
   )
   const h = lines.length * lineH + pad * 2
-  const x = clamp(anchorX - w / 2, 12, ctx.canvas.width - w - 12)
+  // canvas.width is the bitmap size in device pixels, while every coordinate
+  // here is CSS pixels — convert before clamping or a hidpi display lets the
+  // bubble slide off the right edge of the screen.
+  const dpr = ctx.getTransform().a || 1
+  const viewW = ctx.canvas.width / dpr
+  const x = clamp(anchorX - w / 2, 12, viewW - w - 12)
   const y = anchorY - h - 14 * scale
   const step = Math.max(2, Math.round(3 * scale))
 

@@ -466,7 +466,13 @@ export class PiRun {
 	}
 
 	async onToolCall(event) {
-		if (this.cancelled) return { block: true, reason: "run cancelled" };
+		// pi invokes this hook before consulting the abort signal, so a run
+		// timeout can deliver a gated tool call after the run already settled.
+		// Parking a confirm here would emit a spurious request on a finished run
+		// and stall the loop until the confirm timeout clears it.
+		if (this.cancelled || TERMINAL_STATES.has(this.state)) {
+			return { block: true, reason: this.cancelled ? "run cancelled" : "run already finished" };
+		}
 		if (!this.options.confirmTools.includes(event.toolName)) return undefined;
 		const approved = await this.requestConfirm(event);
 		if (approved) {

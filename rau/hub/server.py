@@ -756,6 +756,11 @@ def api_voice_preview(body: VoicePreviewIn):
             {"ok": False, "error": "Connect an ElevenLabs API key first."},
             status_code=409,
         )
+    text = body.text.strip()
+    if not text:
+        # Whitespace-only input passes min_length=1 but synthesises nothing;
+        # reject it here instead of burning a billed API call on empty text.
+        return JSONResponse({"ok": False, "error": "text is empty"}, status_code=400)
     try:
         # Apply the same validation as persisted settings without modifying the
         # user's models.json.
@@ -773,7 +778,7 @@ def api_voice_preview(body: VoicePreviewIn):
 
         checked = _validated_models(cfg)["tts"]
         wav = render_preview(
-            text=body.text.strip(),
+            text=text,
             voice_id=str(checked["voice_id"]),
             model=str(checked["model"]),
             effect=str(checked["effect"]),
@@ -1203,9 +1208,15 @@ async def ws_voice(ws: WebSocket):
             if data is not None:
                 error = session.feed(data)
                 if error:
+                    # feed() closes the mic itself when the stream is dead
+                    # (utterance cap, consumer stall); any other error is one
+                    # bad frame — report it and keep listening rather than
+                    # tearing the whole utterance down.
+                    mic = session._mic
                     await session.send(t="error", detail=f"audio: {error}")
-                    await session.stop_stt()
-                    await session.set_phase("idle")
+                    if mic is None or mic.closed:
+                        await session.stop_stt()
+                        await session.set_phase("idle")
                 continue
 
             raw = msg.get("text")
@@ -1315,12 +1326,17 @@ if WEB_DIST.exists():
     if assets.exists():
         app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
 
+    _web_root = WEB_DIST.resolve()
+
     @app.get("/{full_path:path}")
     async def spa(full_path: str):
         if full_path.startswith("api/") or full_path == "ws":
             return JSONResponse({"error": "not found"}, status_code=404)
-        candidate = WEB_DIST / full_path
-        if candidate.exists() and candidate.is_file():
+        # full_path is client-controlled: "../" segments (the server decodes
+        # %2e%2e%2f before routing) must never resolve outside the built UI
+        # tree, or any readable file on the machine becomes downloadable.
+        candidate = (_web_root / full_path).resolve()
+        if candidate.is_relative_to(_web_root) and candidate.is_file():
             return FileResponse(candidate)
         idx = _index_path()
         if idx:

@@ -145,11 +145,14 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
       // going quiet is the difference between interrupting someone and
       // talking over them.
       mutedRef.current = true
+      const socket = ws
       const playedMs = await playback.flush()
       // The session can be torn down mid-flush, and the refs below outlive it:
       // a stale `streaming` would make the next session send mic frames the
-      // server drops for want of a speech_start.
-      if (disposed) return
+      // server drops for want of a speech_start. The same is true of a socket
+      // that died mid-flush: onclose has already reset this state, and
+      // reviving it here would silently lose the next utterance.
+      if (disposed || ws !== socket || !socket || socket.readyState !== WebSocket.OPEN) return
       send({ t: 'barge', playedMs })
       // Only now: the server drops a barge once speech_start has moved the
       // session out of the speaking phase.

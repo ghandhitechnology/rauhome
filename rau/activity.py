@@ -102,8 +102,14 @@ def _safe_url(value: str) -> str:
     if parts.scheme not in {"http", "https"}:
         return _clean_string(value)
     host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
+    try:
+        port = parts.port
+    except ValueError:
+        # urlsplit defers port validation to attribute access; a non-numeric
+        # port must not fail the whole span. Drop it, keep host and path.
+        port = None
+    if port:
+        host = f"{host}:{port}"
     return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 

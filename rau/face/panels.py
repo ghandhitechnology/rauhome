@@ -114,8 +114,11 @@ def get_panel(panel_id: str) -> Optional[Dict[str, Any]]:
 
 def list_panels(limit: int = MAX_PANELS) -> List[Dict[str, Any]]:
     """Newest first, without the document bodies."""
+    limit = max(0, int(limit))
     with _lock:
-        items = list(_panels.values())[-max(0, int(limit)) :]
+        # `values()[-0:]` is the whole list, not none of it, so the zero case
+        # has to be spelled out.
+        items = list(_panels.values())[-limit:] if limit else []
     return [
         {k: v for k, v in panel.items() if k != "document"}
         for panel in reversed(items)

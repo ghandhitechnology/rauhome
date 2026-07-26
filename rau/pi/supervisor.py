@@ -46,7 +46,8 @@ class PiSupervisor:
             raise RuntimeError("Pi executor is disabled")
         client = PiSidecar()
         if client.available():
-            self._last_used = time.time()
+            with self._lock:
+                self._last_used = time.time()
             return client
         with self._lock:
             if self._process is None or self._process.poll() is not None:
@@ -71,7 +72,8 @@ class PiSupervisor:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if client.available():
-                self._last_used = time.time()
+                with self._lock:
+                    self._last_used = time.time()
                 return client
             proc = self._process
             if proc is not None and proc.poll() is not None:
@@ -80,7 +82,8 @@ class PiSupervisor:
         raise RuntimeError("Pi sidecar did not become healthy")
 
     def touch(self) -> None:
-        self._last_used = time.time()
+        with self._lock:
+            self._last_used = time.time()
 
     def stop_if_idle(self, idle_sec: float = 300.0) -> bool:
         with self._lock:
@@ -88,8 +91,11 @@ class PiSupervisor:
                 return False
             if time.time() - self._last_used < idle_sec:
                 return False
-        self.stop()
-        return True
+            # Decide and stop under the one lock (the RLock is reentrant here):
+            # an ensure_running that lands between the check and the stop would
+            # otherwise have its fresh sidecar killed from under it.
+            self.stop()
+            return True
 
     def stop(self) -> None:
         with self._lock:

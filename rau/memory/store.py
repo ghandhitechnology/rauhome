@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -19,6 +20,17 @@ def _today() -> str:
 
 def _stamp() -> str:
     return f"{datetime.now().strftime('%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
+
+
+def _safe_file_part(value: str) -> str:
+    """One safe filename component.
+
+    The diary role can come from a tool call argument, so it must never carry
+    a path separator (or enough length to break the filesystem) into the
+    diary filename.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "")).strip("-")
+    return cleaned[:40] or "note"
 
 
 def _atomic_text(path: Path, content: str) -> None:
@@ -41,6 +53,7 @@ def append_diary(role: str, text: str, *, meta: Optional[Dict[str, Any]] = None)
     ensure_dirs()
     day = DIARY_DIR / _today()
     day.mkdir(parents=True, exist_ok=True)
+    role = _safe_file_part(role)
     path = day / f"{_stamp()}-{role}.md"
     body = [
         f"# {role}",

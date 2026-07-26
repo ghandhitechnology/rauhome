@@ -271,7 +271,10 @@ class ReactionPool:
         with self._lock:
             # Re-check the voice: a settings change can land during synthesis,
             # and caching under the new token would pin the old voice's audio.
-            if self._voice is not None and self._voice.token == voice.token:
+            # Failures (empty pcm) are not cached: a network blip or a missing
+            # key must be retried on the next turn, not memoised as silence
+            # for the rest of the process.
+            if pcm and self._voice is not None and self._voice.token == voice.token:
                 self._pcm[text] = pcm
         return pcm
 

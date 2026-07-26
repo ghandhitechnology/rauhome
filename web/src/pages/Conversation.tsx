@@ -305,6 +305,25 @@ export default function Conversation() {
     setSlashOpen(true)
   }, [slashDraft?.token, slashDraft?.hasSpace])
 
+  // A voice turn settles with say_end, which the hub sends only after both
+  // sides of the exchange are in its log — chat_done arrives while TTS is
+  // still playing, before the reply is logged. Fold the turn into the thread
+  // then; nothing else refreshes while the live socket is up.
+  useEffect(() => {
+    if (mode === 'voice' && voice.lastTurn) void refresh()
+  }, [mode, voice.lastTurn])
+
+  // The pending echo is a stand-in until the hub's log includes the message.
+  // Keeping it past that point re-appends it as a ghost copy the moment the
+  // log moves on to Rau's reply.
+  useEffect(() => {
+    if (!pending) return
+    const echoed = log.some(
+      (m) => m?.role === 'user' && String(m.text || '') === pending.text,
+    )
+    if (echoed) setPending(null)
+  }, [log, pending])
+
   // The pending echo disappears once the hub's log has caught up with it.
   const displayLog = useMemo(() => {
     if (!pending) return log

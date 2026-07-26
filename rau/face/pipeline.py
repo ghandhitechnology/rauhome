@@ -141,7 +141,11 @@ def record_speech(*, local_vad: bool = True) -> Optional[np.ndarray]:
         _audio_capture.stop()
         _audio_capture = _AudioCapture()
         _audio_capture.start()
-    _audio_capture.flush()
+    # Bind the capture once: stop_face() clears the global mid-record, and a
+    # pump that dies mid-record must not park the loop below — read() only
+    # ever times out from then on, so `frames` would never advance again.
+    capture = _audio_capture
+    capture.flush()
     frame_size = 512
     bytes_per_frame = frame_size * 2
     voiced = []
@@ -150,10 +154,18 @@ def record_speech(*, local_vad: bool = True) -> Optional[np.ndarray]:
     max_silence = int(SILENCE_SEC * SAMPLE_RATE / frame_size)
     max_frames = int(MAX_RECORD_SEC * SAMPLE_RATE / frame_size)
     frames = 0
+    empty_reads = 0
     while frames < max_frames and not _stop.is_set():
-        raw = _audio_capture.read()
+        raw = capture.read()
         if not raw or len(raw) < bytes_per_frame:
+            # A live pump delivers ~31 frames a second, so even one timed-out
+            # read means the capture process is gone; a few in a row is
+            # certain. Bail out — the next call restarts a dead capture.
+            empty_reads += 1
+            if empty_reads >= 3:
+                break
             continue
+        empty_reads = 0
         frame = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         frames += 1
         speech = False

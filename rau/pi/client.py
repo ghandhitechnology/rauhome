@@ -491,7 +491,10 @@ class PiSidecar:
         except json.JSONDecodeError as e:
             raise PiSidecarError(f"{method} {path} returned malformed JSON") from e
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:400]
+            try:
+                detail = e.read().decode("utf-8", "replace")[:400]
+            except Exception:
+                detail = ""
             raise PiSidecarError(f"{method} {path} -> {e.code}: {detail}") from e
         except (urllib.error.URLError, OSError) as e:
             raise PiSidecarError(f"{method} {path} unreachable: {e}") from e

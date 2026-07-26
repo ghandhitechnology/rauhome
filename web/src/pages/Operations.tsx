@@ -177,8 +177,8 @@ export default function Operations() {
                 <p>{confirmation.summary}</p>
                 <small>Expires {when(confirmation.expires)}</small>
                 <div className="row">
-                  <button className="btn sm danger" onClick={() => api.confirm(false, confirmation.id).then(refresh)}>Deny</button>
-                  <button className="btn sm primary" onClick={() => api.confirm(true, confirmation.id).then(refresh)}>Approve exact action</button>
+                  <button className="btn sm danger" onClick={() => api.confirm(false, confirmation.id).then(refresh).catch(() => {})}>Deny</button>
+                  <button className="btn sm primary" onClick={() => api.confirm(true, confirmation.id).then(refresh).catch(() => {})}>Approve exact action</button>
                 </div>
               </div>
             ))}
@@ -210,11 +210,11 @@ export default function Operations() {
                 Next: {when(schedule.next_run_at)} · {schedule.resource_profile}
               </small>
               <div className="row">
-                <button className="btn sm" onClick={() => api.runSchedule(schedule.id).then(refresh)}>Run now</button>
-                <button className="btn sm" onClick={() => (schedule.enabled ? api.pauseSchedule(schedule.id) : api.resumeSchedule(schedule.id)).then(refresh)}>
+                <button className="btn sm" onClick={() => api.runSchedule(schedule.id).then(refresh).catch(() => {})}>Run now</button>
+                <button className="btn sm" onClick={() => (schedule.enabled ? api.pauseSchedule(schedule.id) : api.resumeSchedule(schedule.id)).then(refresh).catch(() => {})}>
                   {schedule.enabled ? 'Pause' : 'Resume'}
                 </button>
-                <button className="btn sm danger" onClick={() => api.deleteSchedule(schedule.id).then(refresh)}>Delete</button>
+                <button className="btn sm danger" onClick={() => api.deleteSchedule(schedule.id).then(refresh).catch(() => {})}>Delete</button>
               </div>
               <div className="run-strip">
                 {(runs[schedule.id] || []).slice(0, 8).map((run) => (

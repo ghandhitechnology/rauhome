@@ -206,10 +206,10 @@ export default function Dashboard() {
           >
             {status?.listening ? 'Pause listening' : 'Start listening'}
           </button>
-          <button className="btn" onClick={() => api.control('test')}>
+          <button className="btn" onClick={() => api.control('test').catch(() => {})}>
             Test voice
           </button>
-          <button className="btn danger" onClick={() => api.control('shutdown')}>
+          <button className="btn danger" onClick={() => api.control('shutdown').catch(() => {})}>
             Shutdown face
           </button>
         </div>

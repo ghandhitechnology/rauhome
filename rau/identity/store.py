@@ -119,6 +119,15 @@ def write_text(path: Path, content: str) -> None:
             pass
 
 
+def _backup_mtime(path: Path) -> float:
+    # A backup can vanish between the glob and the stat when two soul writes
+    # (the nightly dream and a manual steer) prune the same archive at once.
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def backup_soul() -> Optional[Path]:
     if not has_soul():
         return None
@@ -129,7 +138,7 @@ def backup_soul() -> Optional[Path]:
     write_text(backup, content)
     write_text(SOUL_BAK, content)
     # Nightly dreams should not create an unbounded identity archive.
-    historical = sorted(IDENTITY_DIR.glob("soul.*.bak.md"), key=lambda p: p.stat().st_mtime)
+    historical = sorted(IDENTITY_DIR.glob("soul.*.bak.md"), key=_backup_mtime)
     for stale in historical[:-30]:
         try:
             stale.unlink()

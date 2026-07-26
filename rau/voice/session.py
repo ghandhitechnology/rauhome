@@ -276,18 +276,22 @@ class VoiceSession:
         User began talking. Open an STT stream now so connection setup
         overlaps with them speaking rather than adding latency afterwards.
         """
+        await self.stop_stt()
+
+        # Checked after stop_stt, not before: the STT tail can be inside the
+        # commit lock starting a fresh turn while stop_stt waits for it, and a
+        # check done beforehand would miss that turn — letting TTS talk over
+        # the new user, the one thing this fallback exists to prevent. (A
+        # barge message normally arrives first and carries the exact playback
+        # offset; this makes speech_start alone a real interruption too.)
         turn = self._active_turn
         if (
             turn is not None
             and self.phase in ("thinking", "speaking")
             and not turn.cancel.is_set()
         ):
-            # A barge message normally arrives first and carries the exact
-            # playback offset. This fallback also makes speech_start alone a
-            # real interruption instead of letting TTS talk over the new user.
             await self._cancel_turn(turn, turn.estimated_played_ms())
 
-        await self.stop_stt()
         mic = _MicStream(asyncio.Queue(maxsize=MAX_MIC_QUEUE_FRAMES))
         self._mic = mic
         epoch = self._stt_epoch

@@ -620,6 +620,13 @@ def _drag(
         )
 
 
+def _utf16_length(text: str) -> int:
+    """CGEventKeyboardSetUnicodeString counts UTF-16 code units, not str
+    characters. Astral characters (emoji, CJK ext) are one str char but two
+    units; passing len(text) truncates the pair and posts a lone surrogate."""
+    return len(text.encode("utf-16-le")) // 2
+
+
 def _type_text_quartz(
     text: str, cancel: Optional[threading.Event] = None
 ) -> Tuple[bool, str]:
@@ -636,7 +643,7 @@ def _type_text_quartz(
             event = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
             if event is None:
                 return False, "CGEventCreateKeyboardEvent failed"
-            Quartz.CGEventKeyboardSetUnicodeString(event, len(chunk), chunk)
+            Quartz.CGEventKeyboardSetUnicodeString(event, _utf16_length(chunk), chunk)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
             # Key-up with empty unicode keeps some apps happier.
             up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
@@ -725,7 +732,11 @@ _CHAR_KEYCODES: Dict[str, int] = {
 
 def parse_key_chord(key: str) -> Tuple[List[str], str]:
     """Split 'cmd+shift+c' into (['cmd','shift'], 'c')."""
-    parts = [p.strip().lower() for p in key.replace("-", "+").split("+") if p.strip()]
+    # "-" doubles as the chord separator ('ctrl-c'); a bare "-" is the key.
+    normalized = key.strip()
+    if normalized != "-":
+        normalized = normalized.replace("-", "+")
+    parts = [p.strip().lower() for p in normalized.split("+") if p.strip()]
     if not parts:
         raise ValueError("empty key")
     mods: List[str] = []
@@ -757,7 +768,7 @@ def _key(key: str) -> Tuple[bool, str]:
         elif len(primary) == 1 and ord(primary) >= 32:
             # Single printable via unicode typing with modifiers held.
             down = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
-            Quartz.CGEventKeyboardSetUnicodeString(down, 1, primary)
+            Quartz.CGEventKeyboardSetUnicodeString(down, _utf16_length(primary), primary)
             Quartz.CGEventSetFlags(down, flags)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
             up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
@@ -778,21 +789,11 @@ def _key(key: str) -> Tuple[bool, str]:
         # AppleScript fallback for a few bare keys only (no chords).
         if mods:
             return False, f"key chord requires Quartz: {exc}"
-        mapping = {
-            "return": "return",
-            "enter": "return",
-            "tab": "tab",
-            "escape": "escape",
-            "esc": "escape",
-            "delete": "delete",
-            "backspace": "delete",
-            "space": "space",
-        }
-        code = mapping.get(primary)
-        if code == "return":
-            script = 'tell application "System Events" to key code 36'
-        elif code:
-            script = f'tell application "System Events" to keystroke {_apple_string(code)}'
+        # keystroke "tab" would type the literal letters t-a-b; named keys
+        # go through key code, single characters through keystroke.
+        keycode = _KEYCODES.get(primary)
+        if keycode is not None:
+            script = f'tell application "System Events" to key code {keycode}'
         elif len(primary) == 1:
             script = f'tell application "System Events" to keystroke {_apple_string(primary)}'
         else:

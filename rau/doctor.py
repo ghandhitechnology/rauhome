@@ -20,12 +20,13 @@ def run_doctor() -> Dict[str, Any]:
     checks: List[Dict[str, Any]] = []
     try:
         from rau.control import control_store
+        from rau.control.store import SCHEMA_VERSION
 
         schema = control_store.schema_status()
         checks.append(
             _check(
                 "database migrations",
-                schema.get("schema_version") == 2,
+                schema.get("schema_version") == SCHEMA_VERSION,
                 f"schema v{schema.get('schema_version')} at {schema.get('path')}",
             )
         )

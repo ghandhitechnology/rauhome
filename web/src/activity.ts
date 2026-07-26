@@ -14,6 +14,25 @@ function publish() {
   for (const listener of [...listeners]) listener()
 }
 
+/**
+ * Spans accumulate for the life of the page, and this page lives for days.
+ * Turn and job inspectors re-fetch their own spans on demand, so the oldest
+ * can fall off the back without losing anything but memory.
+ */
+const MAX_KEPT_SPANS = 2000
+
+/** Drop the oldest spans by seq until at most `max` remain. */
+export function trimActivitySpans(
+  store: Map<string, ActivitySpan>,
+  max = MAX_KEPT_SPANS,
+): boolean {
+  if (store.size <= max) return false
+  const excess = store.size - max
+  const oldest = [...store.values()].sort((a, b) => a.seq - b.seq)
+  for (const span of oldest.slice(0, excess)) store.delete(span.id)
+  return true
+}
+
 function merge(items: ActivitySpan[]) {
   let changed = false
   for (const item of items) {
@@ -23,6 +42,7 @@ function merge(items: ActivitySpan[]) {
       changed = true
     }
   }
+  if (trimActivitySpans(spans)) changed = true
   if (changed) publish()
 }
 

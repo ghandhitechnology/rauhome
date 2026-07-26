@@ -26,6 +26,10 @@ from rau.paths import ROOT
 SHELL_TIMEOUT_SEC = 120.0
 MAX_SHELL_TIMEOUT_SEC = 600.0
 MAX_SHELL_COMMAND_CHARS = 20_000
+#: Only the tail of a command's output is ever returned, so the spool it
+#: collects in is capped as well: a runaway command (think `yes`) would
+#: otherwise fill the disk behind the tail window.
+MAX_SHELL_OUTPUT_BYTES = 64 * 1024 * 1024
 
 
 def _shell_env() -> Dict[str, str]:
@@ -591,7 +595,11 @@ def run_tool(
         if not path.is_file():
             return {"ok": False, "error": "not found", "path": str(path)}
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            # The read itself is bounded, not just what is handed back:
+            # read_text() would slurp a multi-GB file into memory before the
+            # slice below ever applied.
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                text = fh.read(50001)
         except OSError as exc:
             return {"ok": False, "error": f"could not read: {exc}", "path": str(path)}
         # Only a full read licenses a later edit; a truncated one would let the
@@ -672,7 +680,13 @@ def run_tool(
             return {"ok": False, "error": "action must be a string"}
         from rau.computer.session import compatibility_cua_action
 
-        return compatibility_cua_action(args, job_id=job_id, cancel=cancel)
+        try:
+            return compatibility_cua_action(args, job_id=job_id, cancel=cancel)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            # Same contract as the computer_* tools below: a session-layer
+            # failure (e.g. another session holds the machine lease) is an
+            # error result for the model, not a crash of the tool loop.
+            return {"ok": False, "error": str(exc)}
 
     if name.startswith("computer_"):
         from rau.computer.session import COMPUTER
@@ -828,6 +842,10 @@ def _number(
     minimum: float,
     maximum: float,
 ) -> Optional[float]:
+    if value is None:
+        # Models routinely send an explicit null for optional parameters;
+        # that is "use the default", not a validation failure.
+        return default
     try:
         parsed = float(value)
     except (TypeError, ValueError):
@@ -921,6 +939,7 @@ def _run_shell(
 
         cancelled = False
         timed_out = False
+        output_overflow = False
         while proc.poll() is None:
             if cancel is not None and cancel.wait(timeout=0.05):
                 cancelled = True
@@ -930,6 +949,13 @@ def _run_shell(
                 timed_out = True
                 _terminate_process_tree(proc)
                 break
+            if (
+                stdout.tell() > MAX_SHELL_OUTPUT_BYTES
+                or stderr.tell() > MAX_SHELL_OUTPUT_BYTES
+            ):
+                output_overflow = True
+                _terminate_process_tree(proc)
+                break
             if cancel is None:
                 time.sleep(0.05)
 
@@ -937,7 +963,13 @@ def _run_shell(
             code = proc.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             _terminate_process_tree(proc)
-            code = proc.wait(timeout=2.0)
+            try:
+                code = proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                # SIGKILL is already delivered; a process that still will not
+                # die is stuck in the kernel. Report it as killed rather than
+                # raise out of the tool loop.
+                code = -signal.SIGKILL
 
         out = _tail_bytes(stdout, 8000)
         err_text = _tail_bytes(stderr, 2000)
@@ -951,10 +983,11 @@ def _run_shell(
             "confined": not warning,
             "cancelled": cancelled,
             "timed_out": timed_out,
+            "output_overflow": output_overflow,
         },
     )
     result: Dict[str, Any] = {
-        "ok": code == 0 and not cancelled and not timed_out,
+        "ok": code == 0 and not cancelled and not timed_out and not output_overflow,
         "stdout": out,
         "stderr": err_text,
         "code": code,
@@ -963,6 +996,14 @@ def _run_shell(
         result.update(cancelled=True, error="command cancelled")
     elif timed_out:
         result.update(timed_out=True, error=f"command timed out after {timeout:g} seconds")
+    elif output_overflow:
+        result.update(
+            output_overflow=True,
+            error=(
+                "command produced more than "
+                f"{MAX_SHELL_OUTPUT_BYTES // (1024 * 1024)} MB of output"
+            ),
+        )
     if warning:
         result["warning"] = warning
     return result

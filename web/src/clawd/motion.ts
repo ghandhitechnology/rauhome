@@ -133,7 +133,9 @@ export class MotionPlayer {
       }
       if (cur.motion.priority > motion.priority) return false
     }
-    if (cur && cur.motion.id === motion.id && !opts.restart) return true
+    // A finished clip asked for again by id starts over: returning true here
+    // would claim it is playing while it sits on its last frame forever.
+    if (cur && cur.motion.id === motion.id && !opts.restart && !cur.finished) return true
 
     if (cur) {
       cur.releasing = true

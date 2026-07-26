@@ -92,6 +92,24 @@ def _stream_lines(resp: Any, name: str):
         yield raw
 
 
+def _anthropic_reasoning_blocks(
+    details: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """
+    Keep only Anthropic thinking blocks from a reasoning continuation.
+
+    Blocks in a foreign format (e.g. OpenRouter `reasoning_details` after a
+    mid-conversation provider switch) would be rejected as unknown content
+    block types, so they are dropped before they can break the request.
+    """
+    return [
+        item
+        for item in details or []
+        if isinstance(item, dict)
+        and item.get("type") in {"thinking", "redacted_thinking"}
+    ]
+
+
 def _push(out: List[Dict[str, Any]], role: str, blocks: List[Dict[str, Any]]) -> None:
     """
     Add blocks as `role`, merging into the previous turn when roles repeat.
@@ -140,7 +158,7 @@ def _to_anthropic_messages(messages: List[Message]) -> tuple[str, List[Dict[str,
                 end += 1
             paired, orphans = pair_tool_calls(m, msgs[i + 1 : end])
 
-            blocks: List[Dict[str, Any]] = list(m.reasoning_details or [])
+            blocks: List[Dict[str, Any]] = _anthropic_reasoning_blocks(m.reasoning_details)
             if m.content:
                 blocks.append({"type": "text", "text": m.content})
             blocks += [
@@ -165,7 +183,7 @@ def _to_anthropic_messages(messages: List[Message]) -> tuple[str, List[Dict[str,
             continue
 
         role = "assistant" if m.role == "assistant" else "user"
-        blocks = list(m.reasoning_details or []) if role == "assistant" else []
+        blocks = _anthropic_reasoning_blocks(m.reasoning_details) if role == "assistant" else []
         if m.content:
             blocks.append({"type": "text", "text": m.content})
         if blocks:

@@ -339,33 +339,47 @@ def test_nested_jobs() -> None:
 
 def test_face_gate() -> None:
     print("\n5. face tool gate")
+    import tempfile
+    from unittest import mock
+
+    from rau import permissions as perm
+    from rau.agent import tools as agent_tools
     from rau.face import brain
-    from rau.paths import ROOT
 
     names = [t["function"]["name"] for t in brain.FACE_TOOLS]
     check("face can edit, not just overwrite", "edit_file" in names)
 
-    victim = ROOT / "identity" / "soul.md"
-    before = victim.read_text() if victim.exists() else None
+    # The gate reads the user's real permission settings, so pin the room to
+    # auto: under a bypass install these probes would RUN rather than refuse,
+    # which used to clobber the real identity/soul.md with "PWNED". For the
+    # same reason the victim and the diary write stay inside a temp dir.
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+        perm, "get_permissions", return_value=dict(perm.DEFAULT_PERMISSIONS)
+    ), mock.patch.object(
+        agent_tools, "append_diary", return_value=Path(tmp) / "diary.md"
+    ):
+        victim = Path(tmp) / "soul.md"
+        victim.write_text("original")
+        before = victim.read_text()
 
-    def gated(tool: str, args: Dict[str, Any]) -> bool:
-        return brain._run_face_tool(tool, args).get("error") == "needs confirmation"
+        def gated(tool: str, args: Dict[str, Any]) -> bool:
+            return brain._run_face_tool(tool, args).get("error") == "needs confirmation"
 
-    # The face cannot park a turn waiting for a yes, so anything the classifier
-    # flags has to be refused here rather than run unprompted.
-    check(
-        "overwriting an existing file is refused",
-        gated("write_file", {"path": str(victim), "content": "PWNED"}),
-    )
-    check(
-        "a dangerous shell command is refused",
-        gated("run_shell", {"command": "rm -rf /tmp/anything"}),
-    )
-    check("reading is still allowed", not gated("read_file", {"path": "README.md"}))
-    check("diary writes are still allowed", not gated("memory_write", {"text": "note"}))
+        # The face cannot park a turn waiting for a yes, so anything the classifier
+        # flags has to be refused here rather than run unprompted.
+        check(
+            "overwriting an existing file is refused",
+            gated("write_file", {"path": str(victim), "content": "PWNED"}),
+        )
+        check(
+            "a dangerous shell command is refused",
+            gated("run_shell", {"command": "rm -rf /tmp/anything"}),
+        )
+        check("reading is still allowed", not gated("read_file", {"path": "README.md"}))
+        check("diary writes are still allowed", not gated("memory_write", {"text": "note"}))
 
-    after = victim.read_text() if victim.exists() else None
-    check("soul.md survived the attempt", before == after)
+        after = victim.read_text()
+        check("soul.md survived the attempt", before == after)
 
 
 def main() -> int:
