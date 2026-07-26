@@ -193,6 +193,7 @@ class SystemPromptBlocksTests(unittest.TestCase):
             },
         )
         presence_mod.begin_user_turn()
+        brain.clear_prompt_caches()
         with mock.patch.object(brain, "load_soul", return_value="# Soul\nI am Rau."):
             with mock.patch.object(brain, "recent_context", return_value=""):
                 prompt = brain._system_prompt()
@@ -200,6 +201,7 @@ class SystemPromptBlocksTests(unittest.TestCase):
         self.assertIn("curious", prompt)
         self.assertIn("## Speech habits", prompt)
         self.assertIn("While they were away", prompt)
+        self.assertIn("Do not pad silence with thinking fillers", prompt)
 
 
 class SentenceBufferHesitationTests(unittest.TestCase):

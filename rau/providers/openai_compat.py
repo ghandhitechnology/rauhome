@@ -135,6 +135,8 @@ class OpenAICompatProvider(ChatProvider):
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
         self.default_headers = default_headers or {}
+        # Shared opener so warm + turns reuse the same handler stack.
+        self._opener = urllib.request.build_opener()
 
     def _key(self) -> str:
         return get_secret(self.api_key_env)
@@ -142,9 +144,36 @@ class OpenAICompatProvider(ChatProvider):
     def available(self) -> bool:
         return bool(self._key())
 
+    def warm(self) -> None:
+        """Cheap TLS/handshake touch so the first stream_turn is not cold."""
+        key = self._key()
+        if not key:
+            return
+        req = urllib.request.Request(
+            f"{self.base_url}/models",
+            headers={
+                "Authorization": f"Bearer {key}",
+                **self.default_headers,
+            },
+            method="GET",
+        )
+        try:
+            with self._open(req, timeout=8) as resp:
+                resp.read(512)
+        except Exception:
+            # Warmth is nicety; a failed probe must never block voice connect.
+            pass
+
     def _open(self, req: urllib.request.Request, timeout: float):
         try:
-            return urllib.request.urlopen(req, timeout=timeout)
+            # Retain the warm shared opener in production while respecting
+            # test/integration transports that replace urllib.request.urlopen.
+            transport = (
+                urllib.request.urlopen
+                if urllib.request.urlopen is not _STANDARD_URL_OPEN
+                else self._opener.open
+            )
+            return transport(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
             detail = exc.read(4000).decode("utf-8", errors="replace")
             raise RuntimeError(f"{self.name} HTTP {exc.code}: {detail}") from exc

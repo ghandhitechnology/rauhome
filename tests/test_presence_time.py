@@ -144,6 +144,7 @@ class SessionBoundaryTests(unittest.TestCase):
 
         state.update_presence(last_user_ts=time.time() - 40 * 60)
         presence_mod.begin_user_turn()
+        brain.clear_prompt_caches()
         with mock.patch.object(brain, "load_soul", return_value="# Soul\nI am Rau."):
             with mock.patch.object(brain, "recent_context", return_value=""):
                 prompt = brain._system_prompt()

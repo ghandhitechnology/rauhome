@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import uuid
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 from rau.agent import compaction
@@ -212,6 +213,98 @@ FACE_CONTEXT_BUDGET = 12000
 #: transport default would outgrow the whole face budget inside a single turn,
 #: and nothing folds a turn that is still being spoken.
 FACE_TOOL_RESULT_LIMIT = 3000
+#: Voice turns keep a leaner diary excerpt so prefill stays short.
+VOICE_MEMORY_CHARS = 1000
+CHAT_MEMORY_CHARS = 2500
+#: Default voice tool surface — conversational + room + browse. Heavy
+#: file/shell/hard-task schemas join on round 2+ or explicit deep-work intent.
+VOICE_SLIM_TOOL_NAMES = frozenset(
+    {
+        "memory_write",
+        "memory_read",
+        "body_choreography",
+        "move_object",
+        "show_panel",
+        "browse_web",
+        "use_skill",
+        "list_skills",
+        "set_goal",
+        "clear_goal",
+        "goal_note",
+    }
+)
+_DEEP_WORK_MARKERS = (
+    "research",
+    "look up",
+    "computer",
+    "open ",
+    "send ",
+    "fix this",
+    "deep",
+    "cancel",
+    "stop working",
+    "read ",
+    "write ",
+    "edit ",
+    "plan ",
+    "grill",
+    "shell",
+    "run ",
+    "file",
+)
+VOICE_TOOL_OPENER = (
+    "## Voice turn\n"
+    "Before any tool call, speak one short clause first "
+    '(e.g. "One sec—", "Looking…"). Never sit silent while tools run. '
+    "Do not use thinking fillers as padding."
+)
+#: Tools that mean real computer work — the avatar walks to the desk.
+#: Body/room visuals (choreography, props, panels) are excluded; browse_web
+#: already brackets itself with browse_started / browse_finished.
+DESK_WORK_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "run_shell",
+        "memory_write",
+        "memory_read",
+        "use_skill",
+        "list_skills",
+        "start_hard_task",
+        "cancel_hard_task",
+        "redirect_hard_task",
+        "set_goal",
+        "clear_goal",
+        "goal_note",
+    }
+)
+DESK_WORK_MOTION: Dict[str, str] = {
+    "run_shell": "type",
+    "read_file": "type",
+    "write_file": "type",
+    "edit_file": "type",
+    "memory_read": "search",
+    "memory_write": "type",
+    "use_skill": "type",
+    "list_skills": "type",
+    "start_hard_task": "type",
+    "cancel_hard_task": "type",
+    "redirect_hard_task": "type",
+}
+DESK_WORK_WATCHDOG_MS = 90_000
+
+_soul_cache: Optional[str] = None
+_soul_mtime: float = -1.0
+_static_instructions: Optional[str] = None
+
+
+def clear_prompt_caches() -> None:
+    """Drop cached soul/static prompt fragments (tests / soul rewrite)."""
+    global _soul_cache, _soul_mtime, _static_instructions
+    _soul_cache = None
+    _soul_mtime = -1.0
+    _static_instructions = None
 
 _history: List[Message] = []
 # Voice turns and typed turns can now land concurrently (the WS voice session
@@ -400,15 +493,63 @@ def truncate_last_assistant(spoken: str) -> None:
                 return
 
 
-def _system_prompt(extra: str = "") -> str:
+def _cached_soul() -> str:
+    """Disk-backed soul with mtime cache — avoids re-reading every turn."""
+    global _soul_cache, _soul_mtime
+    from rau.paths import SOUL_MD
+
+    try:
+        mtime = SOUL_MD.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if _soul_cache is None or mtime != _soul_mtime:
+        _soul_cache = load_soul()
+        _soul_mtime = mtime
+    return _soul_cache
+
+
+def _cached_static_instructions() -> str:
+    """Soul-adjacent instructions that do not change with mood/memory/room."""
+    global _static_instructions
+    if _static_instructions is None:
+        from rau.heartbeat.presence import SPEECH_HABITS_PROMPT
+
+        _static_instructions = "\n".join(
+            [
+                "You have always-available skills. Prefer tools over guessing. "
+                "Escalate multi-step work with start_hard_task. Only you speak.",
+                SPEECH_HABITS_PROMPT,
+                choreography.PROMPT,
+            ]
+        )
+    return _static_instructions
+
+
+def _wants_deep_tools(user_text: str) -> bool:
+    lower = (user_text or "").lower()
+    return any(marker in lower for marker in _DEEP_WORK_MARKERS)
+
+
+def _tools_for_turn(*, voice: bool, round_idx: int, user_text: str) -> List[Dict[str, Any]]:
+    if not voice:
+        return FACE_TOOLS
+    if round_idx > 0 or _wants_deep_tools(user_text):
+        return FACE_TOOLS
+    return [
+        tool
+        for tool in FACE_TOOLS
+        if tool.get("function", {}).get("name") in VOICE_SLIM_TOOL_NAMES
+    ]
+
+
+def _system_prompt(extra: str = "", *, voice: bool = False) -> str:
     from rau.heartbeat.presence import (
-        SPEECH_HABITS_PROMPT,
         between_sessions_block,
         mood_context_block,
         time_context_block,
     )
 
-    soul = load_soul()
+    soul = _cached_soul()
     ht = state.get_hard_task()
     hard = ""
     if ht.get("state") in ("running", "awaiting_confirm"):
@@ -417,7 +558,7 @@ def _system_prompt(extra: str = "") -> str:
             "You may chat lightly and mention you are still on it. "
             "Do not invent a second speaker."
         )
-    mem = recent_context(2500)
+    mem = recent_context(VOICE_MEMORY_CHARS if voice else CHAT_MEMORY_CHARS)
     life = between_sessions_block()
     parts = [
         soul,
@@ -430,15 +571,14 @@ def _system_prompt(extra: str = "") -> str:
     parts.extend(
         [
             "\n## Recent memory excerpt\n" + (mem or "(empty)"),
-            "\nYou have always-available skills. Prefer tools over guessing. "
-            "Escalate multi-step work with start_hard_task. Only you speak.",
-            "\n" + SPEECH_HABITS_PROMPT,
-            "\n" + choreography.PROMPT,
+            "\n" + _cached_static_instructions(),
             "\n" + props.prompt_fragment(),
             "\n" + panels.prompt_fragment(),
             "\n" + web.prompt_fragment(),
         ]
     )
+    if voice:
+        parts.append("\n" + VOICE_TOOL_OPENER)
     if extra:
         parts.append("\n" + extra)
     return "\n".join(parts)
@@ -523,11 +663,53 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": False, "error": "unknown"}
 
 
+def _desk_tool_start(name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Tell the room he is working at the computer. None when not desk work."""
+    if name not in DESK_WORK_TOOLS:
+        return None
+    activity_id = f"tool_{uuid.uuid4().hex[:12]}"
+    detail = ""
+    if name == "run_shell":
+        detail = str(args.get("command") or "")
+    elif name in ("read_file", "write_file", "edit_file"):
+        detail = str(args.get("path") or "")
+    elif name in ("memory_write", "set_goal", "goal_note", "start_hard_task", "redirect_hard_task"):
+        detail = str(args.get("text") or args.get("goal") or "")
+    elif name == "use_skill":
+        detail = str(args.get("name") or "")
+    BUS.emit(
+        "tool_started",
+        activity_id=activity_id,
+        turn_id=choreography.current_turn_id() or "",
+        name=name,
+        motion=DESK_WORK_MOTION.get(name, "type"),
+        detail=detail[:200],
+        watchdog_ms=DESK_WORK_WATCHDOG_MS,
+    )
+    return activity_id
+
+
+def _desk_tool_finish(
+    activity_id: Optional[str], *, name: str, ok: bool
+) -> None:
+    if not activity_id:
+        return
+    BUS.emit(
+        "tool_finished",
+        activity_id=activity_id,
+        turn_id=choreography.current_turn_id() or "",
+        name=name,
+        ok=bool(ok),
+    )
+
+
 def _record_tool_round(
     messages: List[Message],
     result: Any,
     system_extra: str,
     on_tool: Optional[Callable[[str, Dict[str, Any], Dict[str, Any]], None]] = None,
+    *,
+    voice: bool = False,
 ) -> None:
     """
     Run one round of tool calls, appending the assistant/tool turns it produces.
@@ -567,9 +749,11 @@ def _record_tool_round(
             # synchronously before execution.
             broadcast=tc.name != "body_choreography",
         )
+        activity_id = _desk_tool_start(tc.name, tc.arguments)
         try:
             tr = _run_face_tool(tc.name, tc.arguments)
         except Exception as exc:
+            _desk_tool_finish(activity_id, name=tc.name, ok=False)
             if tc.name == "body_choreography":
                 ACTIVITY.announce(public_span["id"])
             ACTIVITY.finish(
@@ -579,6 +763,7 @@ def _record_tool_round(
                 details={"tool": tc.name, "error": str(exc)},
             )
             raise
+        _desk_tool_finish(activity_id, name=tc.name, ok=bool(tr.get("ok", True)))
         if tc.name == "body_choreography":
             ACTIVITY.announce(public_span["id"])
         ok = bool(tr.get("ok", True))
@@ -603,7 +788,10 @@ def _record_tool_round(
             # prompt; left in the tool result it reads as trivia.
             messages[0] = Message(
                 role="system",
-                content=_system_prompt((system_extra + "\n\n" + str(tr["prompt"])).strip()),
+                content=_system_prompt(
+                    (system_extra + "\n\n" + str(tr["prompt"])).strip(),
+                    voice=voice,
+                ),
             )
         messages.append(
             Message(
@@ -791,6 +979,7 @@ def chat_streaming(
     cancel: Optional[threading.Event] = None,
     defer_diary: bool = False,
     turn_id: Optional[str] = None,
+    voice: bool = False,
 ) -> str:
     """
     Streaming face turn that keeps full tool access.
@@ -834,7 +1023,10 @@ def chat_streaming(
         provider, slot = chat_for_slot("face")
         pending, history = _reserve_stream_turn(prep.user_text)
         messages = [
-            Message(role="system", content=_system_prompt(prep.system_extra))
+            Message(
+                role="system",
+                content=_system_prompt(prep.system_extra, voice=voice),
+            )
         ] + history
 
         # Every token handed to on_token was actually spoken aloud, including the
@@ -847,18 +1039,21 @@ def chat_streaming(
         response_span_id: Optional[str] = None
         try:
             with choreography.turn_scope(turn):
-                for _ in range(6):
+                for round_idx in range(6):
                     if stop():
                         raise Cancelled(pending, "".join(heard).strip(), user_text, turn)
 
                     chunks: List[str] = []
                     result = None
+                    tools = _tools_for_turn(
+                        voice=voice, round_idx=round_idx, user_text=user_text
+                    )
                     for event in provider.stream_turn(
                         messages,
                         model=slot.get("model") or "deepseek-v4-flash",
                         max_tokens=_face_max_tokens(slot),
                         temperature=float(slot.get("temperature") or 0.9),
-                        tools=FACE_TOOLS,
+                        tools=tools,
                         effort=str(slot.get("effort") or "medium"),
                     ):
                         if stop():
@@ -897,7 +1092,13 @@ def chat_streaming(
                         break
 
                     if result.tool_calls:
-                        _record_tool_round(messages, result, prep.system_extra, on_tool)
+                        _record_tool_round(
+                            messages,
+                            result,
+                            prep.system_extra,
+                            on_tool,
+                            voice=voice,
+                        )
                         continue
 
                     if not chunks and result.content:

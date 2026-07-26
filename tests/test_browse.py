@@ -127,7 +127,7 @@ class FirecrawlTests(unittest.TestCase):
         sent = self.calls[0]
         self.assertTrue(sent["url"].endswith("/v2/scrape"))
         self.assertEqual(sent["payload"]["url"], "https://x.dev/a")
-        self.assertEqual(sent["payload"]["formats"], ["markdown"])
+        self.assertEqual(sent["payload"]["formats"], ["markdown", "links"])
         self.assertTrue(sent["payload"]["onlyMainContent"])
         self.assertEqual(sent["headers"]["Authorization"], "Bearer key")
         # Firecrawl should give up before we do, not after.
@@ -473,11 +473,18 @@ class BrowseToolTests(unittest.TestCase):
         from rau.face import web
 
         fake = mock.Mock(can_search=False, label="Browserbase")
-        with mock.patch.object(web, "get_browser", return_value=("browserbase", fake)):
-            result = web.browse_web({"query": "weather"})
+        recorder = Recorder("browse_started", "browse_finished")
+        try:
+            with mock.patch.object(web, "get_browser", return_value=("browserbase", fake)):
+                result = web.browse_web({"query": "weather"})
+        finally:
+            recorder.stop()
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "unsupported")
         self.assertIn("Firecrawl", result["error"])
+        # Unsupported still has to release the desk walk it started.
+        self.assertEqual(recorder.kinds(), ["browse_started", "browse_finished"])
+        self.assertFalse(recorder.events[-1]["ok"])
 
     def test_the_arguments_have_to_make_sense(self) -> None:
         from rau.face import web

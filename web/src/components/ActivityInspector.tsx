@@ -178,12 +178,44 @@ function AgentWorkTree() {
   )
 }
 
+function ActivityTimeline({ items }: { items: ActivitySpan[] }) {
+  return (
+    <ol className="activity-timeline" aria-label="Rau activity timeline">
+      {items.map((span) => (
+        <li key={span.id} className={`activity-item status-${span.status}`}>
+          <span className="activity-icon" aria-hidden>{icon(span.kind)}</span>
+          <div className="activity-copy">
+            <div className="activity-line">
+              <strong>{span.label}</strong>
+              <span>{elapsed(span)}</span>
+            </div>
+            {span.summary && <p>{span.summary}</p>}
+            {(span.step_id || span.job_id) && (
+              <span className="activity-correlation">
+                {span.source}
+                {span.step_id ? ` · step ${span.step_id.slice(0, 8)}` : ''}
+              </span>
+            )}
+            {Object.keys(span.details || {}).length > 0 && (
+              <details className="activity-details">
+                <summary>Technical details</summary>
+                <pre>{safeJson(span.details)}</pre>
+              </details>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 export default function ActivityInspector({
   turnId,
   jobId,
   global = false,
   className = '',
   defaultOpen = false,
+  variant = 'fold',
   onClose,
 }: {
   turnId?: string
@@ -191,10 +223,13 @@ export default function ActivityInspector({
   global?: boolean
   className?: string
   defaultOpen?: boolean
+  /** `sidebar` = always-open panel chrome for the chat rail. */
+  variant?: 'fold' | 'sidebar'
   onClose?: () => void
 }) {
   const { all, visible } = useActivity()
-  const [open, setOpen] = useState(defaultOpen)
+  const [open, setOpen] = useState(defaultOpen || variant === 'sidebar')
+  const sidebar = variant === 'sidebar'
 
   useEffect(() => {
     if (turnId) void activityStore.ensureTurn(turnId)
@@ -208,13 +243,68 @@ export default function ActivityInspector({
     return filtered.slice(-160)
   }, [all, global, jobId, turnId])
 
-  if (!visible || items.length === 0) return null
+  if (!visible) return null
+  if (!sidebar && items.length === 0) return null
+
   const active = items.filter((item) => ACTIVE.has(item.status))
   const tools = items.filter((item) => item.kind === 'tool').length
   const jobs = new Set(items.map((item) => item.job_id).filter(Boolean)).size
   const failed = items.some((item) => item.status === 'failed')
   const done = active.length === 0 && items.some((item) => item.ended)
-  const label = active.at(-1)?.label || (failed ? 'Activity failed' : done ? 'Activity complete' : 'Activity')
+  const label =
+    items.length === 0
+      ? 'Activity'
+      : active.at(-1)?.label || (failed ? 'Activity failed' : done ? 'Activity complete' : 'Activity')
+  const counts = [
+    tools ? `${tools} tool${tools === 1 ? '' : 's'}` : '',
+    jobs ? `${jobs} agent${jobs === 1 ? '' : 's'}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  const toolbar = (
+    <div className="activity-toolbar">
+      <span>{items.length} events</span>
+      <button
+        type="button"
+        onClick={() => {
+          activityStore.setVisible(false)
+          onClose?.()
+        }}
+        title="Hide activity in Chat and Face"
+      >
+        Hide activity
+      </button>
+      {onClose && (
+        <button type="button" onClick={onClose}>Close</button>
+      )}
+    </div>
+  )
+
+  if (sidebar) {
+    return (
+      <section className={`activity-inspector activity-sidebar ${className}`}>
+        <header className="activity-sidebar-head">
+          <div className="activity-sidebar-title">
+            <span className={`activity-state ${failed ? 'failed' : active.length ? 'active' : 'done'}`} />
+            <div>
+              <strong>{label}</strong>
+              {counts ? <em>{counts}</em> : null}
+            </div>
+          </div>
+          {toolbar}
+        </header>
+        <div className="activity-body">
+          {global && <AgentWorkTree />}
+          {items.length > 0 ? (
+            <ActivityTimeline items={items} />
+          ) : (
+            <p className="activity-empty">No activity yet — it will show up here when Rau works.</p>
+          )}
+        </div>
+      </section>
+    )
+  }
 
   return (
     <section className={`activity-inspector ${open ? 'is-open' : ''} ${className}`}>
@@ -226,58 +316,14 @@ export default function ActivityInspector({
       >
         <span className={`activity-state ${failed ? 'failed' : active.length ? 'active' : 'done'}`} />
         <span className="activity-summary-label">{label}</span>
-        <span className="activity-counts">
-          {tools ? `${tools} tool${tools === 1 ? '' : 's'}` : ''}
-          {tools && jobs ? ' · ' : ''}
-          {jobs ? `${jobs} agent${jobs === 1 ? '' : 's'}` : ''}
-        </span>
+        <span className="activity-counts">{counts}</span>
         <span className="activity-chevron" aria-hidden>⌄</span>
       </button>
       {open && (
         <div className="activity-body">
-          <div className="activity-toolbar">
-            <span>{items.length} events</span>
-            <button
-              type="button"
-              onClick={() => {
-                activityStore.setVisible(false)
-                onClose?.()
-              }}
-              title="Hide activity in Chat and Face"
-            >
-              Hide activity
-            </button>
-            {onClose && (
-              <button type="button" onClick={onClose}>Close</button>
-            )}
-          </div>
+          {toolbar}
           {global && <AgentWorkTree />}
-          <ol className="activity-timeline" aria-label="Rau activity timeline">
-            {items.map((span) => (
-              <li key={span.id} className={`activity-item status-${span.status}`}>
-                <span className="activity-icon" aria-hidden>{icon(span.kind)}</span>
-                <div className="activity-copy">
-                  <div className="activity-line">
-                    <strong>{span.label}</strong>
-                    <span>{elapsed(span)}</span>
-                  </div>
-                  {span.summary && <p>{span.summary}</p>}
-                  {(span.step_id || span.job_id) && (
-                    <span className="activity-correlation">
-                      {span.source}
-                      {span.step_id ? ` · step ${span.step_id.slice(0, 8)}` : ''}
-                    </span>
-                  )}
-                  {Object.keys(span.details || {}).length > 0 && (
-                    <details className="activity-details">
-                      <summary>Technical details</summary>
-                      <pre>{safeJson(span.details)}</pre>
-                    </details>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
+          <ActivityTimeline items={items} />
         </div>
       )}
     </section>

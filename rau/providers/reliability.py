@@ -122,6 +122,11 @@ class CircuitBreakerProvider(ChatProvider):
             self._failure(exc)
             raise
 
+    def warm(self) -> None:
+        warm = getattr(self.inner, "warm", None)
+        if callable(warm):
+            warm()
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             return {

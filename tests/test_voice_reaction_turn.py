@@ -1,10 +1,8 @@
 """
-The hesitation inside a real turn.
+Hesitation fillers are disabled — slow turns wait in silence for the real reply.
 
-A filler is decoration in front of the only thing the user asked for, so the
-bar is not "does it play" — it is that it cannot damage the reply. It must not
-arrive after the answer has started, must not double up, must not survive an
-interruption, and must never be remembered as something Rau said.
+These tests pin that fillers never play, and that the reply path still works
+when the model is slow or when a turn is interrupted.
 """
 import asyncio
 import threading
@@ -20,18 +18,16 @@ class ReactionTurnTests(unittest.IsolatedAsyncioTestCase):
         self.sent_audio = []
         self._chat = voice_session.brain.chat_streaming
         self._speak = voice_session.speak_stream
-        # Shorter, deterministic waits so the tests do not sit through 450 ms.
-        # The pipeline lag moves with it: the two are related, and a config
-        # where the hesitation can outrun the pipeline is not a real one.
-        self._after = voice_session.REACTION_AFTER_SEC
+        self._hesitations = voice_session.HESITATIONS_ENABLED
         self._lag = voice_session.PRE_SPEECH_LAG_SEC
         voice_session.PRE_SPEECH_LAG_SEC = 0.02
-        voice_session.REACTION_AFTER_SEC = 0.05
+        # Force the production default so a local toggle cannot soft-pass these.
+        voice_session.HESITATIONS_ENABLED = False
 
     def tearDown(self):
         voice_session.brain.chat_streaming = self._chat
         voice_session.speak_stream = self._speak
-        voice_session.REACTION_AFTER_SEC = self._after
+        voice_session.HESITATIONS_ENABLED = self._hesitations
         voice_session.PRE_SPEECH_LAG_SEC = self._lag
 
     async def send_json(self, payload):
@@ -72,114 +68,45 @@ class ReactionTurnTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await session.close()
 
-    # ── the gap ──────────────────────────────────────────────────────
+    async def test_hesitations_are_disabled(self):
+        self.assertFalse(voice_session.HESITATIONS_ENABLED)
 
-    async def test_a_slow_reply_is_covered_by_a_hesitation(self):
+    async def test_a_slow_reply_does_not_play_a_filler(self):
         self.install(first_token_delay=0.4)
-        with mock.patch.object(
-            voice_session.reactions.POOL, "audio", return_value=b"\x09\x09" * 120
-        ):
-            _, turn = await self.run_turn()
-        self.assertTrue(turn.reacted)
-        # The hesitation reaches the browser before the answer does.
-        self.assertEqual(self.sent_audio[0], b"\x09\x09" * 120)
-        self.assertGreater(len(self.sent_audio), 1, "the real reply never arrived")
-
-    async def test_a_fast_reply_is_left_alone(self):
-        # Covering a gap that does not exist would make Rau slower, not faster.
-        self.install(first_token_delay=0.0)
-        with mock.patch.object(
-            voice_session.reactions.POOL, "audio", return_value=b"\x09\x09" * 120
+        with mock.patch(
+            "rau.voice.reactions.POOL.audio", return_value=b"\x09\x09" * 120
         ) as audio:
             _, turn = await self.run_turn()
-        self.assertNotIn(b"\x09\x09" * 120, self.sent_audio)
         audio.assert_not_called()
+        self.assertNotIn(b"\x09\x09" * 120, self.sent_audio)
         self.assertTrue(self.sent_audio)
-
-    async def test_it_is_never_remembered_as_something_he_said(self):
-        self.install(first_token_delay=0.4)
-        with mock.patch.object(
-            voice_session.reactions.POOL, "audio", return_value=b"\x09\x09" * 120
-        ):
-            _, turn = await self.run_turn()
-        # Played to the end: everything audible should be the reply alone.
         turn.set_played_ms(turn.utterance.total_ms)
         self.assertEqual(turn.heard_text(), "Here is the answer.")
 
-    async def test_the_answer_is_placed_after_the_hesitation_in_the_timeline(self):
-        self.install(first_token_delay=0.4)
-        with mock.patch.object(
-            voice_session.reactions.POOL, "audio", return_value=b"\x09\x09" * 2400
-        ):
-            _, turn = await self.run_turn()
-        spoken = [c for c in turn.utterance.chunks if c.text]
-        self.assertTrue(spoken)
-        # Captions and barge offsets are measured from here; if the filler did
-        # not hold its place, every one of them is early by its duration.
-        self.assertGreater(spoken[0].start_ms, 0)
+    async def test_a_fast_reply_still_speaks(self):
+        self.install(first_token_delay=0.0)
+        _, turn = await self.run_turn()
+        self.assertTrue(self.sent_audio)
+        turn.set_played_ms(turn.utterance.total_ms)
+        self.assertEqual(turn.heard_text(), "Here is the answer.")
 
-    async def test_only_one_hesitation_per_turn(self):
-        self.install(first_token_delay=0.4)
-        with mock.patch.object(
-            voice_session.reactions.POOL, "audio", return_value=b"\x09\x09" * 120
-        ) as audio:
-            await self.run_turn()
-        self.assertLessEqual(audio.call_count, 1)
-
-    # ── it must not get in the way ───────────────────────────────────
-
-    async def test_an_interrupted_turn_does_not_speak_its_hesitation(self):
+    async def test_an_interrupted_turn_does_not_speak(self):
         self.install(first_token_delay=2.0)
-        started = threading.Event()
-
-        def slow_audio(_text):
-            started.set()
-            return b"\x09\x09" * 120
-
         session = voice_session.VoiceSession(self.send_json, self.send_bytes)
         try:
-            with mock.patch.object(
-                voice_session.reactions.POOL, "audio", side_effect=slow_audio
-            ):
-                await session.begin_turn("tell me about the deploy yesterday")
-                turn = session._active_turn
-                assert turn is not None
-                # Cut in before the hesitation has had time to be chosen.
-                await session.stop()
-                assert turn.thread is not None
-                await asyncio.to_thread(turn.thread.join, 4)
-                await asyncio.sleep(0.05)
+            await session.begin_turn("tell me about the deploy yesterday")
+            turn = session._active_turn
+            assert turn is not None
+            await session.stop()
+            assert turn.thread is not None
+            await asyncio.to_thread(turn.thread.join, 4)
+            await asyncio.sleep(0.05)
         finally:
             await session.close()
-        self.assertNotIn(b"\x09\x09" * 120, self.sent_audio)
+        self.assertFalse(self.sent_audio)
 
-    async def test_a_failed_pool_costs_the_hesitation_and_nothing_else(self):
-        self.install(first_token_delay=0.3)
-        with mock.patch.object(
-            voice_session.reactions.POOL, "audio", side_effect=RuntimeError("no key")
-        ):
-            _, turn = await self.run_turn()
-        # The reply still lands; the turn simply sounds like it answered fast.
-        turn.set_played_ms(turn.utterance.total_ms)
-        self.assertEqual(turn.heard_text(), "Here is the answer.")
-        self.assertTrue(self.sent_audio)
-
-    async def test_silence_from_the_pool_is_not_sent_as_an_empty_frame(self):
-        self.install(first_token_delay=0.3)
-        with mock.patch.object(voice_session.reactions.POOL, "audio", return_value=b""):
-            _, turn = await self.run_turn()
-        self.assertNotIn(b"", self.sent_audio)
-        self.assertTrue(all(self.sent_audio))
-
-    async def test_the_family_follows_what_the_user_actually_said(self):
-        self.install(first_token_delay=0.3)
-        with mock.patch.object(
-            voice_session.reactions.POOL, "choose", return_value="Mm-hm."
-        ) as choose, mock.patch.object(
-            voice_session.reactions.POOL, "audio", return_value=b"\x09\x09" * 120
-        ):
-            await self.run_turn("thanks")
-        choose.assert_called_once_with("acknowledging")
+    async def test_pre_speech_lag_is_short(self):
+        self.assertLessEqual(voice_session.PRE_SPEECH_LAG_SEC, 0.05)
 
 
 if __name__ == "__main__":

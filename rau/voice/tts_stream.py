@@ -37,7 +37,7 @@ MIN_CHARS = 24
 #: are synthesised while earlier ones play and cost nothing to make longer, so
 #: only the first one trades phrasing for latency — and it is the only one
 #: where that trade is worth making.
-FIRST_MIN_CHARS = 10
+FIRST_MIN_CHARS = 8
 #: Boundaries the opening fragment may also break on. A clause end is a place
 #: a voice can stop without sounding cut off; mid-clause is not.
 _SOFT_BREAK = re.compile(r"[,;:—–]\s")
@@ -133,7 +133,8 @@ class SentenceBuffer:
                 soft = _SOFT_BREAK.search(self._buf)
                 # "Right," is a real lead-in and a fine thing to say on its
                 # own; a two-character stub before a comma is not.
-                if soft and soft.start() >= FIRST_MIN_CHARS // 3:
+                # Floor at 3 so stubs like "So," never become their own request.
+                if soft and soft.start() >= max(3, FIRST_MIN_CHARS // 3):
                     out.append(self._buf[: soft.start() + 1].strip())
                     self._buf = self._buf[soft.end() :]
                     self._opened = True
@@ -172,7 +173,7 @@ class RobotVoice:
     processed whole. The per-sentence reverb seam is inaudible at 8% wet.
     """
 
-    def __init__(self, effect: str = "robot") -> None:
+    def __init__(self, effect: str = "none") -> None:
         self._board = None
         self.effect = effect
         if effect == "none":
@@ -248,13 +249,32 @@ def soften_edges(pcm: bytes, sample_rate: int = SR) -> bytes:
         return pcm
 
 
-def _client():
-    from elevenlabs.client import ElevenLabs
+_el_client = None
+_el_client_lock = threading.Lock()
 
-    key = get_secret("ELEVENLABS_API_KEY")
-    if not key:
-        raise RuntimeError("ELEVENLABS_API_KEY not set")
-    return ElevenLabs(api_key=key)
+
+def _client():
+    """Reuse one ElevenLabs client across speaks (TLS/setup off the hot path)."""
+    global _el_client
+    with _el_client_lock:
+        if _el_client is None:
+            from elevenlabs.client import ElevenLabs
+
+            key = get_secret("ELEVENLABS_API_KEY")
+            if not key:
+                raise RuntimeError("ELEVENLABS_API_KEY not set")
+            _el_client = ElevenLabs(api_key=key)
+        return _el_client
+
+
+def warmup() -> None:
+    """Touch the client and fire a tiny synth so the first real speak is warm."""
+    try:
+        client = _client()
+        for _ in synth_sentence("warm", client=client):
+            break
+    except Exception:
+        pass
 
 
 def _sdk_voice_settings(settings: Optional[Dict[str, Any]]):
@@ -497,7 +517,7 @@ def speak_stream(
     slot = get_slot("tts")
     voice_id = str(slot.get("voice_id") or DEFAULT_VOICE_ID)
     model = str(slot.get("model") or DEFAULT_TTS_MODEL)
-    effect = str(slot.get("effect") or "robot")
+    effect = str(slot.get("effect") or "none")
     if robot is True:
         effect = "robot"
     elif robot is False:
