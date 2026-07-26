@@ -1,4 +1,4 @@
-import type { Catalog, SetupState } from '../../api'
+import type { Catalog, SetupState, VoiceSettings } from '../../api'
 
 export type StepId =
   | 'welcome'
@@ -19,7 +19,14 @@ export type Draft = {
   identity: string
   backstory: string
   slots: Record<'face' | 'subagent' | 'dream', SlotDraft>
-  tts: { voice_id: string; model: string }
+  tts: {
+    voice_id: string
+    model: string
+    preset: string
+    effect: string
+    voice_settings: VoiceSettings
+  }
+  stt: { provider: string; model: string; language: string }
   voiceSkipped: boolean
 }
 
@@ -49,7 +56,20 @@ export const EMPTY_DRAFT: Draft = {
     subagent: { provider: '', model: '' },
     dream: { provider: '', model: '' },
   },
-  tts: { voice_id: 'TX3LPaxmHKxFdv7VOQHJ', model: 'eleven_flash_v2_5' },
+  tts: {
+    voice_id: 'TX3LPaxmHKxFdv7VOQHJ',
+    model: 'eleven_flash_v2_5',
+    preset: 'robotic',
+    effect: 'robot',
+    voice_settings: {
+      stability: 0.72,
+      similarity_boost: 0.72,
+      style: 0.12,
+      speed: 1,
+      use_speaker_boost: true,
+    },
+  },
+  stt: { provider: 'auto', model: '', language: 'en' },
   voiceSkipped: false,
 }
 

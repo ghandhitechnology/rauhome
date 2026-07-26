@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { bodyController } from '../clawd/body'
-import { spokenSoFar, type AlignedSentence } from './alignment'
+import { spokenSentence, spokenSoFar, type AlignedSentence } from './alignment'
 import { FRAME_MS, MicCapture } from './capture'
 import { TtsPlayback } from './playback'
 import { Vad } from './vad'
@@ -15,8 +15,12 @@ export type VoiceSession = {
   partial: string
   /** The last settled transcript of what the user said. */
   finalText: string
-  /** The sentence Rau is saying right now. */
+  /** Latest sentence queued for TTS (synth-time; may lead the ear). */
   lastSay: string
+  /** Cumulative text actually heard so far this reply. */
+  spokenText: string
+  /** Sentence currently reaching the speaker. */
+  spokenSentence: string
   micLevel: number
   outLevel: number
   error: string
@@ -87,6 +91,8 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
   const [partial, setPartial] = useState('')
   const [finalText, setFinalText] = useState('')
   const [lastSay, setLastSay] = useState('')
+  const [spokenText, setSpokenText] = useState('')
+  const [spokenSentenceState, setSpokenSentenceState] = useState('')
   const [error, setError] = useState('')
   const [levels, setLevels] = useState({ mic: 0, out: 0 })
   const [lastTurn, setLastTurn] = useState<VoiceTurnEnd | null>(null)
@@ -188,13 +194,28 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
     /** Sentences of the reply currently being spoken, in timeline order. */
     let aligned: AlignedSentence[] = []
     let reported = ''
+    let reportedSentence = ''
+
+    const clearHeard = () => {
+      aligned = []
+      reported = ''
+      reportedSentence = ''
+      setSpokenText('')
+      setSpokenSentenceState('')
+    }
 
     playback.onLevel((level, playedMs, idle) => {
       outRef.current = idle ? 0 : level
       if (!aligned.length) return
       const spoken = spokenSoFar(aligned, playedMs)
+      const sentence = spokenSentence(aligned, playedMs)
+      if (sentence !== reportedSentence) {
+        reportedSentence = sentence
+        setSpokenSentenceState(sentence)
+      }
       if (spoken === reported) return
       reported = spoken
+      setSpokenText(spoken)
       // 'audio' takes the turn away from the text stream for good: the two
       // describe the same reply, but only one of them is in step with the ear.
       bodyController.advance(aligned[0].turnId, spoken, 'audio')
@@ -252,10 +273,10 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
         vad.reset()
         playback.reset()
         // A reconnect starts a new timeline; a plan for the dead one is over.
-        aligned = []
-        reported = ''
+        clearHeard()
         bodyController.cancel(undefined, 'disconnected')
         setPartial('')
+        setLastSay('')
         applyPhase('idle')
         if (disposed) return
         // The hub restarting is routine; the session should outlive it.
@@ -285,8 +306,8 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
               playback.reset()
               // Timings describe one reply's audio timeline; carrying them
               // into the next one would place every phrase in the wrong place.
-              aligned = []
-              reported = ''
+              clearHeard()
+              setLastSay('')
             }
             if (next === 'thinking' || next === 'idle') mutedRef.current = false
             applyPhase(next)
@@ -297,8 +318,7 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
             const text = msg.text ?? ''
             if (!turnId || !text) break
             if (aligned.length && aligned[0].turnId !== turnId) {
-              aligned = []
-              reported = ''
+              clearHeard()
             }
             const charMs = Array.isArray(msg.char_ms) ? msg.char_ms : []
             aligned.push({
@@ -339,8 +359,7 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
           case 'cancelled':
             // The server confirms the barge; audio was already flushed locally.
             setLastSay('')
-            aligned = []
-            reported = ''
+            clearHeard()
             break
           case 'hello':
             setBackend(msg.stt ?? '')
@@ -381,6 +400,9 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
       outRef.current = 0
       setConnected(false)
       setPartial('')
+      setLastSay('')
+      setSpokenText('')
+      setSpokenSentenceState('')
       // Both describe the connection that just went away, not the next one.
       setTools([])
       setBackend('')
@@ -442,6 +464,8 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
     partial,
     finalText,
     lastSay,
+    spokenText,
+    spokenSentence: spokenSentenceState,
     micLevel: levels.mic,
     outLevel: levels.out,
     error,

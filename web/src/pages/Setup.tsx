@@ -74,8 +74,20 @@ export default function Setup({ onDone }: { onDone: () => void }) {
           }
           if (s.models?.tts) {
             next.tts = {
+              ...next.tts,
               voice_id: s.models.tts.voice_id || next.tts.voice_id,
               model: s.models.tts.model || next.tts.model,
+              preset: s.models.tts.preset || next.tts.preset,
+              effect: s.models.tts.effect || next.tts.effect,
+              voice_settings: s.models.tts.voice_settings || next.tts.voice_settings,
+            }
+          }
+          if (s.models?.stt) {
+            next.stt = {
+              ...next.stt,
+              provider: s.models.stt.provider || next.stt.provider,
+              model: s.models.stt.model ?? next.stt.model,
+              language: s.models.stt.language ?? next.stt.language,
             }
           }
           return next

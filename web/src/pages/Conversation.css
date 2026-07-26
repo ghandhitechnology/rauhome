@@ -329,6 +329,14 @@
   color: var(--faint);
 }
 
+.compose-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  padding: 0.15rem 0.1rem 0.15rem 0;
+}
+
 .send-btn {
   flex-shrink: 0;
   width: 2.5rem;

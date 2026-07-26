@@ -7,6 +7,7 @@ import { Link, Navigate, useLocation } from './router'
 const Conversation = lazy(() => import('./pages/Conversation'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Face = lazy(() => import('./pages/Face'))
+const Pet = lazy(() => import('./pages/Pet'))
 const Identity = lazy(() => import('./pages/Identity'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Setup = lazy(() => import('./pages/Setup'))
@@ -33,6 +34,7 @@ function Shell() {
   const isTalk = loc.pathname === '/'
   const isSetup = loc.pathname.startsWith('/setup')
   const isFace = loc.pathname.startsWith('/face')
+  const isPet = loc.pathname.startsWith('/pet')
   const { toggleMode } = useMode()
 
   // Chat/voice is a whole-app switch, so it stays reachable mid-sentence in the
@@ -62,7 +64,7 @@ function Shell() {
     )
   }
 
-  if (!ready && !isSetup) {
+  if (!ready && !isSetup && !isPet) {
     return <Navigate to="/setup" replace />
   }
 
@@ -71,6 +73,15 @@ function Shell() {
     return (
       <Suspense fallback={<RouteFallback />}>
         <Face />
+      </Suspense>
+    )
+  }
+
+  // Desktop pet: transparent shell, no app chrome.
+  if (isPet) {
+    return (
+      <Suspense fallback={null}>
+        <Pet />
       </Suspense>
     )
   }
@@ -129,6 +140,8 @@ function RoutePage({
       return <Conversation />
     case '/face':
       return <Face />
+    case '/pet':
+      return <Pet />
     case '/dashboard':
       return <Dashboard />
     case '/setup':

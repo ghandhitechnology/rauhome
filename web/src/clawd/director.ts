@@ -6,7 +6,7 @@
  * aims the eyes and moves `worldX`. Everything else falls out of the rig.
  */
 
-import { GAZE_AIMS, type BodyCue } from './body'
+import { bodyController, GAZE_AIMS, type BodyCue } from './body'
 import { clamp, damp } from './easing'
 import { MOTIONS, ONE_SHOTS, WALK_SPEED, type MotionName } from './motions'
 import type { ClawdRig, GazeAim } from './rig'
@@ -113,6 +113,12 @@ const NOD_GAP = 1.5
 /** How long after the last conversational signal he keeps holding station. */
 const CONVERSATION_HOLD = 18
 
+/**
+ * How long a deliberate goTo / cue station sticks before ambient wandering
+ * may send him somewhere else again.
+ */
+const DIRECTED_HOLD = 20
+
 export type DirectorMode = 'room' | 'roam' | 'conversing'
 
 export class Director {
@@ -128,6 +134,13 @@ export class Director {
 
   private target: StationId = 'centre'
   private arrived = true
+  /**
+   * A human goTo or a model cue with a station. While set, conversing mode
+   * holds that spot instead of dragging him back to centre.
+   */
+  private directed = false
+  /** Clock time when directed may expire after arrival; 0 until he arrives. */
+  private directedUntil = 0
   private nextDecisionAt = 0
   private clock = 0
   private lastReplySeen = 0
@@ -154,6 +167,8 @@ export class Director {
   private cue: BodyCue | null = null
   /** Whether this cue's motion has been played yet — deferred until arrival. */
   private cuePlayed = false
+  /** Whether the active station cue has told the body controller it arrived. */
+  private cueArrivalSignaled = false
   /** Which semantic gaze the current cue installed, so it is set only once. */
   private cueGazeName: string | null = null
 
@@ -161,6 +176,8 @@ export class Director {
   /** Where he goes back to once the conversation has gone quiet. */
   private baseMode: DirectorMode
   private mode: DirectorMode
+  /** Horizontal leash in stage units (desktop pet uses a narrower band). */
+  private walkRange = { ...WALK_RANGE }
 
   constructor(rig: ClawdRig, mode: DirectorMode = 'room') {
     this.rig = rig
@@ -169,6 +186,18 @@ export class Director {
     // Starting mid-conversation means holding station until the room goes quiet.
     if (mode === 'conversing') this.lastEngagedAt = 0
     this.rig.worldX = station('centre').x
+  }
+
+  /** Limit how far he may walk (keeps the desktop pet inside its window). */
+  setWalkRange(range: { min: number; max: number }) {
+    this.walkRange = {
+      min: Math.min(range.min, range.max),
+      max: Math.max(range.min, range.max),
+    }
+    this.rig.worldX = clamp(this.rig.worldX, this.walkRange.min, this.walkRange.max)
+    if (this.roamX != null) {
+      this.roamX = clamp(this.roamX, this.walkRange.min, this.walkRange.max)
+    }
   }
 
   /** Current speech bubble text, or null. */
@@ -202,10 +231,14 @@ export class Director {
     // conversation always runs through one path.
   }
 
-  /** Send Clawd somewhere deliberately. */
+  /** Send Clawd somewhere deliberately (Direct panel / human override). */
   goTo(id: StationId) {
     this.target = id
     this.arrived = false
+    this.directed = true
+    this.directedUntil = 0
+    // Outrank a leftover one-shot or poke so the walk starts on the next tick.
+    this.startleUntil = 0
   }
 
   /** Poke him — he jumps, then carries on. */
@@ -236,11 +269,14 @@ export class Director {
   applyCue(cue: BodyCue) {
     this.cue = cue
     this.cuePlayed = false
+    this.cueArrivalSignaled = false
     // A cue outranks the leftover lockout from a click or a reaction.
     this.startleUntil = 0
     if (cue.station) {
       this.target = cue.station
       this.arrived = false
+      this.directed = true
+      this.directedUntil = 0
     }
     if (!cue.station && cue.motion) this.playCueMotion()
   }
@@ -249,8 +285,10 @@ export class Director {
   releaseCue() {
     if (!this.cue) return
     const hadGaze = this.cueGazeName !== null
+    // A station cue leaves directed set so conversing does not yank him back.
     this.cue = null
     this.cuePlayed = false
+    this.cueArrivalSignaled = false
     this.cueGazeName = null
     // Deliberately no snap-back: he keeps the spot he was sent to, and the
     // ambient clock gets a beat before it decides to wander off again.
@@ -288,9 +326,9 @@ export class Director {
         // Roughly reading speed, clamped to something watchable.
         this.speakUntil = this.clock + clamp(1.8 + s.speech.length * 0.045, 2.5, 11)
       }
-      // A cue already said where he should be for this reply; pulling him back
-      // to the middle of the room would undo the plan mid-sentence.
-      if (!this.cue) {
+      // A cue or deliberate goTo already said where he should be; pulling him
+      // back to the middle of the room would undo that mid-sentence.
+      if (!this.cue && !this.directed) {
         this.target = this.mode === 'roam' ? this.target : 'centre'
         this.arrived = this.mode === 'roam'
       }
@@ -301,6 +339,26 @@ export class Director {
 
     this.updateMood(dt, s)
     this.updateBeats(s)
+    this.expireDirected()
+
+    // A model-authored cue outranks both conversation posture and ambient
+    // wandering for as long as it holds the body.
+    if (this.cue) {
+      if (this.clock < this.startleUntil || (rig.busy && !this.cue.station)) {
+        this.settleWalk(dt, 0)
+        return
+      }
+      this.followCue(dt, s)
+      return
+    }
+
+    // Direct-panel goTo outranks one-shots and conversing — otherwise a poke
+    // or voice session leaves "Send him to" stuck on centre forever.
+    if (this.directed && !this.arrived) {
+      const spot = station(this.target)
+      if (this.travelTo(this.clampX(spot.x), dt)) return
+      this.markStationArrival(spot.facing)
+    }
 
     // A deliberate one-shot owns the character until it finishes.
     if (this.clock < this.startleUntil || rig.busy) {
@@ -313,33 +371,30 @@ export class Director {
       return
     }
 
-    // A model-authored cue outranks both conversation posture and ambient
-    // wandering for as long as it holds the body.
-    if (this.cue) {
-      this.followCue(dt, s)
-      return
-    }
-
     if (this.mode === 'conversing') {
       this.converse(dt, s)
       return
     }
 
     // ── choose where to be ───────────────────────────────────────────
-    const desired = this.desiredStation(s)
-    if (desired && desired !== this.target) {
-      this.target = desired
-      this.arrived = false
+    if (!this.directed) {
+      const desired = this.desiredStation(s)
+      if (desired && desired !== this.target) {
+        this.target = desired
+        this.arrived = false
+      }
     }
 
     // ── walk there ───────────────────────────────────────────────────
-    const targetX = this.mode === 'roam' ? (this.roamX ?? rig.worldX) : station(this.target).x
+    const targetX =
+      this.mode === 'roam'
+        ? (this.roamX ?? rig.worldX)
+        : this.clampX(station(this.target).x)
     if (this.travelTo(targetX, dt)) return
 
     if (!this.arrived) {
-      this.arrived = true
+      this.markStationArrival(this.mode === 'room' ? station(this.target).facing : this.rig.facing)
       this.nextDecisionAt = this.clock + 3 + Math.random() * 5
-      if (this.mode === 'room') rig.facing = station(this.target).facing
       this.playAmbient(s)
     }
 
@@ -348,20 +403,29 @@ export class Director {
     // ── ambient churn ────────────────────────────────────────────────
     if (this.clock >= this.nextDecisionAt) {
       this.nextDecisionAt = this.clock + 6 + Math.random() * 10
-      if (this.isPinned(s)) {
+      if (this.isPinned(s) || this.directed) {
         this.playAmbient(s)
       } else if (this.mode === 'room') {
-        // Wander somewhere new now and then.
-        const options = STATIONS.filter((st) => st.id !== this.target)
-        const pick = options[Math.floor(Math.random() * options.length)]
-        if (Math.random() < 0.7) {
+        // Wander somewhere new now and then — stay inside the leash.
+        const options = STATIONS.filter(
+          (st) =>
+            st.id !== this.target &&
+            st.x >= this.walkRange.min &&
+            st.x <= this.walkRange.max,
+        )
+        const pick =
+          options.length > 0
+            ? options[Math.floor(Math.random() * options.length)]
+            : null
+        if (pick && Math.random() < 0.7) {
           this.target = pick.id
           this.arrived = false
         } else {
           this.playAmbient(s)
         }
       } else {
-        this.roamX = WALK_RANGE.min + Math.random() * (WALK_RANGE.max - WALK_RANGE.min)
+        const span = this.walkRange.max - this.walkRange.min
+        this.roamX = this.walkRange.min + Math.random() * span
         this.arrived = false
       }
     }
@@ -381,11 +445,9 @@ export class Director {
 
     if (cue.station) {
       const spot = station(cue.station)
-      if (this.travelTo(spot.x, dt)) return
-      if (!this.arrived) {
-        this.arrived = true
-        this.rig.facing = spot.facing
-      }
+      if (this.travelTo(this.clampX(spot.x), dt)) return
+      if (!this.arrived) this.markStationArrival(spot.facing)
+      this.signalCueArrival()
       if (!this.cuePlayed) {
         this.playCueMotion()
         return
@@ -403,17 +465,17 @@ export class Director {
   }
 
   /**
-   * Conversation mode: hold the centre of the room, face the camera and cycle
-   * listen → think → talk. Wandering off to water the plant halfway through an
-   * answer is the single fastest way to break the illusion of attention.
+   * Conversation mode: hold station and face the camera, cycling
+   * listen → think → talk. Default station is centre; a directed goTo or cue
+   * keeps him where he was sent so movement is not undone mid-conversation.
    */
   private converse(dt: number, s: Signals) {
     const rig = this.rig
-    const spot = station('centre')
+    const spot = station(this.directed ? this.target : 'centre')
     if (this.travelTo(spot.x, dt)) return
 
-    this.arrived = true
-    rig.facing = spot.facing
+    if (!this.arrived) this.markStationArrival(spot.facing)
+    else rig.facing = spot.facing
     this.settleWalk(dt, 0)
 
     const pose = this.conversationPose(s)
@@ -424,6 +486,27 @@ export class Director {
       this.nextIdleBeatAt = this.clock + 14 + Math.random() * 16
       this.react('stretch', 6)
     }
+  }
+
+  private markStationArrival(facing: 1 | -1) {
+    this.arrived = true
+    this.rig.facing = facing
+    if (this.directed) this.directedUntil = this.clock + DIRECTED_HOLD
+  }
+
+  /** Tell the body controller a station cue has landed so its hold can start. */
+  private signalCueArrival() {
+    if (!this.cue?.station || this.cueArrivalSignaled) return
+    this.cueArrivalSignaled = true
+    bodyController.cueArrived()
+  }
+
+  private expireDirected() {
+    if (!this.directed || this.cue) return
+    if (!this.arrived || this.directedUntil <= 0) return
+    if (this.clock < this.directedUntil) return
+    this.directed = false
+    this.directedUntil = 0
   }
 
   private conversationPose(s: Signals): MotionName {
@@ -449,7 +532,7 @@ export class Director {
       // stomp the clip it just started.
       if (!this.cue) this.arrived = false
       if (mode === 'conversing') {
-        if (!this.cue) this.target = 'centre'
+        if (!this.cue && !this.directed) this.target = 'centre'
         this.nextIdleBeatAt = this.clock + 10
       } else if (!this.manual && !this.cue) {
         // A looping clip never reports finished, so the conversation pose would
@@ -578,10 +661,15 @@ export class Director {
     this.rig.play(name, { force: true, restart })
   }
 
+  private clampX(x: number) {
+    return clamp(x, this.walkRange.min, this.walkRange.max)
+  }
+
   /** Walk toward a stage-unit x. True while still travelling. */
   private travelTo(targetX: number, dt: number): boolean {
     const rig = this.rig
-    const dx = targetX - rig.worldX
+    const goal = this.clampX(targetX)
+    const dx = goal - rig.worldX
     const dist = Math.abs(dx)
     if (dist <= 1.2) return false
 
@@ -591,7 +679,7 @@ export class Director {
     const speed = WALK_SPEED * clamp(dist / 6, 0.35, 1)
     const step = Math.min(dist, speed * dt)
     rig.worldX += step * rig.facing
-    rig.worldX = clamp(rig.worldX, WALK_RANGE.min, WALK_RANGE.max)
+    rig.worldX = this.clampX(rig.worldX)
     rig.advanceLegs((step / WALK_SPEED) * (1 / 0.62) * 1.6)
     this.setLoop('walk')
     this.settleWalk(dt, 1)

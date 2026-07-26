@@ -61,7 +61,7 @@ GAZE_TARGETS: Tuple[str, ...] = (
     "window",
 )
 
-ANCHORS: Tuple[str, ...] = ("reply_start", "phrase", "reply_end")
+ANCHORS: Tuple[str, ...] = ("now", "reply_start", "phrase", "reply_end")
 
 MAX_CUES = 8
 MAX_PHRASE_CHARS = 80
@@ -86,10 +86,12 @@ BODY_CHOREOGRAPHY_TOOL: Dict[str, Any] = {
             "Stage your body for the reply you are about to speak. Call this "
             "BEFORE you speak, at most once per turn, and only when the "
             "movement genuinely adds something — most turns need no plan at "
-            "all. Each cue picks a motion, a place to look, and/or somewhere "
-            "in the room to stand, and is anchored either to the start of the "
-            "reply, to the end of it, or to an exact phrase you then have to "
-            "use verbatim in what you say. Never mention this tool out loud."
+            "all. Each cue picks a motion, a place to look, and/or a station "
+            "to walk to (window, plant, centre, desk, shelf). Setting "
+            "`station` walks you there; motion plays on arrival. "
+            "`motion: walk` alone is in-place only. Anchor with `now` to move "
+            "immediately, `reply_start` / `reply_end`, or a verbatim `phrase`. "
+            "Never mention this tool out loud."
         ),
         "parameters": {
             "type": "object",
@@ -106,9 +108,9 @@ BODY_CHOREOGRAPHY_TOOL: Dict[str, Any] = {
                                 "type": "string",
                                 "enum": list(ANCHORS),
                                 "description": (
-                                    "When the cue fires: as the reply begins, "
-                                    "as an exact phrase becomes audible, or "
-                                    "once the reply is finished."
+                                    "When the cue fires: immediately (`now`), "
+                                    "as the reply begins, as an exact phrase "
+                                    "becomes audible, or once the reply ends."
                                 ),
                             },
                             "phrase": {
@@ -131,7 +133,10 @@ BODY_CHOREOGRAPHY_TOOL: Dict[str, Any] = {
                             "motion": {
                                 "type": "string",
                                 "enum": list(MOTIONS),
-                                "description": "Clip to play.",
+                                "description": (
+                                    "Clip to play. With a station, plays after "
+                                    "you arrive. Alone, walk is in-place only."
+                                ),
                             },
                             "gaze": {
                                 "type": "string",
@@ -141,15 +146,19 @@ BODY_CHOREOGRAPHY_TOOL: Dict[str, Any] = {
                             "station": {
                                 "type": "string",
                                 "enum": list(STATIONS),
-                                "description": "Where in the room to stand.",
+                                "description": (
+                                    "Walk to this place in the room: window, "
+                                    "plant, centre, desk, or shelf."
+                                ),
                             },
                             "hold_ms": {
                                 "type": "integer",
                                 "minimum": MIN_HOLD_MS,
                                 "maximum": MAX_HOLD_MS,
                                 "description": (
-                                    "How long this cue keeps the body before "
-                                    "autonomous behaviour resumes."
+                                    "How long this cue keeps the body after "
+                                    "arrival (or after fire, if no station) "
+                                    "before autonomous behaviour resumes."
                                 ),
                             },
                         },
@@ -171,12 +180,17 @@ PROMPT = (
     "## Your body\n"
     "You are drawn as a small character in a room, and `body_choreography` is "
     "how you move on purpose. Call it before you speak, never after, and never "
-    "more than once per turn. Anchor a cue to `reply_start`, to `reply_end`, "
-    "or to a `phrase` you then say word-for-word — an anchor phrase you do not "
-    "actually speak simply never fires. Keep it rare and keep it small: one or "
-    "two cues on a turn where movement means something, and nothing at all on "
-    "an ordinary turn. Never read the plan out loud, never describe the tool, "
-    "and never narrate your own gestures."
+    "more than once per turn. Anchor a cue to `now` (fires as soon as the tool "
+    "runs), `reply_start`, `reply_end`, or a `phrase` you then say "
+    "word-for-word — an anchor phrase you do not actually speak simply never "
+    "fires. Stations you can walk to: window, plant, centre, desk, shelf. "
+    "Set `station` to walk there; any `motion` plays on arrival. "
+    "`motion: walk` without a station only steps in place. Example: "
+    '`{"anchor":"now","station":"desk","motion":"type","gaze":"screen"}`. '
+    "Keep it rare and keep it small: one or two cues on a turn where movement "
+    "means something, and nothing at all on an ordinary turn. Never read the "
+    "plan out loud, never describe the tool, and never narrate your own "
+    "gestures."
 )
 
 

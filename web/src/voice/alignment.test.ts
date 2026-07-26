@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { spokenSoFar, type AlignedSentence } from './alignment'
+import { spokenSentence, spokenSoFar, type AlignedSentence } from './alignment'
 
 /** "Hi." at 100ms per character, starting at `offsetMs`. */
 function sentence(text: string, offsetMs: number, perChar = 100): AlignedSentence {
@@ -64,5 +64,38 @@ describe('spokenSoFar', () => {
 
   it('reports nothing for a reply that has not started arriving', () => {
     expect(spokenSoFar([], 500)).toBe('')
+  })
+})
+
+describe('spokenSentence', () => {
+  const first = sentence('Hello.', 0)
+  const second = sentence('Bye.', 600)
+  const reply = [first, second]
+
+  it('is empty before the first sentence starts', () => {
+    expect(spokenSentence(reply, 0)).toBe('')
+    expect(spokenSentence(reply, -1)).toBe('')
+  })
+
+  it('returns the sentence whose audio has started', () => {
+    expect(spokenSentence(reply, 1)).toBe('Hello.')
+    expect(spokenSentence(reply, 599)).toBe('Hello.')
+  })
+
+  it('advances to the next sentence once playback enters it', () => {
+    expect(spokenSentence(reply, 600)).toBe('Hello.')
+    expect(spokenSentence(reply, 601)).toBe('Bye.')
+    expect(spokenSentence(reply, 999)).toBe('Bye.')
+  })
+
+  it('holds the last started sentence across a gap', () => {
+    const gapped = [first, sentence('Bye.', 5_000)]
+    expect(spokenSentence(gapped, 1_200)).toBe('Hello.')
+    expect(spokenSentence(gapped, 5_000)).toBe('Hello.')
+    expect(spokenSentence(gapped, 5_001)).toBe('Bye.')
+  })
+
+  it('reports nothing with no alignment yet', () => {
+    expect(spokenSentence([], 400)).toBe('')
   })
 })

@@ -5,6 +5,10 @@
   background: #0a0a0c;
 }
 
+.clawd-room.pet-mode {
+  background: transparent;
+}
+
 .clawd-room canvas {
   display: block;
   width: 100%;

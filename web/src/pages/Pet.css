@@ -1,0 +1,79 @@
+/* Kill every app-chrome fill so the desktop shows through the pet window. */
+html.pet-shell {
+  color-scheme: normal;
+  background: transparent !important;
+}
+
+html.pet-shell,
+html.pet-shell body,
+body.pet-shell,
+html.pet-shell #root {
+  margin: 0;
+  background: transparent !important;
+  background-image: none !important;
+  background-color: transparent !important;
+  overflow: hidden;
+}
+
+html.pet-shell body::before {
+  content: none !important;
+  display: none !important;
+  background: none !important;
+  animation: none !important;
+}
+
+.pet-root,
+.pet-root .clawd-room,
+.pet-root .clawd-room.pet-mode,
+.pet-root canvas {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.pet-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+.pet-root.pet-paused {
+  pointer-events: none;
+}
+
+.pet-menu {
+  position: fixed;
+  z-index: 20;
+  margin: 0;
+  padding: 0.35rem 0;
+  list-style: none;
+  min-width: 9.5rem;
+  background: rgba(22, 18, 16, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.pet-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #f2efe9;
+  text-align: left;
+  padding: 0.4rem 0.85rem;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.pet-menu button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pet-menu-note {
+  padding: 0.35rem 0.85rem 0.15rem;
+  font-size: 0.7rem;
+  color: rgba(242, 239, 233, 0.45);
+}

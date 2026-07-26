@@ -13,7 +13,7 @@ from rau.agent.tools import TOOL_SCHEMAS, run_tool
 from rau.events import BUS
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, append_trace
-from rau.providers.base import Message, tool_result_text
+from rau.providers.base import Message, tool_result_images, tool_result_text
 from rau.providers.registry import chat_for_slot, load_settings
 from rau import state
 
@@ -91,6 +91,14 @@ def _validated_goal(goal: Any) -> tuple[Optional[str], Optional[Dict[str, Any]]]
 
 def start_job(goal: str, parent_id: Optional[str] = None) -> Dict[str, Any]:
     """Begin a background goal, optionally beneath one already running."""
+    from rau.permissions import jobs_allowed
+
+    if not jobs_allowed():
+        return {
+            "ok": False,
+            "reason": "readonly",
+            "error": "subagents are in read-only mode — cannot start jobs",
+        }
     validated_goal, error = _validated_goal(goal)
     if error is not None:
         return error
@@ -303,6 +311,14 @@ def redirect_hard_task(goal: str) -> Dict[str, Any]:
     The replacement is vetted first: a redirect the face botched into an empty
     goal would otherwise throw away every running job and start nothing.
     """
+    from rau.permissions import jobs_allowed
+
+    if not jobs_allowed():
+        return {
+            "ok": False,
+            "reason": "readonly",
+            "error": "subagents are in read-only mode — cannot redirect jobs",
+        }
     validated_goal, error = _validated_goal(goal)
     if error is not None:
         return error
@@ -557,11 +573,16 @@ def _run_subagent(job: Job) -> None:
                     if isinstance(tc.arguments, dict)
                     else {"_raw": tc.arguments}
                 )
+                from rau.permissions import deny_result, tool_decision
+
+                decision = tool_decision("subagents", tc.name, arguments)
                 needs, summary = classify_tool(tc.name, arguments)
                 # A worker is never told its own job id, so the link that binds
                 # anything it spawns to itself — and to the cancel that reaches
                 # both — travels beside the call rather than through the model.
-                if needs:
+                if decision == "deny":
+                    tool_result = deny_result(tc.name)
+                elif decision == "confirm":
                     approved = _await_confirm(job, summary or tc.name, timeout)
                     if not approved:
                         tool_result = {
@@ -579,6 +600,11 @@ def _run_subagent(job: Job) -> None:
                             cancel=job.cancel,
                         )
                 else:
+                    # allow — including bypass of tools that would need confirm
+                    if needs:
+                        state.update_job(
+                            job.id, state="running", progress=f"running {tc.name}"
+                        )
                     tool_result = run_tool(
                         tc.name,
                         arguments,
@@ -599,12 +625,14 @@ def _run_subagent(job: Job) -> None:
                 )
                 _emit_progress(job, f"Inner work: {tc.name}")
 
+                images = tool_result_images(tool_result)
                 messages.append(
                     Message(
                         role="tool",
                         content=tool_result_text(tool_result),
                         tool_call_id=tc.id,
                         name=tc.name,
+                        images=images or None,
                     )
                 )
 

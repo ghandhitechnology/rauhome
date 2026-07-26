@@ -59,6 +59,7 @@ export default function StepForge({
             if (s.provider && s.model) payload[slot] = { provider: s.provider, model: s.model }
           }
           if (state?.voice_ready) payload.tts = { provider: 'elevenlabs', ...draft.tts }
+          payload.stt = draft.stt
           if (Object.keys(payload).length) await api.putModels(payload)
         })
 

@@ -25,6 +25,8 @@ log = logging.getLogger("rau.providers.registry")
 
 EFFORT_LEVELS = ("low", "medium", "high", "max")
 CHAT_SLOTS = ("face", "subagent", "dream")
+TTS_EFFECTS = ("none", "robot", "childlike")
+STT_PROVIDERS = ("auto", "deepgram", "elevenlabs", "openai", "local")
 
 
 def _default_models() -> Dict[str, Any]:
@@ -54,14 +56,23 @@ def _default_models() -> Dict[str, Any]:
             "provider": "elevenlabs",
             "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
             "model": "eleven_flash_v2_5",
+            "preset": "robotic",
+            "effect": "robot",
+            "voice_settings": {
+                "stability": 0.72,
+                "similarity_boost": 0.72,
+                "style": 0.12,
+                "speed": 1.0,
+                "use_speaker_boost": True,
+            },
         },
-        # Speech-to-text for voice mode. Defaults to local whisper because it
-        # needs no credential; the registry upgrades to whatever the user
-        # configures and falls back here if that key goes missing.
+        # Pick the best connected backend at session start. This avoids leaving
+        # a valid Deepgram or ElevenLabs key unused while a large local Whisper
+        # model downloads on the first conversation.
         "stt": {
-            "provider": "local",
-            "model": "small",
-            "language": "",
+            "provider": "auto",
+            "model": "",
+            "language": "en",
         },
     }
 
@@ -77,6 +88,11 @@ def _default_settings() -> Dict[str, Any]:
         "hard_task_progress_interval_sec": 25,
         "trace_ttl_days": 7,
         "face_history_turns": 24,
+        "permissions": {
+            "subagents": "auto",
+            "room": "auto",
+            "heartbeats": "auto",
+        },
     }
 
 
@@ -171,6 +187,73 @@ def _validated_models(cfg: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 f"{slot_name}.effort must be one of {', '.join(EFFORT_LEVELS)}"
             )
+        # Clamp to levels this provider+model actually supports.
+        from rau.providers.reasoning import clamp_effort
+
+        clamped = clamp_effort(str(provider), str(model), str(effort))
+        if clamped is not None:
+            slot["effort"] = clamped
+        # Unsupported models keep the stored label for UI history; wire omits it.
+
+    # Older callers and tests predate the media slots. Preserve their chat
+    # configuration while seeding the new voice defaults.
+    defaults = _default_models()
+    checked.setdefault("tts", deepcopy(defaults["tts"]))
+    checked.setdefault("stt", deepcopy(defaults["stt"]))
+
+    tts = checked.get("tts")
+    if not isinstance(tts, dict):
+        raise ValueError("tts model slot must be an object")
+    if tts.get("provider") != "elevenlabs":
+        raise ValueError("tts.provider must be elevenlabs")
+    for key, limit in (("voice_id", 128), ("model", 128), ("preset", 64)):
+        value = tts.get(key, "")
+        if (
+            not isinstance(value, str)
+            or (key != "preset" and not value.strip())
+            or len(value) > limit
+            or any(char in value for char in "\0\r\n")
+        ):
+            raise ValueError(f"tts.{key} is invalid")
+    effect = tts.get("effect")
+    if effect not in TTS_EFFECTS:
+        raise ValueError(f"tts.effect must be one of {', '.join(TTS_EFFECTS)}")
+    voice_settings = tts.get("voice_settings")
+    if not isinstance(voice_settings, dict):
+        raise ValueError("tts.voice_settings must be an object")
+    for key in ("stability", "similarity_boost", "style"):
+        value = voice_settings.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not 0 <= float(value) <= 1
+        ):
+            raise ValueError(f"tts.voice_settings.{key} must be between 0 and 1")
+    speed = voice_settings.get("speed")
+    if (
+        isinstance(speed, bool)
+        or not isinstance(speed, (int, float))
+        or not math.isfinite(float(speed))
+        or not 0.7 <= float(speed) <= 1.2
+    ):
+        raise ValueError("tts.voice_settings.speed must be between 0.7 and 1.2")
+    if not isinstance(voice_settings.get("use_speaker_boost"), bool):
+        raise ValueError("tts.voice_settings.use_speaker_boost must be boolean")
+
+    stt = checked.get("stt")
+    if not isinstance(stt, dict):
+        raise ValueError("stt model slot must be an object")
+    if stt.get("provider") not in STT_PROVIDERS:
+        raise ValueError(f"stt.provider must be one of {', '.join(STT_PROVIDERS)}")
+    for key, limit in (("model", 128), ("language", 32)):
+        value = stt.get(key, "")
+        if (
+            not isinstance(value, str)
+            or len(value) > limit
+            or any(char in value for char in "\0\r\n")
+        ):
+            raise ValueError(f"stt.{key} is invalid")
     return checked
 
 
@@ -241,7 +324,27 @@ def load_settings() -> Dict[str, Any]:
                 loaded = _read_object(SETTINGS_CONFIG)
             except (OSError, _InvalidConfig) as exc:
                 log.error("cannot read %s; using safe defaults: %s", SETTINGS_CONFIG, exc)
-        _settings = {**defaults, **(loaded or {})}
+        merged = {**defaults, **(loaded or {})}
+        # Normalize nested permissions even when an older file omitted keys.
+        from rau.permissions import normalize_permissions
+
+        merged["permissions"] = normalize_permissions(merged.get("permissions"))
+        _settings = merged
+        return deepcopy(_settings)
+
+
+def save_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist hub settings (including permission modes)."""
+    global _settings
+    from rau.permissions import normalize_permissions
+
+    ensure_dirs()
+    with _lock:
+        defaults = _default_settings()
+        merged = {**defaults, **(cfg if isinstance(cfg, dict) else {})}
+        merged["permissions"] = normalize_permissions(merged.get("permissions"))
+        _settings = merged
+        _atomic_json(SETTINGS_CONFIG, _settings)
         return deepcopy(_settings)
 
 

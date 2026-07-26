@@ -57,13 +57,14 @@ export type Station = {
 export const STATIONS: Station[] = [
   { id: 'window', x: 34, facing: -1, label: 'the window' },
   { id: 'plant', x: 55, facing: 1, label: 'the plant' },
+  { id: 'rug', x: 79, facing: 1, label: 'the rug' },
   { id: 'centre', x: 80, facing: 1, label: 'the middle of the room' },
   { id: 'desk', x: 108, facing: 1, label: 'the desk' },
   { id: 'shelf', x: 138, facing: 1, label: 'the shelf' },
 ]
 
 export function station(id: StationId): Station {
-  return STATIONS.find((s) => s.id === id) || STATIONS[2]
+  return STATIONS.find((s) => s.id === id) || STATIONS.find((s) => s.id === 'centre')!
 }
 
 export type RoomState = {

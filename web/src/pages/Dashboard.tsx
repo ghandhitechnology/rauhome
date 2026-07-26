@@ -16,15 +16,58 @@ const HARD_STATES: Record<string, string> = {
 
 const EFFORTS = ['low', 'medium', 'high', 'max'] as const
 
+type EffortSlotView = {
+  supported: boolean
+  allowed: string[]
+  effort: string
+}
+
+type EffortState = {
+  face: string
+  subagent: string
+  dream: string
+  slots: Record<'face' | 'subagent' | 'dream', EffortSlotView>
+}
+
+const EMPTY_SLOT: EffortSlotView = {
+  supported: true,
+  allowed: [...EFFORTS],
+  effort: 'medium',
+}
+
+function parseEffort(raw: any): EffortState {
+  const slots = {
+    face: (raw?.slots?.face as EffortSlotView) || {
+      ...EMPTY_SLOT,
+      effort: raw?.face || 'medium',
+    },
+    subagent: (raw?.slots?.subagent as EffortSlotView) || {
+      ...EMPTY_SLOT,
+      effort: raw?.subagent || 'high',
+    },
+    dream: (raw?.slots?.dream as EffortSlotView) || {
+      ...EMPTY_SLOT,
+      effort: raw?.dream || 'medium',
+    },
+  }
+  return {
+    face: slots.face.effort || raw?.face || 'medium',
+    subagent: slots.subagent.effort || raw?.subagent || 'high',
+    dream: slots.dream.effort || raw?.dream || 'medium',
+    slots,
+  }
+}
+
 export default function Dashboard() {
   const [status, setStatus] = useState<any>(null)
   const [emotion, setEmotion] = useState('idle')
   const [goal, setGoal] = useState('')
   const [skills, setSkills] = useState<any[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
-  const [effort, setEffort] = useState({ face: 'medium', subagent: 'high', dream: 'medium' })
+  const [effort, setEffort] = useState<EffortState>(() => parseEffort(null))
   const [live, setLive] = useState(false)
   const [busyEffort, setBusyEffort] = useState('')
+  const [effortError, setEffortError] = useState('')
 
   async function refresh() {
     try {
@@ -40,17 +83,9 @@ export default function Dashboard() {
       setSkills(sk.skills || [])
       setJobs(jb.jobs || [])
       if (ef) {
-        setEffort({
-          face: ef.face || 'medium',
-          subagent: ef.subagent || 'high',
-          dream: ef.dream || 'medium',
-        })
+        setEffort(parseEffort(ef))
       } else if (s.effort) {
-        setEffort({
-          face: s.effort.face || 'medium',
-          subagent: s.effort.subagent || 'high',
-          dream: s.effort.dream || 'medium',
-        })
+        setEffort(parseEffort(s.effort))
       }
     } catch {
       /* hub down */
@@ -78,16 +113,13 @@ export default function Dashboard() {
 
   async function setSlotEffort(slot: 'face' | 'subagent' | 'dream' | 'all', level: string) {
     setBusyEffort(slot)
+    setEffortError('')
     try {
       const body = slot === 'all' ? { all: level } : { [slot]: level }
       const res = await api.putEffort(body)
-      setEffort({
-        face: res.face || level,
-        subagent: res.subagent || level,
-        dream: res.dream || level,
-      })
-    } catch {
-      /* hub down — the segmented control simply stays where it was */
+      setEffort(parseEffort(res))
+    } catch (err) {
+      setEffortError(err instanceof Error ? err.message : 'Could not update effort')
     } finally {
       setBusyEffort('')
     }
@@ -178,40 +210,67 @@ export default function Dashboard() {
 
         <h3 className="section-title">Model effort</h3>
         <p className="muted" style={{ marginTop: 0 }}>
-          Thinking depth for face / deep work / dream. Also `/effort low|medium|high|max` in talk.
+          Thinking depth for the current provider/model. Levels adapt to what that
+          backend supports. Also `/effort …` in talk for face.
         </p>
+        {effortError ? (
+          <p className="muted" style={{ color: 'var(--danger)', marginTop: 0 }}>
+            {effortError}
+          </p>
+        ) : null}
         {([
           ['face', 'Face'],
           ['subagent', 'Subagent'],
           ['dream', 'Dream'],
-        ] as const).map(([slot, label]) => (
-          <div key={slot} className="effort-row">
-            <span className="effort-label">{label}</span>
-            <div className="effort-seg">
-              {EFFORTS.map((level) => (
-                <button
-                  key={level}
-                  className={`effort-btn ${effort[slot] === level ? 'active' : ''}`}
-                  disabled={busyEffort === slot || busyEffort === 'all'}
-                  onClick={() => setSlotEffort(slot, level)}
-                >
-                  {level}
-                </button>
-              ))}
+        ] as const).map(([slot, label]) => {
+          const view = effort.slots[slot]
+          const allowed = view?.supported ? view.allowed || [] : []
+          return (
+            <div key={slot} className="effort-row">
+              <span className="effort-label">{label}</span>
+              {!view?.supported || allowed.length === 0 ? (
+                <span className="muted" style={{ fontSize: '0.85rem' }}>
+                  No reasoning control for this model
+                </span>
+              ) : (
+                <div className="effort-seg">
+                  {allowed.map((level) => (
+                    <button
+                      key={level}
+                      className={`effort-btn ${effort[slot] === level ? 'active' : ''}`}
+                      disabled={busyEffort === slot || busyEffort === 'all'}
+                      onClick={() => setSlotEffort(slot, level)}
+                    >
+                      {level}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          )
+        })}
         <div className="row" style={{ marginTop: '0.75rem' }}>
-          {EFFORTS.map((level) => (
-            <button
-              key={level}
-              className="btn sm"
-              disabled={busyEffort !== ''}
-              onClick={() => setSlotEffort('all', level)}
-            >
-              All → {level}
-            </button>
-          ))}
+          {EFFORTS.map((level) => {
+            const anyAccepts = (['face', 'subagent', 'dream'] as const).some((slot) => {
+              const view = effort.slots[slot]
+              return view?.supported && (view.allowed || []).includes(level)
+            })
+            return (
+              <button
+                key={level}
+                className="btn sm"
+                disabled={busyEffort !== '' || !anyAccepts}
+                onClick={() => setSlotEffort('all', level)}
+                title={
+                  anyAccepts
+                    ? `Set every slot that supports ${level}`
+                    : `No current model accepts ${level}`
+                }
+              >
+                All → {level}
+              </button>
+            )
+          })}
         </div>
 
         {confirm && (

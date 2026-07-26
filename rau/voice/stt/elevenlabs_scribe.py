@@ -40,12 +40,33 @@ def _multipart(fields: dict, filename: str, payload: bytes) -> tuple[bytes, str]
     return bytes(out), f"multipart/form-data; boundary={boundary}"
 
 
+_LANGUAGE_ALIASES = {
+    "en": "eng",
+    "ko": "kor",
+    "ja": "jpn",
+    "zh": "zho",
+    "es": "spa",
+    "fr": "fra",
+    "de": "deu",
+    "it": "ita",
+    "pt": "por",
+    "ru": "rus",
+    "hi": "hin",
+}
+
+
 class ScribeStt(BufferedStt):
     name = "elevenlabs"
 
-    def __init__(self, model: str = "scribe_v1", language: str = ""):
-        self.model = model or "scribe_v1"
-        self.language = language or ""
+    def __init__(self, model: str = "scribe_v2", language: str = ""):
+        self.model = model or "scribe_v2"
+        raw_language = (language or "").strip().lower()
+        # Scribe uses ISO-639-3 while the rest of Rau's settings use the more
+        # familiar two-letter code. Unknown two-letter values are omitted so
+        # Scribe can detect the language instead of rejecting the request.
+        self.language = _LANGUAGE_ALIASES.get(
+            raw_language, raw_language if len(raw_language) == 3 else ""
+        )
 
     def transcribe(self, pcm: bytes) -> str:
         key = get_secret("ELEVENLABS_API_KEY")

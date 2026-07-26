@@ -2,7 +2,7 @@
   "face": {
     "provider": "deepseek",
     "model": "deepseek-v4-pro",
-    "max_tokens": 512,
+    "max_tokens": 4090,
     "temperature": 0.9,
     "effort": "high"
   },
@@ -18,16 +18,25 @@
     "model": "deepseek-v4-pro",
     "max_tokens": 2048,
     "temperature": 0.5,
-    "effort": "medium"
+    "effort": "high"
   },
   "tts": {
     "provider": "elevenlabs",
     "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
-    "model": "eleven_flash_v2_5"
+    "model": "eleven_flash_v2_5",
+    "preset": "robotic",
+    "effect": "robot",
+    "voice_settings": {
+      "stability": 0.72,
+      "similarity_boost": 0.72,
+      "style": 0.12,
+      "speed": 1,
+      "use_speaker_boost": true
+    }
   },
   "stt": {
-    "provider": "local",
-    "model": "small",
-    "language": ""
+    "provider": "auto",
+    "model": "",
+    "language": "en"
   }
 }

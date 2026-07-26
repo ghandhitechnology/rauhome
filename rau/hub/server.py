@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,7 @@ from rau.mcp.client import MCP
 from rau.memory import store as memory_store
 from rau.paths import WEB_DIST, ensure_dirs
 from rau.providers.catalog import PROVIDER_AUTH, catalog
+from rau.permissions import get_permissions, global_mode, set_permissions
 from rau.providers.registry import (
     EFFORT_LEVELS,
     load_models,
@@ -111,6 +112,13 @@ class ConfirmIn(BaseModel):
     id: Optional[str] = None
 
 
+class PermissionsIn(BaseModel):
+    mode: Optional[str] = None
+    subagents: Optional[str] = None
+    room: Optional[str] = None
+    heartbeats: Optional[str] = None
+
+
 class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=16_000)
 
@@ -138,10 +146,39 @@ class GoalNoteIn(BaseModel):
     text: str
 
 
+class VoicePreviewIn(BaseModel):
+    text: str = Field(
+        default="Hello, I am Rau. Voice systems are online.",
+        min_length=1,
+        max_length=240,
+    )
+    voice_id: str = Field(min_length=3, max_length=128)
+    model: str = Field(default="eleven_flash_v2_5", min_length=3, max_length=128)
+    effect: str = Field(default="none", pattern="^(none|robot|childlike)$")
+    voice_settings: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "speed": 1.0,
+            "use_speaker_boost": True,
+        }
+    )
+
+
 @app.on_event("startup")
 async def _startup() -> None:
+    from rau.heartbeat.presence import load_presence
+    from rau.pet import pet_binary, start_pet
+
+    load_presence()
     start_dreamer()
     start_heartbeat()
+    settings = load_settings()
+    host = settings.get("hub_host") or "127.0.0.1"
+    port = int(settings.get("hub_port") or 8765)
+    if start_pet(f"http://{host}:{port}"):
+        print(f"Desktop pet: {pet_binary()}")
 
 
 @app.get("/api/status")
@@ -153,14 +190,14 @@ def api_status():
     snap["mcp"] = MCP.status()
     snap["memory"] = memory_store.summary()
     models = load_models()
-    snap["effort"] = {
-        "face": (models.get("face") or {}).get("effort") or "medium",
-        "subagent": (models.get("subagent") or {}).get("effort") or "high",
-        "dream": (models.get("dream") or {}).get("effort") or "medium",
-        "levels": list(EFFORT_LEVELS),
-    }
+    from rau.providers.reasoning import effort_snapshot
+
+    snap["effort"] = effort_snapshot(models)
     snap["goal"] = goal_store.get_goal()
     snap["skills_count"] = len(skills_public())
+    perms = get_permissions()
+    snap["permissions"] = perms
+    snap["permission_mode"] = global_mode(perms)
     return snap
 
 
@@ -215,6 +252,8 @@ def api_hard_task_start(body: HardTaskIn):
     result = orchestrator.start_hard_task(body.goal)
     if result.get("reason") in {"empty_goal", "invalid_goal", "goal_too_large"}:
         return JSONResponse(result, status_code=400)
+    if result.get("reason") == "readonly":
+        return JSONResponse(result, status_code=403)
     if not result.get("ok"):
         return JSONResponse(result, status_code=409)
     return result
@@ -230,6 +269,8 @@ def api_hard_task_redirect(body: HardTaskIn):
     result = orchestrator.redirect_hard_task(body.goal)
     if result.get("reason") in {"empty_goal", "invalid_goal", "goal_too_large"}:
         return JSONResponse(result, status_code=400)
+    if result.get("reason") == "readonly":
+        return JSONResponse(result, status_code=403)
     if not result.get("ok"):
         return JSONResponse(result, status_code=409)
     return result
@@ -247,6 +288,8 @@ def api_jobs_list():
 def api_jobs_start(body: JobIn):
     result = orchestrator.start_job(body.goal)
     if not result.get("ok"):
+        if result.get("reason") == "readonly":
+            return JSONResponse(result, status_code=403)
         bad_input = result.get("reason") == "empty_goal"
         return JSONResponse(result, status_code=400 if bad_input else 409)
     return result
@@ -318,45 +361,146 @@ def api_voice_status():
     return {
         "stt": {
             "provider": provider,
+            "configured_provider": slot.get("_configured_provider") or provider,
             "model": slot.get("model") or "",
             "language": slot.get("language") or "",
             # True when the configured backend was unusable and we fell back.
             "fallback": bool(slot.get("_fallback")),
             "partials": bool(meta.get("partials")),
             "label": meta.get("label") or provider,
+            "reason": slot.get("_reason") or "",
         },
         "available": available_stt(),
         "tts_ready": has_secret("ELEVENLABS_API_KEY"),
+        "tts": {
+            "voice_id": (load_models().get("tts") or {}).get("voice_id") or "",
+            "preset": (load_models().get("tts") or {}).get("preset") or "",
+            "effect": (load_models().get("tts") or {}).get("effect") or "none",
+        },
     }
+
+
+@app.get("/api/voice/voices")
+def api_voice_voices():
+    """Voices visible to the saved ElevenLabs key, including user-created ones."""
+    if not has_secret("ELEVENLABS_API_KEY"):
+        return JSONResponse(
+            {"ok": False, "error": "Connect an ElevenLabs API key first."},
+            status_code=409,
+        )
+    try:
+        from rau.voice.elevenlabs_api import list_voices
+
+        return {"ok": True, "voices": list_voices()}
+    except Exception as exc:  # noqa: BLE001 — provider detail belongs in settings
+        return JSONResponse(
+            {"ok": False, "error": f"Could not load ElevenLabs voices: {str(exc)[:300]}"},
+            status_code=502,
+        )
+
+
+@app.post("/api/voice/preview")
+def api_voice_preview(body: VoicePreviewIn):
+    """Synthesize a short sample using the exact pending settings."""
+    if not has_secret("ELEVENLABS_API_KEY"):
+        return JSONResponse(
+            {"ok": False, "error": "Connect an ElevenLabs API key first."},
+            status_code=409,
+        )
+    try:
+        # Apply the same validation as persisted settings without modifying the
+        # user's models.json.
+        cfg = load_models()
+        cfg["tts"] = {
+            "provider": "elevenlabs",
+            "voice_id": body.voice_id,
+            "model": body.model,
+            "preset": "preview",
+            "effect": body.effect,
+            "voice_settings": body.voice_settings,
+        }
+        from rau.providers.registry import _validated_models
+        from rau.voice.elevenlabs_api import render_preview
+
+        checked = _validated_models(cfg)["tts"]
+        wav = render_preview(
+            text=body.text.strip(),
+            voice_id=str(checked["voice_id"]),
+            model=str(checked["model"]),
+            effect=str(checked["effect"]),
+            voice_settings=dict(checked["voice_settings"]),
+        )
+        return Response(
+            content=wav,
+            media_type="audio/wav",
+            headers={"Cache-Control": "no-store"},
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001 — surface provider failures to settings
+        return JSONResponse(
+            {"ok": False, "error": f"Voice preview failed: {str(exc)[:300]}"},
+            status_code=502,
+        )
 
 
 @app.get("/api/effort")
 def api_effort_get():
-    models = load_models()
-    return {
-        "face": (models.get("face") or {}).get("effort") or "medium",
-        "subagent": (models.get("subagent") or {}).get("effort") or "high",
-        "dream": (models.get("dream") or {}).get("effort") or "medium",
-        "levels": list(EFFORT_LEVELS),
-    }
+    from rau.providers.reasoning import effort_snapshot
+
+    return effort_snapshot(load_models())
 
 
 @app.put("/api/effort")
 def api_effort_put(body: EffortIn):
+    from rau.providers.reasoning import clamp_effort, reasoning_for
+
     models = load_models()
     data = body.model_dump(exclude_none=True)
+
+    def _apply(slot: str, level: str) -> Optional[str]:
+        slot_cfg = models.setdefault(slot, {})
+        provider = str(slot_cfg.get("provider") or "openrouter")
+        model = str(slot_cfg.get("model") or "")
+        cap = reasoning_for(provider, model)
+        if not cap.get("supported"):
+            return f"{slot}: this model has no reasoning control"
+        allowed = list(cap.get("levels") or [])
+        if level not in allowed:
+            return (
+                f"{slot}: effort {level!r} not allowed "
+                f"(allowed: {', '.join(allowed) or 'none'})"
+            )
+        clamped = clamp_effort(provider, model, level)
+        if clamped is None:
+            return f"{slot}: this model has no reasoning control"
+        slot_cfg["effort"] = clamped
+        return None
+
     if "all" in data:
         level = str(data["all"]).lower()
         if level not in EFFORT_LEVELS:
             return JSONResponse({"ok": False, "error": "invalid effort"}, status_code=400)
+        errors = []
         for slot in ("face", "subagent", "dream"):
-            models.setdefault(slot, {})["effort"] = level
+            err = _apply(slot, level)
+            if err:
+                errors.append(err)
+        if len(errors) == 3:
+            return JSONResponse(
+                {"ok": False, "error": "; ".join(errors)}, status_code=400
+            )
     for slot in ("face", "subagent", "dream"):
         if slot in data:
             level = str(data[slot]).lower()
             if level not in EFFORT_LEVELS:
-                return JSONResponse({"ok": False, "error": f"invalid effort for {slot}"}, status_code=400)
-            models.setdefault(slot, {})["effort"] = level
+                return JSONResponse(
+                    {"ok": False, "error": f"invalid effort for {slot}"},
+                    status_code=400,
+                )
+            err = _apply(slot, level)
+            if err:
+                return JSONResponse({"ok": False, "error": err}, status_code=400)
     save_models(models)
     return api_effort_get()
 
@@ -508,6 +652,57 @@ def api_settings():
     return load_settings()
 
 
+@app.get("/api/permissions")
+def api_permissions_get():
+    perms = get_permissions()
+    return {"permissions": perms, "mode": global_mode(perms)}
+
+
+@app.put("/api/permissions")
+def api_permissions_put(body: PermissionsIn):
+    partial = body.model_dump(exclude_none=True)
+    if not partial:
+        perms = get_permissions()
+        return {"ok": True, "permissions": perms, "mode": global_mode(perms)}
+    try:
+        permissions = set_permissions(partial)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {
+        "ok": True,
+        "permissions": permissions,
+        "mode": global_mode(permissions),
+    }
+
+
+class PetVisibilityBody(BaseModel):
+    """Face mutex and menu-bar hide/show for the desktop pet."""
+
+    face_open: Optional[bool] = None
+    user_hidden: Optional[bool] = None
+    visible: Optional[bool] = None
+
+
+@app.get("/api/pet")
+def api_get_pet():
+    return state.get_pet()
+
+
+@app.post("/api/pet/visibility")
+def api_pet_visibility(body: PetVisibilityBody):
+    kwargs: Dict[str, Any] = {}
+    if body.face_open is not None:
+        kwargs["face_open"] = body.face_open
+    if body.user_hidden is not None:
+        kwargs["user_hidden"] = body.user_hidden
+    elif body.visible is not None:
+        # Convenience: visible=false ⇒ user hide; visible=true ⇒ clear user hide.
+        kwargs["user_hidden"] = not bool(body.visible)
+    snap = state.set_pet_visibility(**kwargs)
+    BUS.emit("pet_visibility", **snap)
+    return {"ok": True, **snap}
+
+
 @app.post("/api/chat")
 def api_chat(body: ChatIn):
     """
@@ -534,7 +729,9 @@ def api_chat(body: ChatIn):
     except Exception as e:
         reply = f"I hit a snag thinking: {e}"
     state.add_log("rau", reply)
-    state.set_emotion("curious", reply)
+    # Sticky mood / runtime emotion already applied inside chat_streaming.
+    emo = state.get_emotion()
+    state.set_emotion(str(emo.get("emotion") or "curious"), reply)
     state.push_control({"action": "speak", "text": reply})
     return {"ok": True, "reply": reply, "turn_id": turn_id}
 
@@ -631,18 +828,26 @@ async def ws_voice(ws: WebSocket):
             state.release_browser_voice()
 
 
+def _live_status() -> Dict[str, Any]:
+    snap = state.status_snapshot()
+    perms = get_permissions()
+    snap["permissions"] = perms
+    snap["permission_mode"] = global_mode(perms)
+    return snap
+
+
 @app.websocket("/ws")
 async def ws_events(ws: WebSocket):
     await ws.accept()
     q = BUS.subscribe_async()
     try:
-        await ws.send_json({"kind": "hello", "status": state.status_snapshot()})
+        await ws.send_json({"kind": "hello", "status": _live_status()})
         while True:
             try:
                 event = await asyncio.wait_for(q.get(), timeout=15.0)
                 await ws.send_json(event)
             except asyncio.TimeoutError:
-                await ws.send_json({"kind": "ping", "status": state.status_snapshot()})
+                await ws.send_json({"kind": "ping", "status": _live_status()})
     except WebSocketDisconnect:
         pass
     finally:

@@ -19,6 +19,7 @@ from rau.providers.base import (
     normalize_tool_arguments,
     orphan_tool_prose,
     pair_tool_calls,
+    tool_message_content_anthropic,
 )
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -148,7 +149,11 @@ def _to_anthropic_messages(messages: List[Message]) -> tuple[str, List[Dict[str,
             _push(out, "assistant", blocks)
 
             answers: List[Dict[str, Any]] = [
-                {"type": "tool_result", "tool_use_id": tc.id, "content": res.content}
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": tool_message_content_anthropic(res),
+                }
                 for tc, res in paired
             ]
             answers += [
@@ -287,12 +292,9 @@ class AnthropicCompatProvider(ChatProvider):
         }
         if system:
             payload["system"] = system
-        # Kimi Coding Plan / Anthropic thinking effort: low|high|max (map medium→high)
-        if effort:
-            mapped = {"low": "low", "medium": "high", "high": "high", "max": "max"}.get(
-                effort.lower(), "high"
-            )
-            payload["reasoning_effort"] = mapped
+        from rau.providers.reasoning import apply_reasoning_payload
+
+        apply_reasoning_payload(payload, self.name, model, effort)
         anth_tools = _openai_tools_to_anthropic(tools)
         if anth_tools:
             payload["tools"] = anth_tools
@@ -347,11 +349,9 @@ class AnthropicCompatProvider(ChatProvider):
         }
         if system:
             payload["system"] = system
-        if effort:
-            mapped = {"low": "low", "medium": "high", "high": "high", "max": "max"}.get(
-                effort.lower(), "high"
-            )
-            payload["reasoning_effort"] = mapped
+        from rau.providers.reasoning import apply_reasoning_payload
+
+        apply_reasoning_payload(payload, self.name, model, effort)
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -439,13 +439,9 @@ class AnthropicCompatProvider(ChatProvider):
             payload["system"] = system
         if tools:
             payload["tools"] = _openai_tools_to_anthropic(tools)
-        if effort:
-            payload["reasoning_effort"] = {
-                "low": "low",
-                "medium": "high",
-                "high": "high",
-                "max": "max",
-            }.get(effort.lower(), "high")
+        from rau.providers.reasoning import apply_reasoning_payload
+
+        apply_reasoning_payload(payload, self.name, model, effort)
 
         req = urllib.request.Request(
             f"{self.base_url}/v1/messages",

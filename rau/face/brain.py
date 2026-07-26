@@ -382,6 +382,13 @@ def truncate_last_assistant(spoken: str) -> None:
 
 
 def _system_prompt(extra: str = "") -> str:
+    from rau.heartbeat.presence import (
+        SPEECH_HABITS_PROMPT,
+        between_sessions_block,
+        mood_context_block,
+        time_context_block,
+    )
+
     soul = load_soul()
     ht = state.get_hard_task()
     hard = ""
@@ -392,26 +399,44 @@ def _system_prompt(extra: str = "") -> str:
             "Do not invent a second speaker."
         )
     mem = recent_context(2500)
+    life = between_sessions_block()
     parts = [
         soul,
         hard,
-        "\n## Recent memory excerpt\n" + (mem or "(empty)"),
-        "\nYou have always-available skills. Prefer tools over guessing. "
-        "Escalate multi-step work with start_hard_task. Only you speak.",
-        "\n" + choreography.PROMPT,
+        "\n" + time_context_block(),
+        "\n" + mood_context_block(),
     ]
+    if life:
+        parts.append("\n" + life)
+    parts.extend(
+        [
+            "\n## Recent memory excerpt\n" + (mem or "(empty)"),
+            "\nYou have always-available skills. Prefer tools over guessing. "
+            "Escalate multi-step work with start_hard_task. Only you speak.",
+            "\n" + SPEECH_HABITS_PROMPT,
+            "\n" + choreography.PROMPT,
+        ]
+    )
     if extra:
         parts.append("\n" + extra)
     return "\n".join(parts)
 
 
 def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    if name == "start_hard_task":
-        return orchestrator.start_hard_task(str(args.get("goal") or ""))
+    from rau.permissions import deny_result, mode_for, tool_decision
+
+    room_mode = mode_for("room")
+
+    if name in ("start_hard_task", "redirect_hard_task"):
+        if room_mode == "readonly":
+            return deny_result(
+                name, reason="room is in read-only mode — cannot start deep work"
+            )
+        if name == "start_hard_task":
+            return orchestrator.start_hard_task(str(args.get("goal") or ""))
+        return orchestrator.redirect_hard_task(str(args.get("goal") or ""))
     if name == "cancel_hard_task":
         return orchestrator.cancel_hard_task()
-    if name == "redirect_hard_task":
-        return orchestrator.redirect_hard_task(str(args.get("goal") or ""))
     if name == "use_skill":
         return use_skill_tool(str(args.get("name") or ""))
     if name == "list_skills":
@@ -420,14 +445,16 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         # Local, visual and reversible — nothing here leaves the machine, so it
         # never needs the confirmation the face has nowhere to wait for.
         return choreography.submit_plan(args)
-    if name == "set_goal":
-        goal = goal_store.set_goal(str(args.get("text") or ""))
-        if goal.get("ok") is False:
-            return goal
-        return {"ok": True, "goal": goal}
-    if name == "clear_goal":
-        return goal_store.clear_goal()
-    if name == "goal_note":
+    if name in ("set_goal", "clear_goal", "goal_note"):
+        if room_mode == "readonly":
+            return deny_result(name, reason="room is in read-only mode")
+        if name == "set_goal":
+            goal = goal_store.set_goal(str(args.get("text") or ""))
+            if goal.get("ok") is False:
+                return goal
+            return {"ok": True, "goal": goal}
+        if name == "clear_goal":
+            return goal_store.clear_goal()
         return goal_store.add_note(str(args.get("text") or ""))
     if name in (
         "read_file",
@@ -437,12 +464,13 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         "memory_write",
         "memory_read",
     ):
-        # The face has nowhere to park a turn while it waits for a yes: a chat
-        # request would hang and a voice turn would go silent mid-sentence.
-        # Anything the classifier wants confirmed is therefore refused here and
-        # pushed to deep work, which is built to block on the user.
-        needs_confirm, summary = classify_tool(name, args)
-        if needs_confirm:
+        decision = tool_decision("room", name, args)
+        if decision == "deny":
+            return deny_result(name)
+        if decision == "confirm":
+            # The face has nowhere to park a turn while it waits for a yes.
+            # Auto mode still escalates to deep work; bypass runs below.
+            needs_confirm, summary = classify_tool(name, args)
             return {
                 "ok": False,
                 "error": "needs confirmation",
@@ -517,47 +545,57 @@ def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
     everything else gets one generated here, so no path can produce a reply the
     model was unable to choreograph.
     """
+    from rau.heartbeat.presence import begin_user_turn, end_user_turn
+
     turn = turn_id or choreography.new_turn_id()
     broadcast = _TurnBroadcast(turn, user_text)
+    # Snapshot absence before history is used (idempotent if note_user_reply ran).
+    begin_user_turn()
 
-    prep = prepare_turn(user_text)
-    if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
-        # Meta commands like /skills, /effort and /goal — hub/pipeline own the
-        # chat log, and there is no model turn to choreograph.
-        append_diary("user", user_text)
-        append_diary("rau", prep.immediate_reply)
-        broadcast.done(prep.immediate_reply)
-        return prep.immediate_reply
-
-    provider, slot = chat_for_slot("face")
-    turn_text = prep.user_text
-    _append_history(Message(role="user", content=turn_text))
-    messages = [
-        Message(role="system", content=_system_prompt(prep.system_extra))
-    ] + snapshot_history()
-
-    spoken = ""
     try:
-        with choreography.turn_scope(turn):
-            for _ in range(6):
-                result = _call_face(provider, slot, messages)
-                if result.tool_calls:
-                    _record_tool_round(messages, result, prep.system_extra)
-                    continue
-                spoken = (result.content or "").strip()
-                break
-    except Exception as exc:
-        broadcast.error(str(exc))
-        raise
+        prep = prepare_turn(user_text)
+        if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
+            # Meta commands like /skills, /effort and /goal — hub/pipeline own the
+            # chat log, and there is no model turn to choreograph.
+            append_diary("user", user_text)
+            append_diary("rau", prep.immediate_reply)
+            broadcast.done(prep.immediate_reply)
+            return prep.immediate_reply
 
-    if not spoken:
-        spoken = "Okay. I'm with you."
-    _append_history(Message(role="assistant", content=spoken))
-    _maybe_compact_history()
-    append_diary("user", user_text)
-    append_diary("rau", spoken)
-    broadcast.done(spoken)
-    return spoken
+        provider, slot = chat_for_slot("face")
+        turn_text = prep.user_text
+        _append_history(Message(role="user", content=turn_text))
+        messages = [
+            Message(role="system", content=_system_prompt(prep.system_extra))
+        ] + snapshot_history()
+
+        spoken = ""
+        try:
+            with choreography.turn_scope(turn):
+                for _ in range(6):
+                    result = _call_face(provider, slot, messages)
+                    if result.tool_calls:
+                        _record_tool_round(messages, result, prep.system_extra)
+                        continue
+                    spoken = (result.content or "").strip()
+                    break
+        except Exception as exc:
+            broadcast.error(str(exc))
+            raise
+
+        if not spoken:
+            spoken = "Okay. I'm with you."
+        from rau.heartbeat.presence import apply_reply_mood
+
+        spoken, _ = apply_reply_mood(spoken)
+        _append_history(Message(role="assistant", content=spoken))
+        _maybe_compact_history()
+        append_diary("user", user_text)
+        append_diary("rau", spoken)
+        broadcast.done(spoken)
+        return spoken
+    finally:
+        end_user_turn()
 
 
 class Cancelled(Exception):
@@ -679,8 +717,11 @@ def chat_streaming(
     history to what was actually spoken if it cancelled (see
     `truncate_last_assistant`).
     """
+    from rau.heartbeat.presence import begin_user_turn, end_user_turn
+
     turn = turn_id or choreography.new_turn_id()
     broadcast = _TurnBroadcast(turn, user_text)
+    begin_user_turn()
 
     def stop() -> bool:
         return cancel is not None and cancel.is_set()
@@ -689,88 +730,94 @@ def chat_streaming(
         broadcast.token(token)
         on_token(token)
 
-    prep = prepare_turn(user_text)
-    if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
-        on_token(prep.immediate_reply)
-        broadcast.done(prep.immediate_reply)
-        if defer_diary:
-            return StreamingReply(prep.immediate_reply, None, user_text, True, turn)
-        append_diary("user", user_text)
-        append_diary("rau", prep.immediate_reply)
-        return prep.immediate_reply
-
-    provider, slot = chat_for_slot("face")
-    pending, history = _reserve_stream_turn(prep.user_text)
-    messages = [
-        Message(role="system", content=_system_prompt(prep.system_extra))
-    ] + history
-
-    # Every token handed to on_token was actually spoken aloud, including the
-    # "let me look that up" said before a tool fires. Blocking chat() throws
-    # that prose away because it never reaches the user; here it must be
-    # remembered, or Rau will not know he already acknowledged the request.
-    heard: List[str] = []
-
     try:
-        with choreography.turn_scope(turn):
-            for _ in range(6):
-                if stop():
-                    raise Cancelled(pending, "".join(heard).strip(), user_text, turn)
+        prep = prepare_turn(user_text)
+        if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
+            on_token(prep.immediate_reply)
+            broadcast.done(prep.immediate_reply)
+            if defer_diary:
+                return StreamingReply(prep.immediate_reply, None, user_text, True, turn)
+            append_diary("user", user_text)
+            append_diary("rau", prep.immediate_reply)
+            return prep.immediate_reply
 
-                chunks: List[str] = []
-                result = None
-                for event in provider.stream_turn(
-                    messages,
-                    model=slot.get("model") or "deepseek-v4-flash",
-                    max_tokens=int(slot.get("max_tokens") or 512),
-                    temperature=float(slot.get("temperature") or 0.9),
-                    tools=FACE_TOOLS,
-                    effort=str(slot.get("effort") or "medium"),
-                ):
+        provider, slot = chat_for_slot("face")
+        pending, history = _reserve_stream_turn(prep.user_text)
+        messages = [
+            Message(role="system", content=_system_prompt(prep.system_extra))
+        ] + history
+
+        # Every token handed to on_token was actually spoken aloud, including the
+        # "let me look that up" said before a tool fires. Blocking chat() throws
+        # that prose away because it never reaches the user; here it must be
+        # remembered, or Rau will not know he already acknowledged the request.
+        heard: List[str] = []
+
+        try:
+            with choreography.turn_scope(turn):
+                for _ in range(6):
                     if stop():
-                        raise Cancelled(
-                            pending, "".join(heard).strip(), user_text, turn
-                        )
-                    if isinstance(event, TextDelta):
-                        chunks.append(event.text)
-                        heard.append(event.text)
-                        emit(event.text)
-                    elif isinstance(event, StreamDone):
-                        result = event.result
-                if result is None:
+                        raise Cancelled(pending, "".join(heard).strip(), user_text, turn)
+
+                    chunks: List[str] = []
+                    result = None
+                    for event in provider.stream_turn(
+                        messages,
+                        model=slot.get("model") or "deepseek-v4-flash",
+                        max_tokens=int(slot.get("max_tokens") or 512),
+                        temperature=float(slot.get("temperature") or 0.9),
+                        tools=FACE_TOOLS,
+                        effort=str(slot.get("effort") or "medium"),
+                    ):
+                        if stop():
+                            raise Cancelled(
+                                pending, "".join(heard).strip(), user_text, turn
+                            )
+                        if isinstance(event, TextDelta):
+                            chunks.append(event.text)
+                            heard.append(event.text)
+                            emit(event.text)
+                        elif isinstance(event, StreamDone):
+                            result = event.result
+                    if result is None:
+                        break
+
+                    if result.tool_calls:
+                        _record_tool_round(messages, result, prep.system_extra, on_tool)
+                        continue
+
+                    if not chunks and result.content:
+                        # Provider returned prose only in the terminal event.
+                        heard.append(result.content)
+                        emit(result.content)
                     break
+        except Cancelled:
+            broadcast.cancelled("".join(heard).strip())
+            raise
+        except Exception as exc:
+            # A provider can fail after yielding prose. Preserve that partial reply
+            # in the reserved slot; an empty failure must not leave a ghost turn.
+            _finish_stream_turn(pending, "".join(heard).strip())
+            broadcast.error(str(exc))
+            raise
 
-                if result.tool_calls:
-                    _record_tool_round(messages, result, prep.system_extra, on_tool)
-                    continue
+        spoken = "".join(heard).strip()
+        if not spoken:
+            spoken = "Okay. I'm with you."
+            emit(spoken)
+        from rau.heartbeat.presence import apply_reply_mood
 
-                if not chunks and result.content:
-                    # Provider returned prose only in the terminal event.
-                    heard.append(result.content)
-                    emit(result.content)
-                break
-    except Cancelled:
-        broadcast.cancelled("".join(heard).strip())
-        raise
-    except Exception as exc:
-        # A provider can fail after yielding prose. Preserve that partial reply
-        # in the reserved slot; an empty failure must not leave a ghost turn.
-        _finish_stream_turn(pending, "".join(heard).strip())
-        broadcast.error(str(exc))
-        raise
-
-    spoken = "".join(heard).strip()
-    if not spoken:
-        spoken = "Okay. I'm with you."
-        emit(spoken)
-    history_message = _finish_stream_turn(pending, spoken)
-    if not defer_diary:
-        _maybe_compact_history()
-    if not defer_diary:
-        append_diary("user", user_text)
-        append_diary("rau", spoken)
-    broadcast.done(spoken)
-    return StreamingReply(spoken, history_message, user_text, defer_diary, turn)
+        spoken, _ = apply_reply_mood(spoken)
+        history_message = _finish_stream_turn(pending, spoken)
+        if not defer_diary:
+            _maybe_compact_history()
+        if not defer_diary:
+            append_diary("user", user_text)
+            append_diary("rau", spoken)
+        broadcast.done(spoken)
+        return StreamingReply(spoken, history_message, user_text, defer_diary, turn)
+    finally:
+        end_user_turn()
 
 
 def chat_stream(user_text: str) -> Generator[str, None, str]:
@@ -797,38 +844,48 @@ def chat_stream(user_text: str) -> Generator[str, None, str]:
         yield text
         return text
 
-    prep = prepare_turn(user_text)
-    provider, slot = chat_for_slot("face")
-    _append_history(Message(role="user", content=prep.user_text))
-    messages = [
-        Message(role="system", content=_system_prompt(prep.system_extra))
-    ] + snapshot_history()
-    accum: List[str] = []
-    try:
-        for token in provider.chat_stream(
-            messages,
-            model=slot.get("model") or "deepseek-v4-flash",
-            max_tokens=int(slot.get("max_tokens") or 512),
-            temperature=float(slot.get("temperature") or 0.9),
-            effort=str(slot.get("effort") or "medium"),
-        ):
-            accum.append(token)
-            yield token
-    except Exception:
-        # undo last user append then full chat
-        with _history_lock:
-            if _history and _history[-1].role == "user":
-                _history.pop()
-        text = chat(user_text)
-        yield text
-        return text
+    from rau.heartbeat.presence import begin_user_turn, end_user_turn
 
-    spoken = "".join(accum).strip() or "Okay."
-    _append_history(Message(role="assistant", content=spoken))
-    _maybe_compact_history()
-    append_diary("user", user_text)
-    append_diary("rau", spoken)
-    return spoken
+    begin_user_turn()
+    try:
+        prep = prepare_turn(user_text)
+        provider, slot = chat_for_slot("face")
+        _append_history(Message(role="user", content=prep.user_text))
+        messages = [
+            Message(role="system", content=_system_prompt(prep.system_extra))
+        ] + snapshot_history()
+        accum: List[str] = []
+        try:
+            for token in provider.chat_stream(
+                messages,
+                model=slot.get("model") or "deepseek-v4-flash",
+                max_tokens=int(slot.get("max_tokens") or 512),
+                temperature=float(slot.get("temperature") or 0.9),
+                effort=str(slot.get("effort") or "medium"),
+            ):
+                accum.append(token)
+                yield token
+        except Exception:
+            # undo last user append then full chat
+            with _history_lock:
+                if _history and _history[-1].role == "user":
+                    _history.pop()
+            end_user_turn()
+            text = chat(user_text)
+            yield text
+            return text
+
+        spoken = "".join(accum).strip() or "Okay."
+        from rau.heartbeat.presence import apply_reply_mood
+
+        spoken, _ = apply_reply_mood(spoken)
+        _append_history(Message(role="assistant", content=spoken))
+        _maybe_compact_history()
+        append_diary("user", user_text)
+        append_diary("rau", spoken)
+        return spoken
+    finally:
+        end_user_turn()
 
 
 def extract_emotion(text: str) -> Tuple[str, Optional[str]]:

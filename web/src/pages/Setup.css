@@ -642,6 +642,58 @@
 
 /* voice */
 
+.voice-setup-card {
+  margin: 1rem 0;
+  padding: 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--sunken);
+}
+
+.voice-setup-card h3 {
+  margin: 0 0 0.9rem;
+}
+
+.voice-setup-card .voice-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.voice-setup-card .voice-preset {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  min-height: 7rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.voice-setup-card .voice-preset.selected {
+  border-color: var(--accent);
+  background: var(--accent-a08);
+}
+
+.voice-setup-card .voice-preset span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.voice-setup-card .voice-preset em {
+  margin-top: auto;
+  color: var(--faint);
+  font-size: 0.72rem;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
 .voice-picks {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -657,6 +709,10 @@
 }
 
 @media (max-width: 640px) {
+  .voice-setup-card .voice-preset-grid {
+    grid-template-columns: 1fr;
+  }
+
   .voice-picks {
     grid-template-columns: 1fr;
   }

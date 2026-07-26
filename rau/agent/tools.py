@@ -18,7 +18,7 @@ from rau.agent.sandbox import (
     resolve_in_root,
     shell_argv,
 )
-from rau.computer.cua import capture_screenshot_b64, execute_action
+from rau.computer.cua import execute_action
 from rau.mcp.client import MCP
 from rau.memory.store import append_diary, append_trace, recent_context, write_daily_log
 from rau.paths import ROOT
@@ -172,22 +172,60 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "cua_action",
-            "description": "On-demand computer use action (screenshot/click/type/key/scroll/wait).",
+            "description": (
+                "Computer use on this Mac. Coordinates are logical points "
+                "(matching screenshot width/height after Retina normalize). "
+                "Actions: status, screenshot, click, double_click, move, "
+                "drag, type, key (chords like cmd+c), scroll, wait. "
+                "Call status if setup is unclear. After click/type/key/drag/"
+                "move a verification screenshot is attached automatically. "
+                "Optional display_id, app name, or frontmost=true for targeting."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string"},
-                    "x": {"type": "integer"},
-                    "y": {"type": "integer"},
-                    "x2": {"type": "integer"},
-                    "y2": {"type": "integer"},
+                    "action": {
+                        "type": "string",
+                        "description": (
+                            "status|screenshot|click|double_click|move|drag|"
+                            "type|key|scroll|wait"
+                        ),
+                    },
+                    "x": {
+                        "type": "integer",
+                        "description": "Logical x in the target display (or window).",
+                    },
+                    "y": {
+                        "type": "integer",
+                        "description": "Logical y in the target display (or window).",
+                    },
+                    "x2": {"type": "integer", "description": "Drag end x."},
+                    "y2": {"type": "integer", "description": "Drag end y."},
                     "text": {"type": "string"},
-                    "key": {"type": "string"},
+                    "key": {
+                        "type": "string",
+                        "description": (
+                            "Key or chord: return, tab, escape, backspace, "
+                            "up/down/left/right, cmd+c, cmd+v, cmd+tab, …"
+                        ),
+                    },
                     "dy": {"type": "integer"},
                     "seconds": {
                         "type": "number",
                         "minimum": 0,
                         "maximum": 30,
+                    },
+                    "display_id": {
+                        "type": "integer",
+                        "description": "Target display (from status/screenshot).",
+                    },
+                    "app": {
+                        "type": "string",
+                        "description": "Capture/target a window owned by this app name.",
+                    },
+                    "frontmost": {
+                        "type": "boolean",
+                        "description": "Capture the frontmost app's main window.",
                     },
                 },
                 "required": ["action"],
@@ -367,12 +405,7 @@ def run_tool(
         action = args.get("action")
         if not isinstance(action, str):
             return {"ok": False, "error": "action must be a string"}
-        if action.lower() == "screenshot":
-            b64 = capture_screenshot_b64()
-            if not b64:
-                return {"ok": False, "action": "screenshot", "error": "screenshot capture failed"}
-            return {"ok": True, "action": "screenshot", "image_b64_len": len(b64), "image_b64": b64[:80] + "..."}
-        return execute_action(args, cancel=cancel)
+        return execute_action(args, cancel=cancel, auto_verify=True)
 
     if name == "spawn_subagent":
         # Imported here because the orchestrator owns the loop that calls this

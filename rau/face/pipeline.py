@@ -139,8 +139,12 @@ def play_audio(audio: np.ndarray, sr: int = 24000) -> None:
 
 
 def speak(text: str, emotion: str = "idle") -> None:
+    from rau.heartbeat.presence import note_mood
+
     clean, tag = brain.extract_emotion(text)
     emo = (tag or emotion or "idle").lower()
+    if tag:
+        note_mood(emo, 0.7 if emo != "idle" else 0.0)
     state.set_emotion(emo, clean)
     state.set_face_busy(True)
     try:

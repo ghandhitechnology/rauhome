@@ -350,6 +350,84 @@ class VoiceSessionTests(unittest.IsolatedAsyncioTestCase):
             voice_session.get_stt_provider = original_factory
 
 
+class PlaybackAheadTests(unittest.TestCase):
+    def test_remaining_playback_exceeds_ahead_budget(self) -> None:
+        import time
+
+        from rau.voice import session as voice_session
+
+        turn = voice_session._Turn(1, "hi")
+        # Two seconds of PCM @ 24 kHz mono 16-bit.
+        pcm = b"\x00\x00" * (24_000 * 2)
+        turn.utterance.add("Hello there.", pcm)
+        turn.first_audio_at = time.monotonic() - 0.2
+        remaining = turn.remaining_playback_sec()
+        self.assertGreater(remaining, voice_session.MAX_PLAYBACK_AHEAD_SEC)
+        self.assertAlmostEqual(remaining, 1.8, delta=0.2)
+
+    def test_token_pipe_blocks_until_drained(self) -> None:
+        import queue
+        import time
+
+        from rau.voice.session import TOKEN_PIPE_MAXSIZE, _TokenPipe
+
+        pipe = _TokenPipe(maxsize=2)
+        self.assertTrue(pipe.put("a"))
+        self.assertTrue(pipe.put("b"))
+        # Third put must wait; prove it by timing out via cancel.
+        cancel = threading.Event()
+        started = time.monotonic()
+        done = threading.Event()
+        result: list[bool] = []
+
+        def blocked_put() -> None:
+            result.append(pipe.put("c", cancel=cancel))
+            done.set()
+
+        worker = threading.Thread(target=blocked_put, daemon=True)
+        worker.start()
+        time.sleep(0.08)
+        self.assertFalse(done.is_set())
+        # Drain one slot so the waiter can finish.
+        self.assertEqual(next(pipe.iter()), "a")
+        self.assertTrue(done.wait(1.0))
+        self.assertEqual(result, [True])
+        self.assertLess(time.monotonic() - started, 1.5)
+        cancel.set()
+        # Fill again, then cancel mid-wait.
+        try:
+            while True:
+                pipe._q.get_nowait()
+        except queue.Empty:
+            pass
+        pipe2 = _TokenPipe(maxsize=1)
+        self.assertTrue(pipe2.put("x"))
+        cancel2 = threading.Event()
+        out: list[bool] = []
+
+        def cancel_put() -> None:
+            out.append(pipe2.put("y", cancel=cancel2))
+
+        t = threading.Thread(target=cancel_put, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        cancel2.set()
+        t.join(1.0)
+        self.assertEqual(out, [False])
+
+    def test_token_pipe_close_unblocks_when_full(self) -> None:
+        from rau.voice.session import _TokenPipe
+
+        pipe = _TokenPipe(maxsize=1)
+        self.assertTrue(pipe.put("full"))
+        closer = threading.Thread(target=pipe.close, daemon=True)
+        closer.start()
+        closer.join(1.0)
+        self.assertFalse(closer.is_alive())
+        # Close may drop backlog to insert the sentinel; either way iter ends.
+        self.assertEqual(list(pipe.iter()), [])
+
+
 class TtsCleanupTests(unittest.TestCase):
     def test_cancel_closes_provider_stream(self) -> None:
         from rau.voice.tts_stream import synth_sentence

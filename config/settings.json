@@ -7,5 +7,10 @@
   "presence_backoff_after_misses": 2,
   "hard_task_progress_interval_sec": 25,
   "trace_ttl_days": 7,
-  "face_history_turns": 24
+  "face_history_turns": 24,
+  "permissions": {
+    "subagents": "auto",
+    "room": "bypass",
+    "heartbeats": "bypass"
+  }
 }

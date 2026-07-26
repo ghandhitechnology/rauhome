@@ -41,6 +41,13 @@ MAX_UTTERANCE_BYTES = 16000 * 2 * 90
 MAX_MIC_QUEUE_FRAMES = 256
 MAX_TRANSCRIPT_CHARS = 16_000
 MAX_TEXT_TURN_CHARS = 16_000
+#: Don't ship more PCM than the browser can hear soon — keeps captions and
+#: barge offsets honest when TTS outruns the speaker.
+MAX_PLAYBACK_AHEAD_SEC = 0.8
+#: Soft beat before first TTS audio — imperfect timing without filler words.
+PRE_SPEECH_LAG_SEC = 0.2
+#: Bound LLM→TTS so a stalled consumer backpressures the model producer.
+TOKEN_PIPE_MAXSIZE = 32
 
 
 @dataclass
@@ -474,10 +481,13 @@ class VoiceSession:
         tokens = _TokenPipe()
 
         def produce() -> None:
+            def on_token(token: str) -> None:
+                tokens.put(token, cancel=turn.cancel)
+
             try:
                 turn.reply = brain.chat_streaming(
                     turn.text,
-                    on_token=tokens.put,
+                    on_token=on_token,
                     on_tool=lambda n, a, r: self.send_threadsafe(
                         turn=turn,
                         t="tool",
@@ -516,6 +526,12 @@ class VoiceSession:
         def on_audio(pcm: bytes) -> None:
             if turn.cancel.is_set() or not self._is_current(turn):
                 return
+            # Pace synth/send to real playback so the worklet queue (and the
+            # token pipe feeding TTS) cannot run unbounded ahead of the ear.
+            while turn.remaining_playback_sec() > MAX_PLAYBACK_AHEAD_SEC:
+                if turn.cancel.is_set() or not self._is_current(turn):
+                    return
+                turn.cancel.wait(0.05)
             sentence = turn.pending_sentence
             if turn.announced_sentence != sentence:
                 turn.announced_sentence = sentence
@@ -559,14 +575,21 @@ class VoiceSession:
 
         tts_failed = False
         try:
-            for _ in speak_stream(
-                tokens.iter(),
-                on_audio=tracked_audio,
-                on_sentence=on_sentence,
-                on_timing=on_timing,
-                cancel=turn.cancel,
-            ):
-                pass
+            # Brief pre-speech lag (imperfect timing). Cancel during wait skips TTS.
+            cancelled_during_lag = turn.cancel.wait(PRE_SPEECH_LAG_SEC)
+            if not cancelled_during_lag:
+                for _ in speak_stream(
+                    tokens.iter(),
+                    on_audio=tracked_audio,
+                    on_sentence=on_sentence,
+                    on_timing=on_timing,
+                    cancel=turn.cancel,
+                ):
+                    pass
+            else:
+                for _ in tokens.iter():
+                    if turn.cancel.is_set():
+                        break
         except Exception as e:
             tts_failed = True
             self.send_threadsafe(
@@ -685,18 +708,39 @@ class VoiceSession:
 class _TokenPipe:
     """Blocking queue between the LLM thread and the TTS consumer."""
 
-    def __init__(self) -> None:
+    def __init__(self, maxsize: int = TOKEN_PIPE_MAXSIZE) -> None:
         import queue
 
-        self._q: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._q: "queue.Queue[Optional[str]]" = queue.Queue(maxsize=max(1, maxsize))
         self.seen: List[str] = []
 
-    def put(self, token: str) -> None:
+    def put(self, token: str, cancel: Optional[threading.Event] = None) -> bool:
+        """Enqueue a token; block while full unless `cancel` is set."""
+        import queue
+
         self.seen.append(token)
-        self._q.put(token)
+        while True:
+            try:
+                self._q.put(token, timeout=0.05)
+                return True
+            except queue.Full:
+                if cancel is not None and cancel.is_set():
+                    return False
 
     def close(self) -> None:
-        self._q.put(None)
+        import queue
+
+        # Always deliver the sentinel, even if the pipe is full of backlog
+        # after a barge — otherwise the TTS consumer never exits.
+        while True:
+            try:
+                self._q.put(None, timeout=0.05)
+                return
+            except queue.Full:
+                try:
+                    self._q.get_nowait()
+                except queue.Empty:
+                    pass
 
     def iter(self):
         while True:

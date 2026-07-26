@@ -43,3 +43,19 @@ export function spokenSoFar(sentences: AlignedSentence[], playedMs: number): str
   }
   return parts.join(' ')
 }
+
+/**
+ * The sentence the ear is in — last sentence whose audio has started.
+ *
+ * Used for Face speech bubbles so captions track playback, not synth arrival.
+ */
+export function spokenSentence(sentences: AlignedSentence[], playedMs: number): string {
+  let current = ''
+  for (const sentence of sentences) {
+    // Match spokenSoFar: nothing is "current" until playback has entered
+    // the sentence (strictly past its offset).
+    if (playedMs <= sentence.offsetMs) break
+    current = sentence.text
+  }
+  return current
+}

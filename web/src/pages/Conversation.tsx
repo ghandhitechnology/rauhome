@@ -9,9 +9,12 @@ import {
 import { Link } from '../router'
 import ChatMarkdown from '../components/ChatMarkdown'
 import ClawdAvatar from '../components/ClawdAvatar'
+import PermissionMenu from '../components/PermissionMenu'
 import SlashMenu from '../components/SlashMenu'
 import { api } from '../api'
 import { live } from '../live'
+import { useMode } from '../mode'
+import { useVoiceSession } from '../voice'
 import {
   filterSlashCommands,
   matchSlash,
@@ -161,6 +164,8 @@ function useComposerRubberBand(
 }
 
 export default function Conversation() {
+  const { mode } = useMode()
+  const voice = useVoiceSession({ enabled: mode === 'voice' })
   const [log, setLog] = useState<any[]>([])
   const [emotion, setEmotion] = useState('idle')
   const [draft, setDraft] = useState('')
@@ -191,8 +196,15 @@ export default function Conversation() {
   const failsRef = useRef(0)
   /** Whether the user is reading at the bottom — only then do we auto-scroll. */
   const stickRef = useRef(true)
+  /** Ignore model-speed chat_delta while a voice turn is speaking. */
+  const voiceActiveRef = useRef(false)
 
   useComposerRubberBand(threadRef, composeRef)
+
+  const voiceTurnActive =
+    mode === 'voice' &&
+    (voice.phase === 'speaking' || voice.phase === 'thinking' || !!voice.spokenText)
+  voiceActiveRef.current = voiceTurnActive
 
   async function refresh() {
     // Polls that outlive their interval slot must not stack up or land
@@ -235,14 +247,24 @@ export default function Conversation() {
       const text = typeof event.text === 'string' ? event.text : ''
       switch (event.kind) {
         case 'chat_started':
+          // Voice turns paint from playback; keep the text stream for chat mode.
+          if (voiceActiveRef.current || mode === 'voice') {
+            setStreaming(null)
+            break
+          }
           setStreaming({ turnId, text: '' })
           break
         case 'chat_delta':
+          if (voiceActiveRef.current || mode === 'voice') break
           setStreaming((prev) =>
             prev && prev.turnId !== turnId ? prev : { turnId, text },
           )
           break
         case 'chat_done':
+          if (voiceActiveRef.current || mode === 'voice') {
+            setStreaming(null)
+            break
+          }
           // Hold the finished text until the polled log catches up with it,
           // otherwise the reply blinks out and back in again.
           setStreaming((prev) => (prev && prev.turnId !== turnId ? prev : { turnId, text }))
@@ -252,7 +274,7 @@ export default function Conversation() {
           break
       }
     }),
-  [])
+  [mode])
 
   const slashDraft = useMemo(() => readSlashDraft(draft), [draft])
   const activeSlash = useMemo(
@@ -280,13 +302,28 @@ export default function Conversation() {
 
   // Same idea for the streamed reply: it hands over to the polled log the
   // moment that log contains it, so the message never appears twice.
+  // In voice mode the bubble tracks the ear (spokenText), not chat_delta.
   const liveReply = useMemo(() => {
+    if (mode === 'voice') {
+      const heard = voice.spokenText.trim()
+      if (!heard) return ''
+      const last = log[log.length - 1]
+      if (last && last.role !== 'user' && String(last.text || '').trim() === heard) return ''
+      // While still speaking, show heard progress even if the log already has
+      // the full reply — avoid duplicating once idle and log matches.
+      if (voice.phase !== 'speaking' && voice.phase !== 'thinking') {
+        if (last && last.role !== 'user' && String(last.text || '').startsWith(heard)) {
+          return ''
+        }
+      }
+      return heard
+    }
     const text = streaming?.text?.trim()
     if (!text) return ''
     const last = log[log.length - 1]
     if (last && last.role !== 'user' && String(last.text || '').trim() === text) return ''
     return text
-  }, [streaming, log])
+  }, [mode, voice.spokenText, voice.phase, streaming, log])
 
   // Track whether the reader is at the bottom; scrolling up to reread must
   // not be yanked back down by the next poll.
@@ -327,12 +364,26 @@ export default function Conversation() {
   async function send() {
     const text = draft.trim()
     if (!text || sending) return
-    setSending(true)
-    setDraft('')
     setSlashOpen(false)
     setSendError('')
     // Sending your own message always belongs at the bottom.
     stickRef.current = true
+
+    // Voice mode: same socket as speech so the reply streams as audio and the
+    // live bubble tracks playback, not chat_delta.
+    if (mode === 'voice' && voice.connected) {
+      setDraft('')
+      setPending({
+        role: 'user',
+        text,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      })
+      voice.sendText(text)
+      return
+    }
+
+    setSending(true)
+    setDraft('')
     setPending({
       role: 'user',
       text,
@@ -474,7 +525,7 @@ export default function Conversation() {
             <ChatMarkdown text={liveReply} />
           </article>
         )}
-        {sending && !liveReply && (
+        {(sending || (mode === 'voice' && voice.phase === 'thinking')) && !liveReply && (
           <div className="convo-typing" role="status" aria-label="Rau is replying">
             <i />
             <i />
@@ -526,20 +577,23 @@ export default function Conversation() {
               aria-activedescendant={showSlashMenu ? `slash-opt-${clampedSlashIndex}` : undefined}
               autoFocus
             />
-            <button
-              className="send-btn"
-              disabled={!draft.trim() || sending}
-              onClick={send}
-              aria-label="Send"
-            >
-              {sending ? (
-                <i className="spinner" />
-              ) : (
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M3 10h13M11 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </button>
+            <div className="compose-actions">
+              <PermissionMenu />
+              <button
+                className="send-btn"
+                disabled={!draft.trim() || sending}
+                onClick={send}
+                aria-label="Send"
+              >
+                {sending ? (
+                  <i className="spinner" />
+                ) : (
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                    <path d="M3 10h13M11 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </button>
+            </div>
           </div>
         </div>
         <p className="compose-hint">

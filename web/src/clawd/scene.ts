@@ -9,14 +9,21 @@ import { clamp, clamp01, damp } from './easing'
 import { CLAWD } from './palette'
 import type { ParamSet } from './params'
 import {
-  drawRoomBack,
-  drawRoomFore,
-  drawRoomGrade,
-  lightingAt,
   FLOOR_Y,
   STAGE,
+  drawRoomBack as drawEnhancedBack,
+  drawRoomFore as drawEnhancedFore,
+  drawRoomGrade as drawEnhancedGrade,
+  lightingAt as lightingEnhanced,
   type RoomState,
 } from './room'
+import {
+  drawRoomBack as drawClassicBack,
+  drawRoomFore as drawClassicFore,
+  drawRoomGrade as drawClassicGrade,
+  lightingAt as lightingClassic,
+} from './roomClassic'
+import type { RoomVisual } from './roomVisual'
 import { clawdBounds, drawClawd } from './sprite'
 
 export type Camera = {
@@ -40,6 +47,8 @@ export type SceneOptions = {
 export class Scene {
   readonly camera: Camera = { x: 0, y: 0, zoom: 1 }
   private grainSeed = 0
+  /** classic = original flat room; enhanced = materials/architecture pass. */
+  roomVisual: RoomVisual = 'classic'
 
   /** Canvas pixels per stage unit, recomputed each resize. */
   unit = 1
@@ -47,14 +56,28 @@ export class Scene {
   private offsetY = 0
 
   layout(width: number, height: number, dpr: number, opts: SceneOptions = {}) {
+    void dpr
+    // Desktop pet: fit a narrow band around centre so walking stays on-screen
+    // (full-stage cover crops the sides and lets him walk out of the window).
+    if (opts.showRoom === false) {
+      const viewW = 72
+      const viewH = 86
+      const scale = Math.min(width / viewW, height / viewH)
+      this.unit = scale
+      const viewLeft = STAGE.w / 2 - viewW / 2
+      // Bias the crop so feet sit near the bottom and the bubble has headroom.
+      const viewTop = FLOOR_Y - viewH * 0.78
+      this.offsetX = (width - viewW * scale) / 2 - viewLeft * scale
+      this.offsetY = (height - viewH * scale) / 2 - viewTop * scale
+      return
+    }
+
     // Cover the viewport rather than fit, so there are never letterbox bars;
     // the composition is authored with slack at the edges for exactly this.
     const scale = Math.max(width / STAGE.w, height / STAGE.h)
     this.unit = scale
     this.offsetX = (width - STAGE.w * scale) / 2
     this.offsetY = (height - STAGE.h * scale) / 2
-    void dpr
-    void opts
   }
 
   update(dt: number, worldX: number, opts: SceneOptions) {
@@ -92,10 +115,18 @@ export class Scene {
     ctx.translate(-(STAGE.w * u) / 2, -(STAGE.h * u) / 2)
     ctx.translate(-this.camera.x * u, -this.camera.y * u)
 
-    if (showRoom) drawRoomBack(ctx, u, room)
+    const classic = this.roomVisual === 'classic'
+    if (showRoom) {
+      if (classic) drawClassicBack(ctx, u, room)
+      else drawEnhancedBack(ctx, u, room)
+    }
 
     // Character sits between the wall and the near furniture.
-    const light = showRoom ? lightingAt(worldX, room) : null
+    const light = showRoom
+      ? classic
+        ? lightingClassic(worldX, room)
+        : lightingEnhanced(worldX, room)
+      : null
     // 1.25 puts him at ~12 stage units tall — small enough to read as a desk
     // creature, tall enough to clear the desk top and the rug.
     const charUnit = u * 1.25 * (opts.charScale ?? 1)
@@ -110,8 +141,13 @@ export class Scene {
     })
 
     if (showRoom) {
-      drawRoomFore(ctx, u)
-      drawRoomGrade(ctx, u, room)
+      if (classic) {
+        drawClassicFore(ctx, u)
+        drawClassicGrade(ctx, u, room)
+      } else {
+        drawEnhancedFore(ctx, u)
+        drawEnhancedGrade(ctx, u, room)
+      }
     }
 
     ctx.restore()
@@ -160,7 +196,9 @@ export class Scene {
   }
 }
 
-/** Pixel-art speech bubble drawn in canvas space. */
+export type BubbleRect = { x: number; y: number; w: number; h: number }
+
+/** Pixel-art speech bubble drawn in canvas space. Returns its bounds. */
 export function drawBubble(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -168,7 +206,7 @@ export function drawBubble(
   anchorY: number,
   maxWidth: number,
   scale: number,
-) {
+): BubbleRect | null {
   const pad = 10 * scale
   const lineH = 17 * scale
   const font = `${Math.round(13 * scale)}px "DM Sans", system-ui, sans-serif`
@@ -193,7 +231,7 @@ export function drawBubble(
   if (line && lines.length < 4) lines.push(line)
   if (lines.length === 0) {
     ctx.restore()
-    return
+    return null
   }
 
   const w = Math.min(
@@ -228,6 +266,8 @@ export function drawBubble(
   ctx.fillStyle = '#F2EFE9'
   lines.forEach((l, i) => ctx.fillText(l, x + pad, y + pad + i * lineH))
   ctx.restore()
+  // Include the stepped tail in the hit box.
+  return { x, y, w, h: h + step * 3 }
 }
 
 export { clamp01 }

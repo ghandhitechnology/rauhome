@@ -153,6 +153,34 @@ describe('BodyController', () => {
     expect(avatar.released).toBe(1)
   })
 
+  it('fires a now cue as soon as the plan lands', () => {
+    body.startTurn(TURN)
+    body.applyPlan(plan([cue({ anchor: 'now', station: 'desk', motion: 'type' })]))
+    expect(avatar.applied.map((c) => c.station)).toEqual(['desk'])
+  })
+
+  it('defers a station hold until the room reports arrival', () => {
+    body.dispose()
+    body = new BodyController()
+    body.now = () => Date.now()
+    const room = spy()
+    room.target.reportsArrival = true
+    body.registerTarget(room.target)
+
+    body.startTurn(TURN)
+    body.applyPlan(plan([cue({ anchor: 'now', station: 'desk', hold_ms: 500 })]))
+    expect(room.applied).toHaveLength(1)
+
+    vi.advanceTimersByTime(2000)
+    expect(room.released).toBe(0)
+
+    body.cueArrived()
+    vi.advanceTimersByTime(499)
+    expect(room.released).toBe(0)
+    vi.advanceTimersByTime(2)
+    expect(room.released).toBe(1)
+  })
+
   it('queues cues that come due together and plays them in plan order', () => {
     body.startTurn(TURN)
     body.applyPlan(

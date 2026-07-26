@@ -64,7 +64,17 @@ _BUILTINS: Dict[str, Dict[str, Any]] = {
     },
     "computer": {
         "description": "Operate the local computer carefully for user-directed tasks.",
-        "body": "Inspect the current screen before acting. Take small reversible steps, verify each state change, and request confirmation for purchases, messages, account changes, deletion, or other consequential actions. Never guess coordinates after the screen changes.",
+        "body": (
+            "Use cua_action. Call action=status first if setup is unclear (Quartz, "
+            "Accessibility, Screen Recording, displays). Screenshots and clicks use "
+            "logical points — width/height on a screenshot match the coordinates you "
+            "should click. Prefer action=screenshot (or rely on the automatic verify "
+            "shot after click/type/key/drag/move) before guessing. Take small "
+            "reversible steps. Request confirmation for purchases, messages, account "
+            "changes, deletion, or other consequential actions. Use key chords like "
+            "cmd+c / cmd+v / cmd+tab. Optional display_id, app, or frontmost=true "
+            "target a display or window."
+        ),
     },
     "summarize": {
         "description": "Compress material without losing decisions, evidence, or caveats.",

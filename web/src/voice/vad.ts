@@ -23,15 +23,17 @@ export type VadOptions = {
 }
 
 const DEFAULTS: Required<VadOptions> = {
-  threshold: 0.055,
-  onsetMs: 120,
-  hangoverMs: 620,
-  bargeMs: 260,
+  // Browser RMS after echo cancellation is commonly 0.02–0.05 for normal
+  // speech. The old 0.055 margin required shouting on many laptop mics.
+  threshold: 0.012,
+  onsetMs: 100,
+  hangoverMs: 520,
+  bargeMs: 240,
 }
 
 export class Vad {
   private opts: Required<VadOptions>
-  private floor = 0.01
+  private floor = 0.003
   private speechMs = 0
   private silenceMs = 0
   private active = false
@@ -65,7 +67,7 @@ export class Vad {
     if (!this.active) {
       this.floor = level < this.floor ? this.floor * 0.9 + level * 0.1 : this.floor * 0.995 + level * 0.005
     }
-    const loud = level > this.floor + this.opts.threshold
+    const loud = level > Math.max(this.floor + this.opts.threshold, this.floor * 1.8)
 
     if (loud) {
       this.speechMs += dtMs

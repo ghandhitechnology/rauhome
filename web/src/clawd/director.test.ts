@@ -161,3 +161,55 @@ describe('Director cues', () => {
     expect(director.targetStation).toBeTruthy()
   })
 })
+
+describe('Director directed locomotion', () => {
+  let rig: ClawdRig
+  let director: Director
+
+  beforeEach(() => {
+    rig = new ClawdRig()
+    director = new Director(rig, 'room')
+  })
+
+  it('honours goTo while conversation mode is latched on', () => {
+    rig.worldX = station('centre').x
+    director.setMode('conversing')
+    director.goTo('desk')
+    run(director, rig, 8)
+    expectStandingAt(rig, 'desk')
+    expect(director.targetStation).toBe('desk')
+  })
+
+  it('honours goTo to centre while conversing (Direct Send him to)', () => {
+    rig.worldX = station('desk').x
+    director.setMode('conversing')
+    director.goTo('window')
+    run(director, rig, 14)
+    expectStandingAt(rig, 'window')
+    director.goTo('centre')
+    run(director, rig, 10)
+    expectStandingAt(rig, 'centre')
+    expect(director.targetStation).toBe('centre')
+  })
+
+  it('starts a goTo walk even if a one-shot is still playing', () => {
+    rig.worldX = station('centre').x
+    director.setMode('conversing')
+    director.force('wave')
+    director.goTo('shelf')
+    run(director, rig, 12)
+    expectStandingAt(rig, 'shelf')
+  })
+
+  it('stays at a cue station after release while conversing', () => {
+    director.applyCue(cue({ anchor: 'reply_start', station: 'window' }))
+    run(director, rig, 8)
+    expectStandingAt(rig, 'window')
+
+    director.releaseCue()
+    director.setMode('conversing')
+    run(director, rig, 2)
+    expectStandingAt(rig, 'window')
+    expect(director.targetStation).toBe('window')
+  })
+})

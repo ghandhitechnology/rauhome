@@ -19,3 +19,6 @@ identity/soul*.bak.md
 backups/
 /skills/
 node_modules/
+pet/node_modules/
+pet/src-tauri/target/
+pet/src-tauri/gen/

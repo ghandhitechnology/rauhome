@@ -82,7 +82,7 @@ export const GAZE_AIMS: Record<GazeTarget, GazeAim> = {
   window: { x: -0.9, y: -0.2, speed: 3, wander: 0.5 },
 }
 
-export type BodyAnchor = 'reply_start' | 'phrase' | 'reply_end'
+export type BodyAnchor = 'now' | 'reply_start' | 'phrase' | 'reply_end'
 
 export type BodyCue = {
   anchor: BodyAnchor
@@ -111,6 +111,12 @@ export type BodyTarget = {
   applyCue: (cue: BodyCue) => void
   /** Hand it back to autonomous behaviour. */
   releaseCue: () => void
+  /**
+   * True when this target walks across a room and will call `cueArrived`
+   * once it lands. Station holds wait for that signal when any such target
+   * is registered; compact avatars omit it and keep the immediate hold.
+   */
+  reportsArrival?: boolean
 }
 
 /** Where a text advance came from — audio wins, and text never overrides it. */
@@ -180,6 +186,8 @@ export class BodyController {
   /** Cue indices waiting for the body, in plan order. */
   private queue: number[] = []
   private active: BodyCue | null = null
+  /** Waiting for a room target to report arrival before starting hold_ms. */
+  private holdPending = false
   private holdTimer: Timeout | null = null
   private expiryTimer: Timeout | null = null
 
@@ -298,6 +306,19 @@ export class BodyController {
     this.dropPlan()
   }
 
+  /**
+   * A room target reached the station named by the active cue. Starts the
+   * hold clock that was deferred so long walks are not cut short mid-path.
+   */
+  cueArrived(): void {
+    if (!this.active?.station || !this.holdPending) return
+    this.holdPending = false
+    this.holdTimer = setTimeout(
+      () => this.releaseActive(),
+      Math.max(0, this.active.hold_ms),
+    )
+  }
+
   /** Tear down timers; the page is going away. */
   dispose(): void {
     this.dropPlan()
@@ -325,10 +346,19 @@ export class BodyController {
   }
 
   private matches(cue: BodyCue): boolean {
+    if (cue.anchor === 'now') return true
     if (cue.anchor === 'reply_start') return this.started
     if (cue.anchor === 'reply_end') return this.ended
     if (!cue.phrase) return false
     return phraseVisible(this.visible, cue.phrase, cue.occurrence ?? 1)
+  }
+
+  private waitsForArrival(cue: BodyCue): boolean {
+    if (!cue.station) return false
+    for (const target of this.targets) {
+      if (target.reportsArrival) return true
+    }
+    return false
   }
 
   /** Run the queue one cue at a time, in plan order. */
@@ -342,6 +372,7 @@ export class BodyController {
     if (index === undefined) return
     const cue = this.plan.cues[index]
     this.active = cue
+    this.holdPending = false
     for (const target of this.targets) {
       try {
         target.applyCue(cue)
@@ -349,7 +380,12 @@ export class BodyController {
         /* one broken avatar must not stall the rest of the plan */
       }
     }
-    this.holdTimer = setTimeout(() => this.releaseActive(), Math.max(0, cue.hold_ms))
+    if (this.waitsForArrival(cue)) {
+      // Hold starts when the room reports arrival — not when the cue fires.
+      this.holdPending = true
+    } else {
+      this.holdTimer = setTimeout(() => this.releaseActive(), Math.max(0, cue.hold_ms))
+    }
   }
 
   private releaseActive(): void {
@@ -357,6 +393,7 @@ export class BodyController {
       clearTimeout(this.holdTimer)
       this.holdTimer = null
     }
+    this.holdPending = false
     if (!this.active) return
     this.active = null
     for (const target of this.targets) {
@@ -372,6 +409,7 @@ export class BodyController {
 
   private dropPlan(): void {
     this.clearTimers()
+    this.holdPending = false
     this.plan = null
     this.handled = []
     this.queue = []

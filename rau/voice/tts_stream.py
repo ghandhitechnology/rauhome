@@ -12,7 +12,7 @@ import base64
 import re
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Generator, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -33,6 +33,11 @@ MIN_CHARS = 24
 #: ...unless it already ends a sentence, or we have this much queued.
 MAX_CHARS = 220
 MAX_SENTENCE_PCM_BYTES = SR * 2 * 120
+#: Short hesitation openers ("음…") may flush under MIN_CHARS.
+_SHORT_HESITATION = re.compile(
+    r"^(음|그|어|아|well|um|uh|hmm)\s*[.…]+$",
+    re.I,
+)
 
 
 def split_sentences(text: str) -> List[str]:
@@ -96,7 +101,8 @@ class SentenceBuffer:
             if match:
                 head = self._buf[: match.end()].strip()
                 rest = self._buf[match.end() :]
-                if len(head) >= MIN_CHARS or len(rest) > 0:
+                short_hesitation = bool(_SHORT_HESITATION.match(head))
+                if len(head) >= MIN_CHARS or len(rest) > 0 or short_hesitation:
                     out.append(head)
                     self._buf = rest
                     continue
@@ -132,19 +138,30 @@ class RobotVoice:
     processed whole. The per-sentence reverb seam is inaudible at 8% wet.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, effect: str = "robot") -> None:
         self._board = None
+        self.effect = effect
+        if effect == "none":
+            return
         try:
             from pedalboard import Bitcrush, Distortion, Pedalboard, PitchShift, Reverb
 
-            self._board = Pedalboard(
-                [
-                    PitchShift(semitones=2),
-                    Bitcrush(bit_depth=10),
-                    Distortion(drive_db=2),
-                    Reverb(room_size=0.15, wet_level=0.08, dry_level=0.92),
-                ]
-            )
+            if effect == "childlike":
+                self._board = Pedalboard(
+                    [
+                        PitchShift(semitones=3),
+                        Reverb(room_size=0.08, wet_level=0.03, dry_level=0.97),
+                    ]
+                )
+            else:
+                self._board = Pedalboard(
+                    [
+                        PitchShift(semitones=2),
+                        Bitcrush(bit_depth=10),
+                        Distortion(drive_db=2),
+                        Reverb(room_size=0.15, wet_level=0.08, dry_level=0.92),
+                    ]
+                )
         except Exception:
             self._board = None
 
@@ -169,23 +186,45 @@ def _client():
     return ElevenLabs(api_key=key)
 
 
+def _sdk_voice_settings(settings: Optional[Dict[str, Any]]):
+    """Convert our JSON-safe settings to the current ElevenLabs SDK type."""
+    if not settings:
+        return None
+    from elevenlabs import VoiceSettings
+
+    return VoiceSettings(
+        stability=float(settings.get("stability", 0.5)),
+        similarity_boost=float(settings.get("similarity_boost", 0.75)),
+        style=float(settings.get("style", 0.0)),
+        speed=float(settings.get("speed", 1.0)),
+        use_speaker_boost=bool(settings.get("use_speaker_boost", True)),
+    )
+
+
 def synth_sentence(
     text: str,
     *,
     client: Any = None,
     voice_id: str = "",
     model: str = "",
+    voice_settings: Optional[Dict[str, Any]] = None,
     cancel: Optional[threading.Event] = None,
 ) -> Iterator[bytes]:
     """Yield PCM16 chunks for one sentence, stopping early if cancelled."""
     slot = get_slot("tts") if not voice_id or not model else {}
     c = client or _client()
-    stream = c.text_to_speech.stream(
-        voice_id=voice_id or slot.get("voice_id") or DEFAULT_VOICE_ID,
-        text=text,
-        model_id=model or slot.get("model") or DEFAULT_TTS_MODEL,
-        output_format="pcm_24000",
+    request: Dict[str, Any] = {
+        "voice_id": voice_id or slot.get("voice_id") or DEFAULT_VOICE_ID,
+        "text": text,
+        "model_id": model or slot.get("model") or DEFAULT_TTS_MODEL,
+        "output_format": "pcm_24000",
+    }
+    selected_settings = _sdk_voice_settings(
+        voice_settings if voice_settings is not None else slot.get("voice_settings")
     )
+    if selected_settings is not None:
+        request["voice_settings"] = selected_settings
+    stream = c.text_to_speech.stream(**request)
     emitted = 0
     try:
         for chunk in stream:
@@ -247,6 +286,7 @@ def synth_sentence_timed(
     client: Any = None,
     voice_id: str = "",
     model: str = "",
+    voice_settings: Optional[Dict[str, Any]] = None,
     cancel: Optional[threading.Event] = None,
 ) -> Iterator[Tuple[bytes, Optional[Tuple[List[str], List[float]]]]]:
     """
@@ -265,12 +305,20 @@ def synth_sentence_timed(
     stream = None
     if callable(timed):
         try:
-            stream = timed(
-                voice_id=vid,
-                text=text,
-                model_id=mid,
-                output_format="pcm_24000",
+            request: Dict[str, Any] = {
+                "voice_id": vid,
+                "text": text,
+                "model_id": mid,
+                "output_format": "pcm_24000",
+            }
+            selected_settings = _sdk_voice_settings(
+                voice_settings
+                if voice_settings is not None
+                else slot.get("voice_settings")
             )
+            if selected_settings is not None:
+                request["voice_settings"] = selected_settings
+            stream = timed(**request)
         except Exception:
             stream = None
 
@@ -307,7 +355,14 @@ def synth_sentence_timed(
             return
 
     for chunk in synth_sentence(
-        text, client=c, voice_id=vid, model=mid, cancel=cancel
+        text,
+        client=c,
+        voice_id=vid,
+        model=mid,
+        voice_settings=voice_settings
+        if voice_settings is not None
+        else slot.get("voice_settings"),
+        cancel=cancel,
     ):
         yield chunk, None
 
@@ -355,7 +410,7 @@ def speak_stream(
     on_sentence: Optional[Callable[[str], None]] = None,
     on_timing: Optional[Callable[[SentenceTiming], None]] = None,
     cancel: Optional[threading.Event] = None,
-    robot: bool = True,
+    robot: Optional[bool] = None,
 ) -> Generator[None, None, None]:
     """
     Drive TTS from a token stream.
@@ -367,11 +422,25 @@ def speak_stream(
     body cues to playback.
     """
     buf = SentenceBuffer()
-    fx = RobotVoice() if robot else None
     client = _client()
     slot = get_slot("tts")
     voice_id = str(slot.get("voice_id") or DEFAULT_VOICE_ID)
     model = str(slot.get("model") or DEFAULT_TTS_MODEL)
+    effect = str(slot.get("effect") or "robot")
+    if robot is True:
+        effect = "robot"
+    elif robot is False:
+        effect = "none"
+    if effect == "none":
+        fx = None
+    else:
+        try:
+            fx = RobotVoice(effect)
+        except TypeError:
+            # Compatibility with simple injected processors in tests and local
+            # extensions written before effects became selectable.
+            fx = RobotVoice()
+    voice_settings = slot.get("voice_settings")
 
     def emit(sentence: str) -> bool:
         if cancel is not None and cancel.is_set():
@@ -389,6 +458,7 @@ def speak_stream(
                 client=client,
                 voice_id=voice_id,
                 model=model,
+                voice_settings=voice_settings,
                 cancel=cancel,
             ):
                 if cancel is not None and cancel.is_set():
@@ -409,6 +479,7 @@ def speak_stream(
             client=client,
             voice_id=voice_id,
             model=model,
+            voice_settings=voice_settings,
             cancel=cancel,
         ):
             if cancel is not None and cancel.is_set():

@@ -10,6 +10,15 @@ const options = {
 }
 
 describe('Vad', () => {
+  it('detects normal browser microphone levels with the production defaults', () => {
+    const vad = new Vad()
+    for (let elapsed = 20; elapsed < 100; elapsed += 20) {
+      expect(vad.push(0.025, 20)).toBeNull()
+    }
+    expect(vad.push(0.025, 20)).toBe('start')
+    expect(vad.speaking).toBe(true)
+  })
+
   it('requires sustained loud frames before speech starts', () => {
     const vad = new Vad(options)
 

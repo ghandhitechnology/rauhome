@@ -27,8 +27,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.mode in ("hub", "all", "text"):
         if args.mode == "hub":
             from rau.hub.server import main as hub_main
+            from rau.pet import stop_pet
 
-            hub_main()
+            try:
+                hub_main()
+            finally:
+                stop_pet()
             return
 
         # hub in background thread
@@ -52,6 +56,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.mode in ("face", "all"):
         from rau.face.pipeline import start_face, stop_face
+        from rau.pet import stop_pet
 
         start_face(with_audio=not args.no_audio)
         try:
@@ -59,15 +64,19 @@ def main(argv: list[str] | None = None) -> None:
                 time.sleep(0.5)
         except KeyboardInterrupt:
             stop_face()
+            stop_pet()
             print("\nRau signing off.")
         return
 
     if args.mode == "text":
+        from rau.pet import stop_pet
+
         print("Text mode: open the dashboard. Control via /api/control and chat endpoints.")
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
+            stop_pet()
             print("\nbye")
         return
 

@@ -10,8 +10,10 @@ brew install ffmpeg python@3.11 node
 
 `ffmpeg` is required for microphone capture (`avfoundation`).
 
-Optional for desktop clicks if PyObjC/Quartz is unavailable: `brew install cliclick`.
-Grant Accessibility / Screen Recording to Terminal (or your host) for computer use.
+Computer use (hard-task `cua_action`) needs Accessibility + Screen Recording for
+the host process (Terminal or the packaged app). Prefer `pip install pyobjc-framework-Quartz`
+for real drag/key-chords/typing; optional fallback for clicks: `brew install cliclick`.
+The subagent model must accept image tool results (multimodal) to see screenshots.
 
 ## 2. Python
 
@@ -73,6 +75,46 @@ bash launch.sh
 
 Modes: `--hub`, `--text`, `--no-audio`, `--face`.
 
+## 6b. Desktop pet (Tauri)
+
+Optional always-on-top companion window that loads `http://127.0.0.1:8765/pet`.
+The hub spawns it after startup when a built binary is present.
+
+Prerequisites:
+
+```bash
+# Rust toolchain (once)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+Build:
+
+```bash
+cd pet && npm install
+cd src-tauri && cargo build --release
+# binary: pet/src-tauri/target/release/rau-pet
+```
+
+Dev (hub must already be serving `/pet`):
+
+```bash
+# terminal A — hub + built web UI
+bash launch.sh --hub
+# terminal B
+cd pet && npm run dev
+```
+
+Env flags:
+
+| Variable | Effect |
+|---|---|
+| `RAU_PET=0` | Do not spawn the pet from the hub |
+| `RAU_PET_BIN=/path/to/rau-pet` | Override binary path |
+| `RAU_HUB_URL=http://127.0.0.1:8765` | Hub base URL (set by the launcher) |
+
+Quit the hub to stop the pet. Menu-bar / right-click **Quit pet** leaves the hub running. Opening **Face** hides the pet until Face closes.
+
 ## 7. Voice mode
 
 Rau has two conversational modes. **Shift+Space** switches between them from
@@ -90,12 +132,13 @@ browser will ask for microphone permission.
 
 ### Hearing (speech-to-text)
 
-Configured in **Settings → Hearing**. Four backends:
+Configured in **Settings → Hearing**. Automatic mode is the recommended
+default: Deepgram → ElevenLabs Scribe → OpenAI → local Whisper.
 
 | Backend | Key needed | Live transcript |
 |---|---|---|
 | Deepgram | `DEEPGRAM_API_KEY` | yes — words appear as you speak |
-| ElevenLabs Scribe | reuses `ELEVENLABS_API_KEY` | no |
+| ElevenLabs Scribe v2 | reuses `ELEVENLABS_API_KEY` | no |
 | OpenAI | reuses `OPENAI_API_KEY` | no |
 | Local (faster-whisper) | none | no |
 
@@ -103,14 +146,26 @@ Only Deepgram streams interim results; the others transcribe once you stop
 talking. Local whisper needs no key and never sends your voice anywhere, but is
 the slowest.
 
-If the configured backend's key is missing, voice mode falls back to local
-whisper rather than failing — Settings tells you when that will happen.
+If a specifically configured backend loses its key, voice mode falls back to
+the best other connected backend rather than immediately forcing local
+Whisper. The status endpoint and Settings show the backend actually selected.
 
 ### Speaking (text-to-speech)
 
 Needs `ELEVENLABS_API_KEY`. Replies are synthesised sentence by sentence, so
 Rau starts talking before he has finished thinking. Without the key, voice mode
 still listens and replies in text.
+
+Settings includes four tuned presets:
+
+- **Robotic** — synthetic pitch, bitcrush, and light reverb
+- **Grandfather** — older, warm, slower storyteller
+- **Girlfriend** — warm, playful adult conversational voice
+- **Childlike** — bright fictional-character voice with a gentle pitch lift
+
+You can also select any voice returned by your ElevenLabs account, paste a
+custom voice ID, choose the synthesis model/effect independently, and preview
+the exact result before saving.
 
 ### Notes
 

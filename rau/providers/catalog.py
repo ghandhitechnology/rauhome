@@ -231,12 +231,88 @@ SLOTS: List[Dict[str, Any]] = [
     },
 ]
 
-# ElevenLabs voices worth starting from.
+# ElevenLabs' default premade voices are available to every account. These
+# four presets are intentionally role-shaped rather than just a list of names:
+# selecting one changes the source voice, synthesis tuning, and local effect.
+VOICE_PRESETS: List[Dict[str, Any]] = [
+    {
+        "id": "robotic",
+        "label": "Robotic",
+        "note": "Synthetic companion with a crisp vocoder edge.",
+        "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+        "voice_name": "Liam",
+        "effect": "robot",
+        "settings": {
+            "stability": 0.72,
+            "similarity_boost": 0.72,
+            "style": 0.12,
+            "speed": 1.0,
+            "use_speaker_boost": True,
+        },
+    },
+    {
+        "id": "grandfather",
+        "label": "Grandfather",
+        "note": "Wise, unhurried, comforting older storyteller.",
+        "voice_id": "pqHfZKP75CvOlQylNhV4",
+        "voice_name": "Bill",
+        "effect": "none",
+        "settings": {
+            "stability": 0.74,
+            "similarity_boost": 0.84,
+            "style": 0.18,
+            "speed": 0.88,
+            "use_speaker_boost": True,
+        },
+    },
+    {
+        "id": "girlfriend",
+        "label": "Girlfriend",
+        "note": "Warm, playful adult conversational voice.",
+        "voice_id": "cgSgspJ2msm6clMCkdW9",
+        "voice_name": "Jessica",
+        "effect": "none",
+        "settings": {
+            "stability": 0.46,
+            "similarity_boost": 0.82,
+            "style": 0.34,
+            "speed": 0.98,
+            "use_speaker_boost": True,
+        },
+    },
+    {
+        "id": "child",
+        "label": "Childlike",
+        "note": "Bright fictional character voice with a gentle pitch lift.",
+        "voice_id": "FGY2WhTYpPnrIDTdsKH5",
+        "voice_name": "Laura",
+        "effect": "childlike",
+        "settings": {
+            "stability": 0.44,
+            "similarity_boost": 0.76,
+            "style": 0.42,
+            "speed": 1.06,
+            "use_speaker_boost": True,
+        },
+    },
+]
+
+# Kept for older clients; new clients use voice_presets and the live account
+# voice endpoint. The IDs mirror the presets so no picker can select an
+# inaccessible legacy voice.
 VOICES: List[Dict[str, str]] = [
-    {"id": "TX3LPaxmHKxFdv7VOQHJ", "label": "Liam", "note": "warm, neutral"},
-    {"id": "21m00Tcm4TlvDq8ikWAM", "label": "Rachel", "note": "calm, clear"},
-    {"id": "AZnzlk1XvdvUeBnXmlld", "label": "Domi", "note": "bright, energetic"},
-    {"id": "pNInz6obpgDQGcFmaJgB", "label": "Adam", "note": "deep, steady"},
+    {
+        "id": str(preset["voice_id"]),
+        "label": f'{preset["label"]} · {preset["voice_name"]}',
+        "note": str(preset["note"]),
+    }
+    for preset in VOICE_PRESETS
+]
+
+VOICE_EFFECTS: List[Dict[str, str]] = [
+    {"id": "none", "label": "Natural", "note": "No local processing"},
+    {"id": "robot", "label": "Robot", "note": "Pitch, bitcrush and light reverb"},
+    {"id": "childlike", "label": "Childlike", "note": "Gentle pitch lift"},
 ]
 
 TTS_MODELS: List[Dict[str, str]] = [
@@ -250,6 +326,13 @@ TTS_MODELS: List[Dict[str, str]] = [
 # streams interim results; the rest cannot return anything until you stop
 # speaking, and pretending otherwise would make the UI feel broken.
 STT_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "auto": {
+        "label": "Automatic (recommended)",
+        "blurb": "Uses Deepgram when connected, then ElevenLabs, OpenAI, and local Whisper.",
+        "auth": "",
+        "partials": True,
+        "models": [],
+    },
     "deepgram": {
         "label": "Deepgram",
         "blurb": "Real streaming — live partials and server-side endpointing. Best for conversation.",
@@ -266,7 +349,8 @@ STT_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "auth": "elevenlabs",
         "partials": False,
         "models": [
-            {"id": "scribe_v1", "label": "Scribe v1", "note": "accurate, 99 languages"},
+            {"id": "scribe_v2", "label": "Scribe v2", "note": "current high-accuracy model"},
+            {"id": "scribe_v1", "label": "Scribe v1", "note": "legacy fallback"},
         ],
     },
     "openai": {
@@ -295,12 +379,153 @@ STT_PROVIDERS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def catalog() -> Dict[str, Any]:
+# ── reasoning / effort capabilities ───────────────────────────────────
+# Declared like STT `partials`: UI and wire adapters read this instead of
+# assuming every model understands reasoning_effort the same way.
+
+_ALL = ("low", "medium", "high", "max")
+_DEEPSEEK = {
+    "supported": True,
+    "levels": ["high", "max"],
+    "default": "high",
+    "param": "deepseek",
+}
+_OPENAI_REASONING = {
+    "supported": True,
+    "levels": list(_ALL),
+    "default": "medium",
+    "param": "openai",
+}
+_OPENAI_FAST = {
+    "supported": False,
+    "levels": [],
+    "default": "medium",
+    "param": "none",
+}
+_KIMI = {
+    "supported": True,
+    "levels": ["low", "high", "max"],
+    "default": "high",
+    "param": "kimi",
+}
+_CLAUDE = {
+    "supported": True,
+    "levels": list(_ALL),
+    "default": "medium",
+    "param": "openai",
+}
+
+#: provider id → default when the model id is not in the curated list
+PROVIDER_REASONING_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "deepseek": dict(_DEEPSEEK),
+    "kimi": dict(_KIMI),
+    "moonshot": dict(_KIMI),
+    "kimi_code": dict(_KIMI),
+    "codex": dict(_OPENAI_REASONING),
+    "openai": dict(_OPENAI_REASONING),
+    "openrouter": dict(_OPENAI_REASONING),
+}
+
+#: Exact curated model ids (and OpenRouter-qualified ids) → capability
+MODEL_REASONING: Dict[str, Dict[str, Any]] = {
+    # DeepSeek direct
+    "deepseek-v4-flash": dict(_DEEPSEEK),
+    "deepseek-v4-pro": dict(_DEEPSEEK),
+    # OpenRouter DeepSeek
+    "deepseek/deepseek-v4-flash": dict(_DEEPSEEK),
+    "deepseek/deepseek-v4-pro": dict(_DEEPSEEK),
+    # OpenAI / Codex
+    "gpt-5.6-sol": dict(_OPENAI_REASONING),
+    "gpt-5.6-terra": dict(_OPENAI_REASONING),
+    "gpt-5.6-luna": dict(_OPENAI_FAST),
+    "gpt-5.5": dict(_OPENAI_REASONING),
+    "openai/gpt-5.6-sol": dict(_OPENAI_REASONING),
+    "openai/gpt-5.6-terra": dict(_OPENAI_REASONING),
+    "openai/gpt-5.6-luna": dict(_OPENAI_FAST),
+    # OpenRouter Claude / Gemini
+    "anthropic/claude-fable-5": dict(_CLAUDE),
+    "anthropic/claude-opus-4.8": dict(_CLAUDE),
+    "anthropic/claude-sonnet-5": dict(_CLAUDE),
+    "google/gemini-3.1-pro-preview": dict(_CLAUDE),
+    "google/gemini-3.6-flash": dict(_OPENAI_FAST),
+    # Kimi
+    "kimi-k3": dict(_KIMI),
+    "kimi-k2.7-code": dict(_KIMI),
+    "kimi-k2.6": dict(_KIMI),
+    "kimi-k2-thinking": dict(_KIMI),
+    "moonshotai/kimi-k3": dict(_KIMI),
+    "k3": dict(_KIMI),
+    "k3-256k": dict(_KIMI),
+    "kimi-for-coding": dict(_KIMI),
+    "kimi-for-coding-highspeed": dict(_KIMI),
+    # Misc OpenRouter
+    "z-ai/glm-5.2": dict(_OPENAI_REASONING),
+    "x-ai/grok-4.5": dict(_OPENAI_REASONING),
+}
+
+
+def _normalize_reasoning(raw: Dict[str, Any]) -> Dict[str, Any]:
+    supported = bool(raw.get("supported"))
+    levels = [str(x) for x in (raw.get("levels") or []) if str(x) in _ALL]
+    default = str(raw.get("default") or "medium")
+    if default not in _ALL:
+        default = "medium"
+    if supported and levels and default not in levels:
+        default = levels[0]
+    param = str(raw.get("param") or ("openai" if supported else "none"))
     return {
-        "providers": CATALOG,
+        "supported": supported,
+        "levels": levels,
+        "default": default,
+        "param": param,
+    }
+
+
+def reasoning_for(provider: str, model: str) -> Dict[str, Any]:
+    """Capability for a provider+model pair (catalog lookup + provider default)."""
+    prov = (provider or "").strip().lower()
+    mid = (model or "").strip()
+    mid_l = mid.lower()
+
+    if mid in MODEL_REASONING:
+        return _normalize_reasoning(MODEL_REASONING[mid])
+    if mid_l in MODEL_REASONING:
+        return _normalize_reasoning(MODEL_REASONING[mid_l])
+
+    # Heuristics for free-text / unlisted ids
+    if "luna" in mid_l or "flash" in mid_l or "haiku" in mid_l:
+        if prov in ("deepseek",) or mid_l.startswith("deepseek"):
+            return _normalize_reasoning(_DEEPSEEK)
+        return _normalize_reasoning(_OPENAI_FAST)
+    if mid_l.startswith("deepseek") or "/deepseek" in mid_l:
+        return _normalize_reasoning(_DEEPSEEK)
+    if mid_l.startswith("kimi") or mid_l in ("k3", "k3-256k") or "moonshot" in mid_l:
+        return _normalize_reasoning(_KIMI)
+
+    base = PROVIDER_REASONING_DEFAULTS.get(prov) or _OPENAI_REASONING
+    return _normalize_reasoning(base)
+
+
+def catalog() -> Dict[str, Any]:
+    # Attach reasoning metadata onto each curated model for the Settings UI.
+    providers: Dict[str, Any] = {}
+    for pid, meta in CATALOG.items():
+        models_out = []
+        for m in meta.get("models") or []:
+            entry = dict(m)
+            entry["reasoning"] = reasoning_for(pid, str(m.get("id") or ""))
+            models_out.append(entry)
+        providers[pid] = {**meta, "models": models_out}
+    return {
+        "providers": providers,
         "provider_auth": PROVIDER_AUTH,
+        "provider_reasoning_defaults": {
+            k: _normalize_reasoning(v) for k, v in PROVIDER_REASONING_DEFAULTS.items()
+        },
         "slots": SLOTS,
         "voices": VOICES,
+        "voice_presets": VOICE_PRESETS,
+        "voice_effects": VOICE_EFFECTS,
         "tts_models": TTS_MODELS,
         "stt_providers": STT_PROVIDERS,
     }

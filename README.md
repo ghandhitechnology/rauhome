@@ -67,7 +67,10 @@ Browser speakers ◀─(PCM16 24k)─ sentence TTS ◀──────┘
 ```
 
 Speech-to-text is a pluggable slot (Deepgram, ElevenLabs Scribe, OpenAI, or
-local whisper) — see **Settings → Hearing** and [SETUP.md](SETUP.md).
+local whisper). Automatic mode prefers the lowest-latency connected backend.
+ElevenLabs speaking includes Robotic, Grandfather, Girlfriend, and Childlike
+presets plus every voice available to the user's own key — see
+**Settings → Voice / Hearing** and [SETUP.md](SETUP.md).
 
 ### Always-available skills
 

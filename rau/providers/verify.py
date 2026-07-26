@@ -93,6 +93,10 @@ def _verify_kimi_code(key: str) -> Dict[str, Any]:
 
 def _verify_elevenlabs(key: str) -> Dict[str, Any]:
     body = _get_json("https://api.elevenlabs.io/v1/user", {"xi-api-key": key})
+    voices = _get_json(
+        "https://api.elevenlabs.io/v2/voices?page_size=1&include_total_count=true",
+        {"xi-api-key": key},
+    )
     sub = body.get("subscription") or {}
     used = sub.get("character_count")
     cap = sub.get("character_limit")
@@ -101,6 +105,9 @@ def _verify_elevenlabs(key: str) -> Dict[str, Any]:
         detail = f"{tier} tier — {cap - used:,} characters left"
     else:
         detail = f"{tier} tier"
+    total_voices = voices.get("total_count")
+    if isinstance(total_voices, int):
+        detail += f" · {total_voices} voices available"
     return {"ok": True, "detail": detail, "models": []}
 
 

@@ -19,6 +19,11 @@ _state: Dict[str, Any] = {
         "muted_until": 0.0,
         "last_user_ts": 0.0,
         "last_initiate_ts": 0.0,
+        "reentry_pending": False,
+        "reentry_tier": "none",
+        "gap_sec": 0.0,
+        "mood": {"label": "idle", "intensity": 0.0, "updated_at": 0.0},
+        "heartbeat_events": [],
     },
 }
 
@@ -44,6 +49,45 @@ IDLE_HARD_TASK: Dict[str, Any] = {
     "result": "",
     "id": None,
 }
+
+# Desktop pet visibility. Effective visible = not face_open and not user_hidden.
+_pet: Dict[str, Any] = {
+    "visible": True,
+    "face_open": False,
+    "user_hidden": False,
+}
+
+
+def _pet_effective() -> bool:
+    return (not _pet["face_open"]) and (not _pet["user_hidden"])
+
+
+def get_pet() -> Dict[str, Any]:
+    with _lock:
+        return {
+            "visible": _pet_effective(),
+            "face_open": bool(_pet["face_open"]),
+            "user_hidden": bool(_pet["user_hidden"]),
+        }
+
+
+def set_pet_visibility(
+    *,
+    face_open: Optional[bool] = None,
+    user_hidden: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Update pet mutex flags and return the public snapshot."""
+    with _lock:
+        if face_open is not None:
+            _pet["face_open"] = bool(face_open)
+        if user_hidden is not None:
+            _pet["user_hidden"] = bool(user_hidden)
+        _pet["visible"] = _pet_effective()
+        return {
+            "visible": _pet["visible"],
+            "face_open": bool(_pet["face_open"]),
+            "user_hidden": bool(_pet["user_hidden"]),
+        }
 
 
 def get_emotion() -> Dict[str, Any]:
@@ -291,5 +335,10 @@ def status_snapshot() -> Dict[str, Any]:
             "confirm": get_confirm(),
             "jobs": list_jobs(),
             "presence": dict(_state["presence"]),
+            "pet": {
+                "visible": _pet_effective(),
+                "face_open": bool(_pet["face_open"]),
+                "user_hidden": bool(_pet["user_hidden"]),
+            },
             "timestamp": time.time(),
         }

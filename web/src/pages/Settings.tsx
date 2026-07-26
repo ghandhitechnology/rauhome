@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link } from '../router'
-import { api, type AuthProvider, type Catalog } from '../api'
+import {
+  api,
+  type AuthProvider,
+  type Catalog,
+  type ElevenVoice,
+  type VoicePreset,
+  type VoiceStatus,
+} from '../api'
 import './Settings.css'
 
 /** Chat slots — the three that share a provider/model picker. */
@@ -20,15 +27,39 @@ export default function Settings() {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
   const [dirty, setDirty] = useState(false)
+  const [accountVoices, setAccountVoices] = useState<ElevenVoice[]>([])
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null)
+  const [voiceLoadError, setVoiceLoadError] = useState('')
 
   const [loadError, setLoadError] = useState('')
 
   async function reload() {
     setLoadError('')
-    const [m, a, c] = await Promise.all([api.models(), api.auth(), api.catalog()])
+    const [m, a, c, v] = await Promise.all([
+      api.models(),
+      api.auth(),
+      api.catalog(),
+      api.voiceStatus(),
+    ])
     setModels(m)
     setAuth(a.providers || [])
     setCatalog(c)
+    setVoiceStatus(v)
+    if ((a.providers || []).some((p: AuthProvider) => p.id === 'elevenlabs' && p.configured)) {
+      void loadAccountVoices()
+    } else {
+      setAccountVoices([])
+    }
+  }
+
+  async function loadAccountVoices() {
+    setVoiceLoadError('')
+    try {
+      const result = await api.elevenVoices()
+      setAccountVoices(result.voices || [])
+    } catch (e: any) {
+      setVoiceLoadError(e?.message || String(e))
+    }
   }
 
   useEffect(() => {
@@ -99,8 +130,23 @@ export default function Settings() {
         stt: models.stt,
       })
       setModels(saved)
+      // Server clamps effort to the new provider/model capabilities.
+      try {
+        const ef = await api.effort()
+        if (ef && typeof ef === 'object') {
+          setModels((prev: any) => ({
+            ...prev,
+            face: { ...prev.face, effort: ef.face ?? prev.face?.effort },
+            subagent: { ...prev.subagent, effort: ef.subagent ?? prev.subagent?.effort },
+            dream: { ...prev.dream, effort: ef.dream ?? prev.dream?.effort },
+          }))
+        }
+      } catch {
+        /* effort refresh is best-effort */
+      }
+      setVoiceStatus(await api.voiceStatus())
       setDirty(false)
-      flash('Models saved — hot-swapped for new requests.')
+      flash('Voice and model settings saved — new voice sessions use them immediately.')
     } catch (e: any) {
       flash(e.message || String(e))
     } finally {
@@ -123,6 +169,10 @@ export default function Settings() {
       setAuth(saved.providers || [])
       setDrafts((d) => ({ ...d, [id]: '' }))
       setChecks((c) => ({ ...c, [id]: { status: 'ok', detail: res.detail || 'Connected.' } }))
+      if (id === 'elevenlabs') void loadAccountVoices()
+      if (id === 'elevenlabs' || id === 'deepgram' || id === 'codex') {
+        api.voiceStatus().then(setVoiceStatus).catch(() => {})
+      }
     } catch (e: any) {
       setChecks((c) => ({ ...c, [id]: { status: 'bad', detail: e?.message || String(e) } }))
     } finally {
@@ -152,6 +202,10 @@ export default function Settings() {
       const res = await api.clearAuth(id)
       setAuth(res.providers || [])
       setChecks((c) => ({ ...c, [id]: { status: 'idle' } }))
+      if (id === 'elevenlabs') setAccountVoices([])
+      if (id === 'elevenlabs' || id === 'deepgram' || id === 'codex') {
+        api.voiceStatus().then(setVoiceStatus).catch(() => {})
+      }
       flash(`${id} disconnected.`)
     } catch (e: any) {
       flash(e.message || String(e))
@@ -162,6 +216,62 @@ export default function Settings() {
 
   function openUrl(url?: string) {
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  function choosePreset(preset: VoicePreset) {
+    setDirty(true)
+    setModels((prev: any) => ({
+      ...prev,
+      tts: {
+        ...prev.tts,
+        provider: 'elevenlabs',
+        preset: preset.id,
+        voice_id: preset.voice_id,
+        effect: preset.effect,
+        voice_settings: { ...preset.settings },
+      },
+    }))
+  }
+
+  function chooseAccountVoice(voiceId: string) {
+    setDirty(true)
+    setModels((prev: any) => ({
+      ...prev,
+      tts: {
+        ...prev.tts,
+        provider: 'elevenlabs',
+        preset: 'custom',
+        voice_id: voiceId,
+        effect: 'none',
+      },
+    }))
+  }
+
+  async function previewVoice() {
+    const tts = models.tts || {}
+    if (!tts.voice_id) {
+      flash('Choose a voice or enter a voice ID first.')
+      return
+    }
+    setBusy('voice-preview')
+    try {
+      const blob = await api.previewVoice({
+        voice_id: tts.voice_id,
+        model: tts.model,
+        effect: tts.effect || 'none',
+        voice_settings: tts.voice_settings,
+      })
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audio.addEventListener('ended', () => URL.revokeObjectURL(url), { once: true })
+      audio.addEventListener('error', () => URL.revokeObjectURL(url), { once: true })
+      await audio.play()
+      flash('Playing the exact voice Rau will use.')
+    } catch (e: any) {
+      flash(e?.message || String(e))
+    } finally {
+      setBusy('')
+    }
   }
 
   async function openComposio() {
@@ -286,50 +396,124 @@ export default function Settings() {
           )
         })}
 
-        {configured.has('elevenlabs') && (
-          <div className="slot">
-            <div className="slot-title">
-              <h3>Voice</h3>
-              <span className="slot-note">Which ElevenLabs voice speaks the face's replies.</span>
+        <div className="slot voice-config">
+          <div className="slot-title">
+            <h3>Voice</h3>
+            <span className="slot-note">
+              Four ready-made personalities, or any ElevenLabs voice your key can access.
+            </span>
+          </div>
+
+          {!configured.has('elevenlabs') && (
+            <div className="notice bad voice-connect-note">
+              ElevenLabs is not connected. Paste your own key in Connections to enable previews and
+              spoken replies.
             </div>
-            <div className="slot-fields">
-              <div className="field">
-                <label>Voice</label>
-                <select
-                  value={models.tts?.voice_id || ''}
-                  onChange={(e) => {
-                    setDirty(true)
-                    setModels((p: any) => ({ ...p, tts: { ...p.tts, voice_id: e.target.value } }))
-                  }}
-                >
-                  {catalog.voices.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.label}
-                      {v.note ? ` — ${v.note}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>TTS model</label>
-                <select
-                  value={models.tts?.model || ''}
-                  onChange={(e) => {
-                    setDirty(true)
-                    setModels((p: any) => ({ ...p, tts: { ...p.tts, model: e.target.value } }))
-                  }}
-                >
-                  {catalog.tts_models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                      {m.note ? ` — ${m.note}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
+          )}
+
+          <div className="voice-preset-grid">
+            {(catalog.voice_presets || []).map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                className={`voice-preset ${models.tts?.preset === preset.id ? 'selected' : ''}`}
+                onClick={() => choosePreset(preset)}
+              >
+                <strong>{preset.label}</strong>
+                <span>{preset.note}</span>
+                <em>{preset.voice_name}</em>
+              </button>
+            ))}
+          </div>
+
+          <div className="slot-fields voice-advanced">
+            <div className="field">
+              <label>Your ElevenLabs voices</label>
+              <select
+                value={
+                  accountVoices.some((v) => v.id === models.tts?.voice_id)
+                    ? models.tts.voice_id
+                    : ''
+                }
+                disabled={!configured.has('elevenlabs') || !accountVoices.length}
+                onChange={(e) => chooseAccountVoice(e.target.value)}
+              >
+                <option value="">
+                  {configured.has('elevenlabs')
+                    ? accountVoices.length
+                      ? 'choose an account voice…'
+                      : 'loading voices…'
+                    : 'connect a key first'}
+                </option>
+                {accountVoices.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.label}
+                    {v.labels?.age ? ` · ${v.labels.age}` : ''}
+                    {v.labels?.gender ? ` · ${v.labels.gender}` : ''}
+                  </option>
+                ))}
+              </select>
+              {voiceLoadError && <span className="field-hint bad">{voiceLoadError}</span>}
+            </div>
+            <div className="field">
+              <label>Custom voice ID</label>
+              <input
+                value={models.tts?.voice_id || ''}
+                placeholder="paste an ElevenLabs voice ID"
+                spellCheck={false}
+                onChange={(e) => chooseAccountVoice(e.target.value.trim())}
+              />
             </div>
           </div>
-        )}
+
+          <div className="slot-fields">
+            <div className="field">
+              <label>TTS model</label>
+              <select
+                value={models.tts?.model || ''}
+                onChange={(e) => updateSlot('tts', 'model', e.target.value)}
+              >
+                {catalog.tts_models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                    {m.note ? ` — ${m.note}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Voice effect</label>
+              <select
+                value={models.tts?.effect || 'none'}
+                onChange={(e) => updateSlot('tts', 'effect', e.target.value)}
+              >
+                {(catalog.voice_effects || []).map((effect) => (
+                  <option key={effect.id} value={effect.id}>
+                    {effect.label} — {effect.note}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="row">
+            <button
+              className="btn sm"
+              disabled={!configured.has('elevenlabs') || busy === 'voice-preview'}
+              onClick={previewVoice}
+            >
+              {busy === 'voice-preview' && <i className="spinner" />}
+              {busy === 'voice-preview' ? 'Generating…' : 'Preview voice'}
+            </button>
+            <button
+              className="btn sm ghost"
+              disabled={!configured.has('elevenlabs')}
+              onClick={() => loadAccountVoices()}
+            >
+              Refresh account voices
+            </button>
+          </div>
+        </div>
 
         {(() => {
           const stt = models.stt || {}
@@ -344,17 +528,22 @@ export default function Settings() {
               <div className="slot-title">
                 <h3>Hearing</h3>
                 <span className="slot-note">
-                  Speech-to-text for voice mode.
-                  {sttMeta?.partials
+                  Speech-to-text for voice mode.{' '}
+                  {stt.provider === 'auto' && voiceStatus
+                    ? `Currently resolves to ${voiceStatus.stt.label}.`
+                    : ''}
+                  {stt.provider !== 'auto' && sttMeta?.partials
                     ? ' This backend streams a live transcript as you speak.'
-                    : ' This backend transcribes once you stop speaking — no live transcript.'}
+                    : stt.provider !== 'auto'
+                      ? ' This backend transcribes once you stop speaking — no live transcript.'
+                      : ''}
                 </span>
               </div>
 
               {!sttUsable && (
                 <div className="notice bad" style={{ marginBottom: '0.8rem' }}>
-                  No key for {sttMeta?.label} — voice mode will fall back to local whisper until
-                  you connect one.
+                  No key for {sttMeta?.label} — automatic fallback will use the best connected
+                  backend.
                 </div>
               )}
 
@@ -362,7 +551,7 @@ export default function Settings() {
                 <div className="field">
                   <label>Provider</label>
                   <select
-                    value={stt.provider || 'local'}
+                    value={stt.provider || 'auto'}
                     onChange={(e) => {
                       const p = e.target.value
                       const first = catalog.stt_providers?.[p]?.models?.[0]?.id || ''
@@ -386,9 +575,12 @@ export default function Settings() {
                   <label>Model</label>
                   <select
                     value={stt.model || ''}
+                    disabled={stt.provider === 'auto'}
                     onChange={(e) => updateSlot('stt', 'model', e.target.value)}
                   >
-                    <option value="">choose…</option>
+                    <option value="">
+                      {stt.provider === 'auto' ? 'chosen automatically' : 'choose…'}
+                    </option>
                     {sttModels.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.label}
@@ -400,12 +592,23 @@ export default function Settings() {
               </div>
 
               <div className="field" style={{ marginBottom: 0 }}>
-                <label>Language (blank = auto-detect)</label>
-                <input
+                <label>Recognition language</label>
+                <select
                   value={stt.language || ''}
-                  placeholder="en"
                   onChange={(e) => updateSlot('stt', 'language', e.target.value)}
-                />
+                >
+                  <option value="">Provider default / detect when supported</option>
+                  <option value="en">English</option>
+                  <option value="ko">Korean</option>
+                  <option value="ja">Japanese</option>
+                  <option value="zh">Chinese</option>
+                  <option value="es">Spanish</option>
+                  <option value="multi">Multilingual / code-switching</option>
+                </select>
+                <span className="field-hint">
+                  Deepgram Nova-3 supports Korean as <span className="mono">ko</span>; its multilingual
+                  mode covers a smaller set of languages.
+                </span>
               </div>
             </div>
           )
@@ -435,6 +638,7 @@ export default function Settings() {
             const c = checks[p.id] || { status: 'idle' as const }
             return (
               <article
+                id={`connection-${p.id}`}
                 key={p.id}
                 className={`auth-card ${p.configured ? 'ok' : ''} ${c.status === 'bad' ? 'bad' : ''}`}
                 style={{ '--i': i } as React.CSSProperties}

@@ -21,7 +21,7 @@ DANGEROUS_MCP = re.compile(
     re.I,
 )
 
-DANGEROUS_CUA = {"type", "key", "click", "double_click", "drag"}
+DANGEROUS_CUA = {"type", "key", "click", "double_click", "drag", "move"}
 def _target_path(given: str) -> Path:
     """
     The path the file tools will actually act on.

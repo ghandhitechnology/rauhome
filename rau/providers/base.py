@@ -17,6 +17,9 @@ class Message:
     #: Set on a role="tool" turn, binding the result back to the call it answers.
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
+    #: Optional images for multimodal tool results (e.g. CUA screenshots).
+    #: Each entry: {"mime": "image/png", "b64": "..."}.
+    images: Optional[List[Dict[str, str]]] = None
 
 
 @dataclass
@@ -169,14 +172,95 @@ class ChatProvider(ABC):
 #: serialized result is clamped before it ever reaches a wire encoder.
 TOOL_RESULT_LIMIT = 12000
 
+#: Keys that must never be JSON-dumped into a tool-result text blob.
+_IMAGE_RESULT_KEYS = frozenset({"image_b64", "images"})
+
+
+def tool_result_images(result: Any) -> List[Dict[str, str]]:
+    """Extract image payloads from a CUA (or similar) tool result dict."""
+    if not isinstance(result, dict):
+        return []
+    out: List[Dict[str, str]] = []
+    b64 = result.get("image_b64")
+    if isinstance(b64, str) and len(b64) > 200 and not b64.endswith("..."):
+        mime = result.get("mime") if isinstance(result.get("mime"), str) else "image/png"
+        out.append({"mime": mime or "image/png", "b64": b64})
+    raw_images = result.get("images")
+    if isinstance(raw_images, list):
+        for img in raw_images:
+            if not isinstance(img, dict):
+                continue
+            data = img.get("b64") or img.get("data")
+            if isinstance(data, str) and len(data) > 200:
+                mime = img.get("mime") if isinstance(img.get("mime"), str) else "image/png"
+                out.append({"mime": mime or "image/png", "b64": data})
+    return out
+
 
 def tool_result_text(result: Any, limit: int = TOOL_RESULT_LIMIT) -> str:
-    """Serialize a tool result for transport, clamped to `limit` characters."""
+    """Serialize a tool result for transport, clamped to `limit` characters.
+
+    Image bytes are stripped — they travel on `Message.images` instead.
+    """
+    payload = result
+    if isinstance(result, dict) and _IMAGE_RESULT_KEYS & set(result):
+        payload = {
+            key: value
+            for key, value in result.items()
+            if key not in _IMAGE_RESULT_KEYS
+        }
+        if "image_b64" in result and "image_b64_len" not in payload:
+            b64 = result.get("image_b64")
+            if isinstance(b64, str):
+                payload["image_b64_len"] = len(b64)
+        payload["has_image"] = bool(tool_result_images(result))
     try:
-        text = json.dumps(result, ensure_ascii=False)
+        text = json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
-        text = str(result)
+        text = str(payload)
     return text[:limit]
+
+
+def tool_message_content_openai(message: Message) -> Any:
+    """OpenAI tool-message content: plain string, or text+image_url parts."""
+    if not message.images:
+        return message.content
+    parts: List[Dict[str, Any]] = [{"type": "text", "text": message.content or ""}]
+    for img in message.images:
+        mime = img.get("mime") or "image/png"
+        b64 = img.get("b64") or ""
+        if not b64:
+            continue
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            }
+        )
+    return parts if len(parts) > 1 else message.content
+
+
+def tool_message_content_anthropic(message: Message) -> Any:
+    """Anthropic tool_result content: string or text+image blocks."""
+    if not message.images:
+        return message.content
+    parts: List[Dict[str, Any]] = [{"type": "text", "text": message.content or ""}]
+    for img in message.images:
+        mime = img.get("mime") or "image/png"
+        b64 = img.get("b64") or ""
+        if not b64:
+            continue
+        parts.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": b64,
+                },
+            }
+        )
+    return parts if len(parts) > 1 else message.content
 
 
 def orphan_tool_prose(m: Message) -> str:
@@ -267,7 +351,11 @@ def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
             )
             # Every result has to land before any other role resumes.
             out.extend(
-                {"role": "tool", "tool_call_id": tc.id, "content": res.content}
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": tool_message_content_openai(res),
+                }
                 for tc, res in paired
             )
         elif m.content:

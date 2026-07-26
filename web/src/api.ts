@@ -21,6 +21,33 @@ export type VerifyResult = {
 
 export type CatalogModel = { id: string; label: string; note?: string }
 
+export type VoiceSettings = {
+  stability: number
+  similarity_boost: number
+  style: number
+  speed: number
+  use_speaker_boost: boolean
+}
+
+export type VoicePreset = {
+  id: string
+  label: string
+  note: string
+  voice_id: string
+  voice_name: string
+  effect: 'none' | 'robot' | 'childlike'
+  settings: VoiceSettings
+}
+
+export type ElevenVoice = {
+  id: string
+  label: string
+  category: string
+  description: string
+  labels: Record<string, string>
+  preview_url?: string
+}
+
 /** One background job. `hard_task` in /api/status is a view of the newest. */
 export type Job = {
   id: string
@@ -46,6 +73,8 @@ export type Catalog = {
   provider_auth: Record<string, string>
   slots: { id: string; label: string; blurb: string; prefers: string }[]
   voices: { id: string; label: string; note?: string }[]
+  voice_presets: VoicePreset[]
+  voice_effects: CatalogModel[]
   tts_models: { id: string; label: string; note?: string }[]
   stt_providers: Record<string, SttProviderMeta>
 }
@@ -53,15 +82,18 @@ export type Catalog = {
 export type VoiceStatus = {
   stt: {
     provider: string
+    configured_provider: string
     model: string
     language: string
     /** The configured backend was unusable and we degraded to local whisper. */
     fallback: boolean
     partials: boolean
     label: string
+    reason: string
   }
   available: Record<string, boolean>
   tts_ready: boolean
+  tts: { voice_id: string; preset: string; effect: string }
 }
 
 export type SetupState = {
@@ -96,8 +128,55 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
+async function blobReq(path: string, init?: RequestInit): Promise<Blob> {
+  const res = await fetch(BASE + path, {
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    ...init,
+  })
+  if (!res.ok) {
+    let detail = await res.text()
+    try {
+      const parsed = JSON.parse(detail)
+      detail = parsed.error || parsed.detail || detail
+    } catch {
+      // Plain-text provider errors are already useful.
+    }
+    throw new Error(detail || res.statusText)
+  }
+  return res.blob()
+}
+
+export type PermissionMode = 'auto' | 'bypass' | 'readonly'
+
+export type Permissions = {
+  subagents: PermissionMode
+  room: PermissionMode
+  heartbeats: PermissionMode
+}
+
 export const api = {
   status: () => req<any>('/api/status'),
+  getPet: () =>
+    req<{ visible: boolean; face_open: boolean; user_hidden: boolean }>('/api/pet'),
+  setPetVisibility: (body: {
+    face_open?: boolean
+    user_hidden?: boolean
+    visible?: boolean
+  }) =>
+    req<{ ok: boolean; visible: boolean; face_open: boolean; user_hidden: boolean }>(
+      '/api/pet/visibility',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  getPermissions: () =>
+    req<{ permissions: Permissions; mode: PermissionMode }>('/api/permissions'),
+  setPermissions: (body: Partial<Permissions> & { mode?: PermissionMode }) =>
+    req<{ ok: boolean; permissions: Permissions; mode: PermissionMode }>(
+      '/api/permissions',
+      {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      },
+    ),
   identity: () => req<any>('/api/identity'),
   fresh: () => req<any>('/api/identity/fresh', { method: 'POST', body: '{}' }),
   hard: (identity: string, backstory: string) =>
@@ -113,6 +192,18 @@ export const api = {
   setupState: () => req<SetupState>('/api/setup/state'),
   catalog: () => req<Catalog>('/api/models/catalog'),
   voiceStatus: () => req<VoiceStatus>('/api/voice/status'),
+  elevenVoices: () => req<{ ok: boolean; voices: ElevenVoice[] }>('/api/voice/voices'),
+  previewVoice: (body: {
+    text?: string
+    voice_id: string
+    model: string
+    effect: string
+    voice_settings: VoiceSettings
+  }) =>
+    blobReq('/api/voice/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   verifyAuth: (providerId: string, key?: string) =>
     req<VerifyResult>(`/api/auth/${providerId}/verify`, {
       method: 'POST',

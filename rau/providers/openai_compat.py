@@ -157,9 +157,9 @@ class OpenAICompatProvider(ChatProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if effort:
-            # OpenAI o-series / compatible gateways
-            payload["reasoning_effort"] = effort if effort != "medium" else "medium"
+        from rau.providers.reasoning import apply_reasoning_payload
+
+        apply_reasoning_payload(payload, self.name, model, effort)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -216,8 +216,9 @@ class OpenAICompatProvider(ChatProvider):
             "temperature": temperature,
             "stream": True,
         }
-        if effort:
-            payload["reasoning_effort"] = effort
+        from rau.providers.reasoning import apply_reasoning_payload
+
+        apply_reasoning_payload(payload, self.name, model, effort)
         data = json.dumps(payload).encode("utf-8")
         headers = {
             "Authorization": f"Bearer {key}",
@@ -278,8 +279,9 @@ class OpenAICompatProvider(ChatProvider):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        if effort:
-            payload["reasoning_effort"] = effort
+        from rau.providers.reasoning import apply_reasoning_payload
+
+        apply_reasoning_payload(payload, self.name, model, effort)
 
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",

@@ -38,6 +38,7 @@ class DeepgramStt(SttProvider):
                 "channels": "1",
                 "interim_results": "true",
                 "punctuate": "true",
+                "smart_format": "true",
                 # Deepgram tells us when the speaker paused, which is more
                 # reliable than inferring it from our own energy VAD.
                 "endpointing": "300",

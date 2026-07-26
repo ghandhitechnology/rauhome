@@ -22,6 +22,13 @@
   pointer-events: none;
 }
 
+.face-top-left {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  pointer-events: auto;
+}
+
 .face-back,
 .face-toggle {
   pointer-events: auto;
@@ -46,6 +53,43 @@
   color: #fff;
   border-color: rgba(255, 255, 255, 0.3);
   background: rgba(30, 24, 22, 0.7);
+}
+
+.room-style-seg {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(12, 10, 10, 0.5);
+  backdrop-filter: blur(10px);
+}
+
+.room-style-seg button {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--dur-2) var(--ease),
+    color var(--dur-2) var(--ease);
+}
+
+.room-style-seg button:hover {
+  color: var(--ink-2);
+}
+
+.room-style-seg button.is-active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
 }
 
 .face-toggle.on {
@@ -155,7 +199,8 @@
   left: 50%;
   bottom: 1.6rem;
   transform: translateX(-50%);
-  z-index: 10;
+  /* Above voice-hud so the permissions popover is never buried under it. */
+  z-index: 20;
   width: min(560px, calc(100vw - 2.5rem));
 }
 

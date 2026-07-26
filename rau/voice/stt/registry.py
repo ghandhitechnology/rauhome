@@ -9,11 +9,26 @@ from rau.voice.stt.base import SttProvider
 
 #: provider id -> env var that must be present for it to work.
 STT_AUTH: Dict[str, str] = {
+    "auto": "",
     "deepgram": "DEEPGRAM_API_KEY",
     "elevenlabs": "ELEVENLABS_API_KEY",
     "openai": "OPENAI_API_KEY",
     "local": "",  # no credential needed
 }
+
+STT_DEFAULT_MODELS: Dict[str, str] = {
+    "deepgram": "nova-3",
+    "elevenlabs": "scribe_v2",
+    "openai": "gpt-4o-transcribe",
+    "local": "small",
+}
+
+
+def _best_available() -> str:
+    for provider in ("deepgram", "elevenlabs", "openai"):
+        if has_secret(STT_AUTH[provider]):
+            return provider
+    return "local"
 
 
 def _build(provider: str, model: str, language: str) -> SttProvider:
@@ -49,14 +64,35 @@ def resolve_stt() -> Tuple[str, Dict[str, Any]]:
     works, so we degrade to it rather than raising.
     """
     slot = get_slot("stt")
-    provider = str(slot.get("provider") or "local").lower()
+    configured = str(slot.get("provider") or "auto").lower()
+    provider = configured
+    fallback_reason = ""
+    if provider == "auto":
+        provider = _best_available()
+        fallback_reason = f"automatic selection chose {provider}"
     if provider not in STT_AUTH:
-        provider = "local"
-        slot = {**slot, "provider": "local", "model": "small", "_fallback": True}
+        fallback_reason = f"unknown backend {configured!r}"
+        provider = _best_available()
     env = STT_AUTH.get(provider, "")
     if env and not has_secret(env):
-        provider = "local"
-        slot = {**slot, "provider": "local", "model": "small", "_fallback": True}
+        fallback_reason = f"{configured} key is not configured"
+        provider = _best_available()
+
+    # A model ID belongs to one provider. Never hand Deepgram's `nova-3` to
+    # Scribe just because the configured backend had to fall back.
+    configured_model = str(slot.get("model") or "")
+    if configured != provider or configured == "auto":
+        model = STT_DEFAULT_MODELS[provider]
+    else:
+        model = configured_model or STT_DEFAULT_MODELS[provider]
+    slot = {
+        **slot,
+        "provider": provider,
+        "model": model,
+        "_configured_provider": configured,
+        "_fallback": configured not in ("auto", provider),
+        "_reason": fallback_reason,
+    }
     return provider, slot
 
 

@@ -35,16 +35,34 @@ def _skills_reply() -> str:
 
 
 def _effort(arg: str) -> str:
+    from rau.providers.reasoning import clamp_effort, reasoning_for
+
     models = load_models()
-    current = str((models.get("face") or {}).get("effort") or "medium")
+    face = models.get("face") or {}
+    provider = str(face.get("provider") or "openrouter")
+    model = str(face.get("model") or "")
+    cap = reasoning_for(provider, model)
+    current = str(face.get("effort") or "medium")
     requested = arg.strip().lower()
+    if not cap.get("supported"):
+        return (
+            f"Face model {model or '(unset)'} has no reasoning control "
+            f"(effort is currently stored as {current})."
+        )
+    allowed = list(cap.get("levels") or [])
+    choices = ", ".join(allowed) if allowed else ", ".join(EFFORT_LEVELS)
     if not requested:
-        return f"Face effort is {current}. Choose: {', '.join(EFFORT_LEVELS)}."
+        return f"Face effort is {current}. Choose: {choices}."
     if requested not in EFFORT_LEVELS:
-        return f"Unknown effort '{requested}'. Choose: {', '.join(EFFORT_LEVELS)}."
-    models.setdefault("face", {})["effort"] = requested
+        return f"Unknown effort '{requested}'. Choose: {choices}."
+    if requested not in allowed:
+        return f"'{requested}' is not valid for {model}. Choose: {choices}."
+    clamped = clamp_effort(provider, model, requested)
+    if clamped is None:
+        return f"Face model {model} has no reasoning control."
+    models.setdefault("face", {})["effort"] = clamped
     save_models(models)
-    return f"Face effort set to {requested}."
+    return f"Face effort set to {clamped}."
 
 
 def _goal(arg: str) -> str:

@@ -1,0 +1,31 @@
+[package]
+name = "rau-pet"
+version = "0.1.0"
+description = "Rau desktop pet companion"
+authors = ["Rau"]
+edition = "2021"
+
+[lib]
+name = "rau_pet_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+  "NSWindow",
+  "NSApplication",
+  "NSScreen",
+  "NSEvent",
+] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSThread"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
