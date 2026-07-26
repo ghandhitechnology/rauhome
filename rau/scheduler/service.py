@@ -123,6 +123,15 @@ class SchedulerService:
         self.store.initialize()
         self._stop.clear()
         self._wake.clear()
+        if "activity_retention" not in self._timers:
+            from rau.activity import ACTIVITY
+
+            self.register_timer(
+                "activity_retention",
+                lambda: ACTIVITY.purge(retention_days=7),
+                interval_sec=24 * 3600.0,
+                initial_delay_sec=24 * 3600.0,
+            )
         if not self._listener_registered:
             BUS.on("job_done", self._job_terminal)
             BUS.on("job_failed", self._job_terminal)

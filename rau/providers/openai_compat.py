@@ -11,6 +11,7 @@ from rau.providers.base import (
     ChatProvider,
     ChatResult,
     Message,
+    ReasoningDelta,
     StreamDone,
     TextDelta,
     ToolCallDelta,
@@ -23,6 +24,33 @@ from rau.providers.base import (
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_STREAM_LINE_BYTES = 1024 * 1024
 MAX_MALFORMED_STREAM_EVENTS = 16
+_STANDARD_URL_OPEN = urllib.request.urlopen
+
+
+def _readable_reasoning(delta: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
+    """Normalize OpenRouter/OpenAI/DeepSeek reasoning without exposing opaque data."""
+    text_parts: List[str] = []
+    direct = delta.get("reasoning_content")
+    if not isinstance(direct, str):
+        direct = delta.get("reasoning")
+    if isinstance(direct, str) and direct:
+        text_parts.append(direct)
+    details = delta.get("reasoning_details")
+    internal = details if isinstance(details, list) else []
+    for item in internal:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "")
+        if "encrypted" in kind:
+            continue
+        candidate = item.get("text")
+        if not isinstance(candidate, str):
+            candidate = item.get("summary")
+        if isinstance(candidate, str) and candidate:
+            text_parts.append(candidate)
+    # Some OpenRouter providers mirror the same readable text in both the
+    # convenience field and reasoning_details. Avoid a duplicated timeline.
+    return "".join(dict.fromkeys(text_parts)), list(internal)
 
 
 def _choice_delta(chunk: Any) -> Dict[str, Any]:
@@ -190,9 +218,12 @@ class OpenAICompatProvider(ChatProvider):
         content = msg.get("content") or ""
         if not isinstance(content, str):
             content = str(content)
+        reasoning, reasoning_details = _readable_reasoning(msg)
         return ChatResult(
             content=content,
             tool_calls=parse_tool_calls_openai(body),
+            reasoning=reasoning,
+            reasoning_details=reasoning_details or None,
             raw=body,
         )
 
@@ -299,6 +330,8 @@ class OpenAICompatProvider(ChatProvider):
         # index -> {"id", "name", "args"}; `arguments` arrives in fragments and
         # is only valid JSON once the whole call has streamed in.
         parts: Dict[int, Dict[str, str]] = {}
+        reasoning: List[str] = []
+        reasoning_details: List[Dict[str, Any]] = []
         malformed = 0
 
         with self._open(req, timeout=120) as resp:
@@ -316,6 +349,18 @@ class OpenAICompatProvider(ChatProvider):
                     continue
 
                 delta = _choice_delta(chunk)
+
+                thought, continuation = _readable_reasoning(delta)
+                if continuation:
+                    reasoning_details.extend(continuation)
+                if thought:
+                    reasoning.append(thought)
+                    yield ReasoningDelta(
+                        thought,
+                        "deepseek"
+                        if self.name == "deepseek"
+                        else "openrouter",
+                    )
 
                 token = delta.get("content") or ""
                 if isinstance(token, str) and token:
@@ -365,6 +410,8 @@ class OpenAICompatProvider(ChatProvider):
             ChatResult(
                 content="".join(text).strip(),
                 tool_calls=assemble_tool_calls(parts),
+                reasoning="".join(reasoning).strip(),
+                reasoning_details=reasoning_details or None,
             )
         )
 

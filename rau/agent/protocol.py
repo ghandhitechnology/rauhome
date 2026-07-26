@@ -13,16 +13,23 @@ class AgentStep:
     job_id: str
     ordinal: int
     title: str
+    goal: str = ""
     executor: str = "python"
     state: str = "queued"
+    effect_class: str = "read"
     capabilities: List[str] = field(default_factory=list)
     dependencies: List[str] = field(default_factory=list)
+    expected_output: Dict[str, Any] = field(default_factory=dict)
     expected_evidence: List[str] = field(default_factory=list)
     preconditions: List[Dict[str, Any]] = field(default_factory=list)
     result: Dict[str, Any] = field(default_factory=dict)
     evidence: List[Dict[str, Any]] = field(default_factory=list)
     attempt: int = 0
+    retry_budget: int = 1
     strategy: str = "execute the requested goal and verify the result"
+    timeout_sec: float = 300.0
+    concurrency_key: str = ""
+    plan_revision: int = 1
     idempotency_key: Optional[str] = None
     effect_state: str = "none"
     terminal_reason: str = ""
@@ -40,6 +47,7 @@ class AgentPlan:
     capabilities: List[str] = field(default_factory=list)
     expected_evidence: List[str] = field(default_factory=list)
     budget: Dict[str, Any] = field(default_factory=dict)
+    revision: int = 1
 
     @classmethod
     def single(
@@ -58,9 +66,11 @@ class AgentPlan:
             job_id=job_id,
             ordinal=0,
             title=goal[:300],
+            goal=goal,
             executor=executor,
             capabilities=capabilities,
             expected_evidence=["structured completion summary", "verification performed"],
+            expected_output={"type": "job_result"},
         )
         return cls(
             goal=goal,
@@ -74,6 +84,55 @@ class AgentPlan:
         value = asdict(self)
         value["steps"] = [step.to_dict() for step in self.steps]
         return value
+
+    def validate(self, *, max_steps: int = 24) -> None:
+        if not self.steps or len(self.steps) > max_steps:
+            raise ValueError(f"plan must contain 1..{max_steps} steps")
+        ids = [step.id for step in self.steps]
+        if len(ids) != len(set(ids)):
+            raise ValueError("plan step ids must be unique")
+        known = set(ids)
+        for step in self.steps:
+            if not step.goal.strip():
+                raise ValueError(f"step {step.id} has no goal")
+            if step.executor not in {"python", "pi"}:
+                raise ValueError(f"step {step.id} has invalid executor")
+            if step.effect_class not in {
+                "read",
+                "local_mutation",
+                "external_mutation",
+                "unknown",
+            }:
+                raise ValueError(f"step {step.id} has invalid effect class")
+            if any(dep not in known or dep == step.id for dep in step.dependencies):
+                raise ValueError(f"step {step.id} has an invalid dependency")
+            if step.retry_budget < 0 or step.timeout_sec <= 0:
+                raise ValueError(f"step {step.id} has invalid budget")
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        by_id = {step.id: step for step in self.steps}
+
+        def visit(step_id: str) -> None:
+            if step_id in visiting:
+                raise ValueError("plan dependencies contain a cycle")
+            if step_id in visited:
+                return
+            visiting.add(step_id)
+            for dependency in by_id[step_id].dependencies:
+                visit(dependency)
+            visiting.remove(step_id)
+            visited.add(step_id)
+
+        for step_id in ids:
+            visit(step_id)
+
+    def ready_steps(self) -> List[AgentStep]:
+        completed = {step.id for step in self.steps if step.state == "completed"}
+        return [
+            step
+            for step in self.steps
+            if step.state == "queued" and set(step.dependencies) <= completed
+        ]
 
 
 @dataclass

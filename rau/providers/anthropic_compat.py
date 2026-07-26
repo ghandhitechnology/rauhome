@@ -11,6 +11,7 @@ from rau.providers.base import (
     ChatProvider,
     ChatResult,
     Message,
+    ReasoningDelta,
     StreamDone,
     TextDelta,
     ToolCall,
@@ -139,7 +140,7 @@ def _to_anthropic_messages(messages: List[Message]) -> tuple[str, List[Dict[str,
                 end += 1
             paired, orphans = pair_tool_calls(m, msgs[i + 1 : end])
 
-            blocks: List[Dict[str, Any]] = []
+            blocks: List[Dict[str, Any]] = list(m.reasoning_details or [])
             if m.content:
                 blocks.append({"type": "text", "text": m.content})
             blocks += [
@@ -164,8 +165,11 @@ def _to_anthropic_messages(messages: List[Message]) -> tuple[str, List[Dict[str,
             continue
 
         role = "assistant" if m.role == "assistant" else "user"
+        blocks = list(m.reasoning_details or []) if role == "assistant" else []
         if m.content:
-            _push(out, role, [{"type": "text", "text": m.content}])
+            blocks.append({"type": "text", "text": m.content})
+        if blocks:
+            _push(out, role, blocks)
         i += 1
 
     # Anthropic requires alternating starting with user
@@ -199,6 +203,8 @@ def _openai_tools_to_anthropic(tools: Optional[List[Dict[str, Any]]]) -> List[Di
 
 def _parse_anthropic_result(body: Dict[str, Any]) -> ChatResult:
     text_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    reasoning_blocks: List[Dict[str, Any]] = []
     tool_calls: List[ToolCall] = []
     if not isinstance(body, dict):
         raise RuntimeError("provider returned non-object JSON")
@@ -217,6 +223,13 @@ def _parse_anthropic_result(body: Dict[str, Any]) -> ChatResult:
             text = block.get("text") or ""
             if isinstance(text, str):
                 text_parts.append(text)
+        elif btype in {"thinking", "redacted_thinking"}:
+            # Preserve the complete block for Anthropic's next tool round.
+            reasoning_blocks.append(dict(block))
+            if btype == "thinking":
+                thought = block.get("thinking") or ""
+                if isinstance(thought, str):
+                    reasoning_parts.append(thought)
         elif btype == "tool_use":
             call_id = block.get("id")
             name = block.get("name")
@@ -234,6 +247,8 @@ def _parse_anthropic_result(body: Dict[str, Any]) -> ChatResult:
     return ChatResult(
         content="".join(text_parts).strip(),
         tool_calls=tool_calls,
+        reasoning="".join(reasoning_parts).strip(),
+        reasoning_details=reasoning_blocks or None,
         raw=body,
     )
 
@@ -452,6 +467,8 @@ class AnthropicCompatProvider(ChatProvider):
 
         text: List[str] = []
         parts: Dict[int, Dict[str, str]] = {}
+        reasoning: List[str] = []
+        reasoning_blocks: Dict[int, Dict[str, Any]] = {}
         malformed = 0
 
         try:
@@ -482,7 +499,9 @@ class AnthropicCompatProvider(ChatProvider):
                         if not isinstance(block, dict):
                             malformed = _malformed(self.name, malformed)
                             continue
-                        if block.get("type") == "tool_use":
+                        if block.get("type") in {"thinking", "redacted_thinking"}:
+                            reasoning_blocks[idx] = dict(block)
+                        elif block.get("type") == "tool_use":
                             # Anthropic announces name/id up front, then streams
                             # the arguments as partial JSON fragments.
                             block_id = block.get("id")
@@ -508,6 +527,28 @@ class AnthropicCompatProvider(ChatProvider):
                             if isinstance(token, str) and token:
                                 text.append(token)
                                 yield TextDelta(token)
+                        elif dtype == "thinking_delta":
+                            thought = delta.get("thinking") or ""
+                            if isinstance(thought, str) and thought:
+                                reasoning.append(thought)
+                                slot = reasoning_blocks.setdefault(
+                                    idx, {"type": "thinking", "thinking": ""}
+                                )
+                                slot["thinking"] = (
+                                    str(slot.get("thinking") or "") + thought
+                                )
+                                yield ReasoningDelta(thought, "anthropic")
+                        elif dtype == "signature_delta":
+                            # Required for a later tool continuation, but never
+                            # emitted to the public activity plane.
+                            signature = delta.get("signature") or ""
+                            if isinstance(signature, str) and signature:
+                                slot = reasoning_blocks.setdefault(
+                                    idx, {"type": "thinking", "thinking": ""}
+                                )
+                                slot["signature"] = (
+                                    str(slot.get("signature") or "") + signature
+                                )
                         elif dtype == "input_json_delta":
                             frag = delta.get("partial_json") or ""
                             if isinstance(frag, str) and frag:
@@ -544,5 +585,10 @@ class AnthropicCompatProvider(ChatProvider):
             ChatResult(
                 content="".join(text).strip(),
                 tool_calls=assemble_tool_calls(parts),
+                reasoning="".join(reasoning).strip(),
+                reasoning_details=[
+                    reasoning_blocks[index] for index in sorted(reasoning_blocks)
+                ]
+                or None,
             )
         )

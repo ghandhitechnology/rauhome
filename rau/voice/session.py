@@ -491,7 +491,7 @@ class VoiceSession:
                 name=f"rau-voice-turn-{turn.ident}",
             )
             self._active_turn = turn
-            state.add_log("user", text)
+            state.add_log("user", text, turn.turn_id)
             await self.set_phase("thinking", turn=turn)
             turn.thread.start()
 
@@ -691,7 +691,7 @@ class VoiceSession:
             if isinstance(turn.reply, brain.StreamingReply):
                 brain.commit_streamed_turn(turn.reply)
             if full:
-                state.add_log("rau", full)
+                state.add_log("rau", full, turn.turn_id)
                 if not audio_sent:
                     # Nothing was audible; hand the text over so the UI can
                     # still show what he said.
@@ -744,7 +744,7 @@ class VoiceSession:
             return
         heard = turn.heard_text()
         if heard:
-            state.add_log("rau", heard)
+            state.add_log("rau", heard, turn.turn_id)
         await self.send(
             t="say_end", interrupted=True, heard=heard, turn_id=turn.turn_id
         )
