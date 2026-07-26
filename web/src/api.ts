@@ -1,3 +1,5 @@
+import type { PanelSummary } from './panels'
+
 const BASE = ''
 
 export type AuthProvider = {
@@ -255,6 +257,14 @@ export const api = {
   mcp: () => req<any>('/api/mcp/status'),
   memory: () => req<any>('/api/memory'),
   dream: () => req<any>('/api/dream/run', { method: 'POST', body: '{}' }),
+  panels: () => req<{ panels: PanelSummary[] }>('/api/panels'),
+  clearPanels: () => req<{ ok: boolean }>('/api/panels', { method: 'DELETE' }),
+  roomProps: () => req<{ layout: Record<string, string> }>('/api/room/props'),
+  resetRoomProps: () =>
+    req<{ ok: boolean; layout: Record<string, string> }>('/api/room/props/reset', {
+      method: 'POST',
+      body: '{}',
+    }),
   chat: (text: string) =>
     req<{ ok: boolean; reply: string }>('/api/chat', {
       method: 'POST',

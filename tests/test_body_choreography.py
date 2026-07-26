@@ -109,10 +109,24 @@ class ToolRegistrationTests(unittest.TestCase):
         )
 
         # Motions and stations must also exist in the renderer's own tables.
-        motions_ts = (web / "motions.ts").read_text()
-        declared = motions_ts.split("export const MOTIONS = {", 1)[1].split("}", 1)[0]
+        # The registry is assembled from two libraries — the conversational
+        # clips and the occupational ones spread in from motionsLife.
+        declared = set()
+        for file, marker in (
+            ("motions.ts", "export const MOTIONS = {"),
+            ("motionsLife.ts", "export const LIFE_MOTIONS = {"),
+        ):
+            block = (web / file).read_text().split(marker, 1)[1].split("}", 1)[0]
+            declared.update(re.findall(r"^\s*(\w+),\s*$", block, re.M))
         for motion in choreography.MOTIONS:
-            self.assertIn(f"  {motion},", declared, f"{motion} is not a real clip")
+            self.assertIn(motion, declared, f"{motion} is not a real clip")
+        # And nothing the renderer can play is missing from the tool, or the
+        # model simply never learns that the clip exists.
+        self.assertEqual(
+            declared - {"LIFE_MOTIONS"},
+            set(choreography.MOTIONS),
+            "motions.ts and choreography.py disagree about what Rau can do",
+        )
         room_ts = (web / "room.ts").read_text()
         for station in choreography.STATIONS:
             self.assertIn(f"id: '{station}'", room_ts, f"{station} is not a real place")

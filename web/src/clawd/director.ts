@@ -61,12 +61,15 @@ export const EMPTY_SIGNALS: Signals = {
 
 /** What Clawd does once he has arrived somewhere. */
 const AMBIENT: Record<StationId, MotionName[]> = {
-  desk: ['type', 'think'],
-  window: ['gaze'],
-  shelf: ['think', 'idle'],
-  plant: ['idle', 'stretch'],
-  rug: ['idle', 'stretch'],
-  centre: ['idle', 'idle', 'wave', 'stretch'],
+  // What he actually does in each place, rather than a generic idle with a
+  // different backdrop. Weighted by repetition: he is at the desk to work, and
+  // at the window mostly to stare out of it.
+  desk: ['type', 'search', 'search', 'think', 'scribble', 'read'],
+  window: ['gaze', 'stargaze', 'stargaze', 'doze', 'ponder'],
+  shelf: ['read', 'read', 'think', 'tidy', 'idle'],
+  plant: ['water', 'tidy', 'idle', 'stretch'],
+  rug: ['sit', 'idle', 'stretch', 'groove'],
+  centre: ['idle', 'loiter', 'ponder', 'stretch', 'yawn', 'wave'],
 }
 
 const HAPPY = new Set(['happy', 'excited', 'love', 'amazed'])
@@ -147,6 +150,8 @@ export class Director {
   private speakUntil = 0
   private startleUntil = 0
   private walkBlend = 0
+  /** The clip currently carrying him across the room. */
+  private gait: MotionName = 'walk'
 
   /** Free-roam target in stage units, used when there are no stations. */
   private roamX: number | null = null
@@ -443,9 +448,14 @@ export class Director {
     const cue = this.cue
     if (!cue) return
 
+    // A cue whose motion is itself a way of moving — carry, push, tiptoe,
+    // pace — travels *in* that clip rather than walking there and then
+    // adopting it on arrival. "Carry it to the shelf" is one action.
+    const gait = cue.motion && this.isGait(cue.motion) ? cue.motion : 'walk'
+
     if (cue.station) {
       const spot = station(cue.station)
-      if (this.travelTo(this.clampX(spot.x), dt)) return
+      if (this.travelTo(this.clampX(spot.x), dt, gait)) return
       if (!this.arrived) this.markStationArrival(spot.facing)
       this.signalCueArrival()
       if (!this.cuePlayed) {
@@ -461,6 +471,12 @@ export class Director {
       return
     }
     if (this.rig.busy) return
+    // A gait that has arrived has nothing left to do; settle rather than
+    // marching on the spot at the destination.
+    if (cue.station && this.isGait(cue.motion)) {
+      this.setLoop(this.conversationPose(s))
+      return
+    }
     this.setLoop(ONE_SHOTS.includes(cue.motion) ? this.conversationPose(s) : cue.motion)
   }
 
@@ -665,32 +681,51 @@ export class Director {
     return clamp(x, this.walkRange.min, this.walkRange.max)
   }
 
-  /** Walk toward a stage-unit x. True while still travelling. */
-  private travelTo(targetX: number, dt: number): boolean {
+  /**
+   * Walk toward a stage-unit x. True while still travelling.
+   *
+   * `gait` names the clip that carries him. Anything with a `locomotion` speed
+   * qualifies — carrying something is slower and heavier than a free walk,
+   * tiptoeing is quicker and lighter — and the clip's own speed is what he
+   * actually travels at, so the legs never slide against the floor.
+   */
+  private travelTo(targetX: number, dt: number, gait: MotionName = 'walk'): boolean {
     const rig = this.rig
     const goal = this.clampX(targetX)
     const dx = goal - rig.worldX
     const dist = Math.abs(dx)
     if (dist <= 1.2) return false
 
+    const clip = MOTIONS[gait]
+    const cruise = clip.locomotion || WALK_SPEED
+
     this.arrived = false
     rig.facing = dx > 0 ? 1 : -1
     // Ease the last stretch so he does not stop dead.
-    const speed = WALK_SPEED * clamp(dist / 6, 0.35, 1)
+    const speed = cruise * clamp(dist / 6, 0.35, 1)
     const step = Math.min(dist, speed * dt)
     rig.worldX += step * rig.facing
     rig.worldX = this.clampX(rig.worldX)
-    rig.advanceLegs((step / WALK_SPEED) * (1 / 0.62) * 1.6)
-    this.setLoop('walk')
+    // Advance the cycle by distance covered against this clip's own stride, so
+    // a slow heavy gait takes slow heavy steps rather than sprinting in place.
+    rig.advanceLegs((step / cruise) * (1 / clip.duration) * 1.6)
+    this.gait = gait
+    this.setLoop(gait)
     this.settleWalk(dt, 1)
     return true
   }
 
-  /** Blend the walk clip out smoothly when he stops. */
+  /** Whether a clip is one that carries him across the room. */
+  private isGait(name: MotionName): boolean {
+    return !!MOTIONS[name].locomotion
+  }
+
+  /** Blend the travel clip out smoothly when he stops. */
   private settleWalk(dt: number, target: number) {
     this.walkBlend = damp(this.walkBlend, target, 8, dt)
-    if (target === 0 && this.walkBlend < 0.05 && this.rig.currentMotion === 'walk') {
+    if (target === 0 && this.walkBlend < 0.05 && this.rig.currentMotion === this.gait) {
       this.setLoop('idle')
+      this.gait = 'walk'
     }
   }
 

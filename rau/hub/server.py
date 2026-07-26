@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -744,6 +744,63 @@ def api_chat(body: ChatIn):
     state.set_emotion(str(emo.get("emotion") or "curious"), reply)
     state.push_control({"action": "speak", "text": reply})
     return {"ok": True, "reply": reply, "turn_id": turn_id}
+
+
+@app.get("/api/room/props")
+def api_room_props():
+    """Where every movable object in the room currently is."""
+    from rau.face import props
+
+    return {"layout": props.layout(), "props": props.PROPS, "spots": props.SPOTS}
+
+
+@app.post("/api/room/props/reset")
+def api_room_props_reset():
+    from rau.face import props
+
+    return {"ok": True, "layout": props.reset_layout()}
+
+
+@app.get("/api/panels")
+def api_panels():
+    from rau.face import panels
+
+    return {"panels": panels.list_panels()}
+
+
+@app.get("/api/panels/{panel_id}")
+def api_panel(panel_id: str):
+    """
+    The panel document itself.
+
+    Served as its own document so the browser can mount it in a sandboxed
+    frame. It carries the same Content-Security-Policy as the inline copy, as
+    a response header this time, so the rules hold however it is reached.
+    """
+    from rau.face import panels
+
+    panel = panels.get_panel(panel_id)
+    if not panel:
+        return JSONResponse({"ok": False, "error": "unknown panel"}, status_code=404)
+    return HTMLResponse(
+        panel["document"],
+        headers={
+            "Content-Security-Policy": panels.CSP,
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            # It is only ever framed by this app, from this origin.
+            "X-Frame-Options": "SAMEORIGIN",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.delete("/api/panels")
+def api_panels_clear():
+    from rau.face import panels
+
+    panels.clear_panels()
+    return {"ok": True}
 
 
 @app.get("/api/events/history")

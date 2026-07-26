@@ -6,6 +6,7 @@
  */
 
 import { clamp, clamp01, damp } from './easing'
+import { drawCarriedProp } from './propsLayer'
 import { CLAWD } from './palette'
 import type { ParamSet } from './params'
 import {
@@ -139,6 +140,10 @@ export class Scene {
       rim: light?.rim,
       rimAmount: light?.rimAmount,
     })
+
+    // Whatever he is holding rides in front of him, so it reads as carried
+    // rather than as something moving alongside him.
+    if (showRoom) drawCarriedProp(ctx, u, room.time, { x: worldX, y: FLOOR_Y })
 
     if (showRoom) {
       if (classic) {

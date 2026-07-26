@@ -7,10 +7,11 @@
  * keep running through a walk cycle but a sleep clip can pin the eyes shut.
  */
 
+import { WALK_SPEED } from './gait'
 import { defineMotion, type Motion } from './motion'
+import { LIFE_MOTIONS, LIFE_ONE_SHOTS } from './motionsLife'
 
-/** Walk cycle speed in units/sec. The leg phase is advanced by the director. */
-export const WALK_SPEED = 7.5
+export { WALK_SPEED }
 
 export const idle = defineMotion({
   id: 'idle',
@@ -1168,6 +1169,8 @@ export const MOTIONS = {
   shrug,
   stretch,
   shuffle,
+  // The occupational library: search, doze, lift, carry, sip, present…
+  ...LIFE_MOTIONS,
 } satisfies Record<string, Motion>
 
 export type MotionName = keyof typeof MOTIONS
@@ -1183,4 +1186,5 @@ export const ONE_SHOTS: MotionName[] = [
   'recoil',
   'shrug',
   'stretch',
+  ...LIFE_ONE_SHOTS,
 ]
