@@ -64,6 +64,20 @@ AUTH_SLOTS: List[Dict[str, str]] = [
         "help": "Streaming speech-to-text for voice mode. The only backend with a live transcript.",
     },
     {
+        "id": "firecrawl",
+        "label": "Firecrawl",
+        "env": "FIRECRAWL_API_KEY",
+        "docs_url": "https://www.firecrawl.dev/app/api-keys",
+        "help": "Reads a page and hands back clean markdown. Fast, cheap, and the only one that can search.",
+    },
+    {
+        "id": "browserbase",
+        "label": "Browserbase",
+        "env": "BROWSERBASE_API_KEY",
+        "docs_url": "https://www.browserbase.com/settings",
+        "help": "A real browser in the cloud. Slower, but it runs the page's JavaScript — use it for apps that ship an empty page.",
+    },
+    {
         "id": "composio",
         "label": "Composio",
         "env": "COMPOSIO_API_KEY",

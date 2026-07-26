@@ -61,6 +61,23 @@ export type Job = {
   updated: number
 }
 
+export type BrowseProviderMeta = {
+  label: string
+  blurb: string
+  auth: string
+  /** False for backends that can open a url but not search the web. */
+  can_search: boolean
+}
+
+export type BrowseStatus = {
+  provider: string
+  configured: string
+  reason: string
+  can_search: boolean
+  available: Record<string, boolean>
+  ready: boolean
+}
+
 export type SttProviderMeta = {
   label: string
   blurb: string
@@ -79,6 +96,7 @@ export type Catalog = {
   voice_effects: CatalogModel[]
   tts_models: { id: string; label: string; note?: string }[]
   stt_providers: Record<string, SttProviderMeta>
+  browse_providers: Record<string, BrowseProviderMeta>
 }
 
 export type VoiceStatus = {
@@ -194,6 +212,7 @@ export const api = {
   setupState: () => req<SetupState>('/api/setup/state'),
   catalog: () => req<Catalog>('/api/models/catalog'),
   voiceStatus: () => req<VoiceStatus>('/api/voice/status'),
+  browseStatus: () => req<BrowseStatus>('/api/browse/status'),
   elevenVoices: () => req<{ ok: boolean; voices: ElevenVoice[] }>('/api/voice/voices'),
   previewVoice: (body: {
     text?: string

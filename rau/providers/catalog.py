@@ -325,6 +325,30 @@ TTS_MODELS: List[Dict[str, str]] = [
 # `partials` drives whether the UI promises a live transcript. Only Deepgram
 # streams interim results; the rest cannot return anything until you stop
 # speaking, and pretending otherwise would make the UI feel broken.
+#: Ways of reading the web. The two are not interchangeable, so the blurbs say
+#: what each is actually for rather than which is "better".
+BROWSE_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "auto": {
+        "label": "Automatic",
+        "blurb": "Uses Firecrawl when connected, otherwise Browserbase.",
+        "auth": "",
+        "can_search": True,
+    },
+    "firecrawl": {
+        "label": "Firecrawl",
+        "blurb": "Scrapes a page to clean markdown. Fast and cheap, and the only one that can search the web.",
+        "auth": "firecrawl",
+        "can_search": True,
+    },
+    "browserbase": {
+        "label": "Browserbase",
+        "blurb": "Drives a real cloud browser, so pages that build themselves with JavaScript still come back. Slower, and billed by the minute.",
+        "auth": "browserbase",
+        "can_search": False,
+    },
+}
+
+
 STT_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "auto": {
         "label": "Automatic (recommended)",
@@ -528,4 +552,5 @@ def catalog() -> Dict[str, Any]:
         "voice_effects": VOICE_EFFECTS,
         "tts_models": TTS_MODELS,
         "stt_providers": STT_PROVIDERS,
+        "browse_providers": BROWSE_PROVIDERS,
     }

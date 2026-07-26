@@ -3,6 +3,7 @@ import { Link } from '../router'
 import {
   api,
   type AuthProvider,
+  type BrowseStatus,
   type Catalog,
   type ElevenVoice,
   type VoicePreset,
@@ -21,6 +22,7 @@ type Check = { status: 'idle' | 'checking' | 'ok' | 'bad'; detail?: string }
 
 export default function Settings() {
   const [models, setModels] = useState<any>(null)
+  const [browseStatus, setBrowseStatus] = useState<BrowseStatus | null>(null)
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [auth, setAuth] = useState<AuthProvider[]>([])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -36,16 +38,18 @@ export default function Settings() {
 
   async function reload() {
     setLoadError('')
-    const [m, a, c, v] = await Promise.all([
+    const [m, a, c, v, b] = await Promise.all([
       api.models(),
       api.auth(),
       api.catalog(),
       api.voiceStatus(),
+      api.browseStatus().catch(() => null),
     ])
     setModels(m)
     setAuth(a.providers || [])
     setCatalog(c)
     setVoiceStatus(v)
+    setBrowseStatus(b)
     if ((a.providers || []).some((p: AuthProvider) => p.id === 'elevenlabs' && p.configured)) {
       void loadAccountVoices()
     } else {
@@ -129,6 +133,7 @@ export default function Settings() {
         dream: models.dream,
         tts: models.tts,
         stt: models.stt,
+        browse: models.browse,
       })
       setModels(saved)
       // Server clamps effort to the new provider/model capabilities.
@@ -173,6 +178,7 @@ export default function Settings() {
       if (id === 'elevenlabs') void loadAccountVoices()
       if (id === 'elevenlabs' || id === 'deepgram' || id === 'codex') {
         api.voiceStatus().then(setVoiceStatus).catch(() => {})
+        api.browseStatus().then(setBrowseStatus).catch(() => {})
       }
     } catch (e: any) {
       setChecks((c) => ({ ...c, [id]: { status: 'bad', detail: e?.message || String(e) } }))
@@ -206,6 +212,7 @@ export default function Settings() {
       if (id === 'elevenlabs') setAccountVoices([])
       if (id === 'elevenlabs' || id === 'deepgram' || id === 'codex') {
         api.voiceStatus().then(setVoiceStatus).catch(() => {})
+        api.browseStatus().then(setBrowseStatus).catch(() => {})
       }
       flash(`${id} disconnected.`)
     } catch (e: any) {
@@ -611,6 +618,74 @@ export default function Settings() {
                   mode covers a smaller set of languages.
                 </span>
               </div>
+            </div>
+          )
+        })()}
+
+        {(() => {
+          const browse = models.browse || {}
+          const chosen = browse.provider || 'auto'
+          const browseMeta = catalog.browse_providers?.[chosen] || null
+          // "Connected" here means the key exists; `auto` needs any one of them.
+          const usable =
+            chosen === 'auto'
+              ? Object.entries(catalog.browse_providers || {}).some(
+                  ([id, meta]) => id !== 'auto' && meta.auth && configured.has(meta.auth),
+                )
+              : !browseMeta?.auth || configured.has(browseMeta.auth)
+          return (
+            <div className="slot">
+              <div className="slot-title">
+                <h3>Reading the web</h3>
+                <span className="slot-note">
+                  How Rau opens a page when you ask him to look something up. He
+                  walks over to the computer to do it.
+                  {browseStatus?.ready && chosen === 'auto'
+                    ? ` Currently resolves to ${browseStatus.provider}.`
+                    : ''}
+                </span>
+              </div>
+
+              {!usable && (
+                <div className="notice bad" style={{ marginBottom: '0.8rem' }}>
+                  {chosen === 'auto'
+                    ? 'No Firecrawl or Browserbase key yet — connect one on the right and he can read the web.'
+                    : `No key for ${browseMeta?.label} — connect one on the right, or pick the other backend.`}
+                </div>
+              )}
+
+              <div className="slot-fields">
+                <div className="field">
+                  <label>Backend</label>
+                  <select
+                    value={chosen}
+                    onChange={(e) => {
+                      setDirty(true)
+                      setModels((prev: any) => ({
+                        ...prev,
+                        browse: { ...prev.browse, provider: e.target.value },
+                      }))
+                    }}
+                  >
+                    {Object.entries(catalog.browse_providers || {}).map(([id, meta]) => (
+                      <option key={id} value={id}>
+                        {meta.label}
+                        {id !== 'auto' && meta.auth && !configured.has(meta.auth)
+                          ? ' (no key)'
+                          : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="field-hint">{browseMeta?.blurb}</span>
+                </div>
+              </div>
+
+              {browseMeta && !browseMeta.can_search && (
+                <span className="field-hint">
+                  This backend opens a url you give it but cannot search the web.
+                  Firecrawl can do both.
+                </span>
+              )}
             </div>
           )
         })()}

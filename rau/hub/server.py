@@ -105,6 +105,7 @@ class ModelsIn(BaseModel):
     dream: Optional[Dict[str, Any]] = None
     tts: Optional[Dict[str, Any]] = None
     stt: Optional[Dict[str, Any]] = None
+    browse: Optional[Dict[str, Any]] = None
 
 
 class ConfirmIn(BaseModel):
@@ -452,6 +453,14 @@ def api_voice_preview(body: VoicePreviewIn):
             {"ok": False, "error": f"Voice preview failed: {str(exc)[:300]}"},
             status_code=502,
         )
+
+
+@app.get("/api/browse/status")
+def api_browse_status():
+    """Which web-browsing backend a request would actually use, and why."""
+    from rau.browse import status as browse_status
+
+    return browse_status()
 
 
 @app.get("/api/effort")

@@ -11,7 +11,7 @@ from rau.agent import orchestrator
 from rau.agent import tools as agent_tools
 from rau.agent.danger import classify_tool
 from rau.events import BUS
-from rau.face import choreography, panels, props
+from rau.face import choreography, panels, props, web
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, recent_context
 from rau.providers.base import Message, StreamDone, TextDelta, tool_result_text
@@ -194,6 +194,7 @@ FACE_TOOLS = [
     choreography.BODY_CHOREOGRAPHY_TOOL,
     props.MOVE_OBJECT_TOOL,
     panels.SHOW_PANEL_TOOL,
+    web.BROWSE_WEB_TOOL,
 ]
 
 #: The face model is chosen for latency, so its window is held far below what
@@ -419,6 +420,7 @@ def _system_prompt(extra: str = "") -> str:
             "\n" + choreography.PROMPT,
             "\n" + props.prompt_fragment(),
             "\n" + panels.prompt_fragment(),
+            "\n" + web.prompt_fragment(),
         ]
     )
     if extra:
@@ -452,6 +454,13 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if name == "move_object":
         # Rearranging his own room: visual, local, and undoable by asking.
         return props.move_object(args)
+    if name == "browse_web":
+        # Reads the open web, so it is gated like the other outward-facing
+        # tools rather than treated as a local visual like the room ones.
+        decision = tool_decision("room", name, args)
+        if decision == "deny":
+            return deny_result(name, reason="room is in read-only mode")
+        return web.browse_web(args)
     if name == "show_panel":
         # The markup never runs anywhere it could reach this app — see
         # rau/face/panels.py for the two barriers that make that true.
