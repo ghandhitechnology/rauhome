@@ -57,7 +57,9 @@ export type Station = {
 export const STATIONS: Station[] = [
   { id: 'window', x: 34, facing: -1, label: 'the window' },
   { id: 'plant', x: 55, facing: 1, label: 'the plant' },
-  { id: 'rug', x: 79, facing: 1, label: 'the rug' },
+  // Far enough from centre to be a different place: the walk deadband is 1.2
+  // units, so a rug at 79 and a centre at 80 were the same spot with two names.
+  { id: 'rug', x: 70, facing: 1, label: 'the rug' },
   { id: 'centre', x: 80, facing: 1, label: 'the middle of the room' },
   { id: 'desk', x: 108, facing: 1, label: 'the desk' },
   { id: 'shelf', x: 138, facing: 1, label: 'the shelf' },

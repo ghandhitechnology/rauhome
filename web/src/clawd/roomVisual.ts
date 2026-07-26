@@ -7,6 +7,13 @@ export type RoomVisual = 'classic' | 'enhanced'
 
 const KEY = 'rau.roomVisual'
 
+/**
+ * The stored choice, or the enhanced room.
+ *
+ * Enhanced is the room the product is meant to show; classic is kept as an
+ * escape hatch for a machine that cannot afford the texture passes, not as
+ * the thing a first-time visitor sees.
+ */
 export function loadRoomVisual(): RoomVisual {
   try {
     const v = localStorage.getItem(KEY)
@@ -14,7 +21,7 @@ export function loadRoomVisual(): RoomVisual {
   } catch {
     /* private mode */
   }
-  return 'classic'
+  return 'enhanced'
 }
 
 export function saveRoomVisual(visual: RoomVisual): void {

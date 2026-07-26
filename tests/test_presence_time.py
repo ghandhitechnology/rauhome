@@ -51,7 +51,15 @@ class PresencePersistTests(unittest.TestCase):
 
 
 class SessionBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # A turn left open by an earlier suite would be inherited here and its
+        # tier returned instead of the one this test is actually setting up.
+        self._reset()
+
     def tearDown(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
         from rau.heartbeat import presence as presence_mod
         from rau.face import brain
         from rau import state
@@ -90,6 +98,44 @@ class SessionBoundaryTests(unittest.TestCase):
         gap2, tier2 = presence_mod.begin_user_turn()
         self.assertEqual(tier2, "hard")
         self.assertEqual(len(brain.snapshot_history()), 1)
+
+    def test_a_turn_nobody_closed_does_not_poison_the_next_one(self) -> None:
+        """
+        `note_user_reply` opens a turn; `brain` closes it. Any path that opens
+        one without reaching the brain used to pin the tier forever, so the
+        user could come back after a day and be greeted as if they never left.
+        """
+        from rau.heartbeat.presence import TURN_MAX_SEC
+        from rau.heartbeat import presence as presence_mod
+        from rau import state
+
+        # A turn opens while the user is right here, then is never closed.
+        state.update_presence(last_user_ts=time.time() - 5)
+        _, tier = presence_mod.begin_user_turn()
+        self.assertEqual(tier, "none")
+
+        # A day later they come back. The abandoned turn must not answer for it.
+        state.update_presence(last_user_ts=time.time() - 26 * 3600)
+        with mock.patch.object(
+            presence_mod.time,
+            "monotonic",
+            return_value=time.monotonic() + TURN_MAX_SEC + 1,
+        ):
+            gap, tier = presence_mod.begin_user_turn()
+        self.assertEqual(tier, "hard")
+        self.assertGreater(gap or 0, presence_mod.REENTRY_HARD_SEC)
+
+    def test_an_open_turn_is_still_reused_while_it_is_alive(self) -> None:
+        from rau.heartbeat import presence as presence_mod
+        from rau import state
+
+        state.update_presence(last_user_ts=time.time() - 3 * 3600)
+        _, first = presence_mod.begin_user_turn()
+        # Same turn, moments later: the snapshot is reused, not retaken.
+        state.update_presence(last_user_ts=time.time())
+        _, second = presence_mod.begin_user_turn()
+        self.assertEqual(first, "hard")
+        self.assertEqual(second, "hard")
 
     def test_system_prompt_includes_now_block(self) -> None:
         from rau.heartbeat import presence as presence_mod

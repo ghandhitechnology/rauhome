@@ -60,6 +60,23 @@ _active_gap_sec: Optional[float] = None
 _active_tier: str = "none"
 #: Heartbeat events eligible to mention on this re-entry turn.
 _active_heartbeat_events: List[Dict[str, Any]] = []
+#: Monotonic stamp of the open turn, for abandonment recovery below.
+_active_started_at: float = 0.0
+
+#: How long a turn may stay open before the next contact treats it as dead.
+#:
+#: A turn is opened by `note_user_reply` — at the hub, in the voice session, in
+#: the host pipeline — and closed by `brain`, which is a different module on a
+#: different thread. Every path that opens one without reaching the brain (a
+#: provider that will not load, a worker killed mid-flight, a caller nobody has
+#: written yet) would otherwise pin the re-entry state forever: the user comes
+#: back after a day and is greeted as though they never left, because the tier
+#: is still cached from a turn that died last Tuesday.
+#:
+#: Rather than hunt every such path, the state expires. Generous enough to
+#: cover a long reply read aloud in full, short enough that a wedged turn costs
+#: one greeting rather than all of them.
+TURN_MAX_SEC = 180.0
 
 
 def format_absence(seconds: float) -> str:
@@ -325,17 +342,31 @@ def begin_user_turn() -> Tuple[Optional[float], str]:
     Idempotent within a turn until end_user_turn().
     """
     global _active_gap_sec, _active_tier, _active_heartbeat_events
+    global _active_started_at
     with _lock:
         if _active_gap_sec is not None:
-            return (
-                None if _active_gap_sec < 0 else _active_gap_sec,
-                _active_tier,
+            if time.monotonic() - _active_started_at <= TURN_MAX_SEC:
+                return (
+                    None if _active_gap_sec < 0 else _active_gap_sec,
+                    _active_tier,
+                )
+            # The previous turn was opened and never closed. Treat it as dead
+            # and snapshot fresh, or its tier outlives it and every future
+            # re-entry is judged against a gap that stopped being true.
+            BUS.emit(
+                "presence_turn_abandoned",
+                tier=_active_tier,
+                age_sec=round(time.monotonic() - _active_started_at, 1),
             )
+            _active_gap_sec = None
+            _active_tier = "none"
+            _active_heartbeat_events = []
         decay_mood()
         gap = gap_since_last_user()
         tier = _tier_for_gap(gap)
         _active_gap_sec = -1.0 if gap is None else float(gap)
         _active_tier = tier
+        _active_started_at = time.monotonic()
         # Snapshot events from before this contact (last_user_ts still old).
         last_user = float(state.presence().get("last_user_ts") or 0)
         if tier in ("soft", "hard", "first"):
@@ -364,10 +395,12 @@ def begin_user_turn() -> Tuple[Optional[float], str]:
 def end_user_turn() -> None:
     """Clear one-shot re-entry flags; consume mentioned heartbeat events."""
     global _active_gap_sec, _active_tier, _active_heartbeat_events
+    global _active_started_at
     with _lock:
         tier = _active_tier
         consumed = list(_active_heartbeat_events)
         _active_gap_sec = None
+        _active_started_at = 0.0
         _active_tier = "none"
         _active_heartbeat_events = []
         state.update_presence(reentry_pending=False, reentry_tier="none", gap_sec=0.0)
