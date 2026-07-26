@@ -10,6 +10,7 @@ import {
   type RoomVisual,
 } from '../clawd/roomVisual'
 import {
+  adoptStoredTier,
   clearTier,
   currentTier,
   setTier,
@@ -68,6 +69,18 @@ export default function Face() {
   const [roomVisual, setRoomVisual] = useState<RoomVisual>(() => loadRoomVisual())
   const [tier, setTierState] = useState<QualityTier>(() => currentTier())
   const [tierAuto, setTierAuto] = useState(() => tierIsAutomatic())
+
+  // The tier is resolved once and held in the module, so a second tab changing
+  // it would otherwise leave this one showing a choice it is no longer making.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== 'rau.quality') return
+      setTierState(adoptStoredTier())
+      setTierAuto(tierIsAutomatic())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
   const apiRef = useRef<ClawdRoomApi | null>(null)
   const lastReply = useRef({ at: 0, text: '', sig: '' })
   const sendingRef = useRef(false)

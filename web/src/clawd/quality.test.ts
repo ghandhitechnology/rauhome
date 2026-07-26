@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import roomSource from './room.ts?raw'
+import classicSource from './roomClassic.ts?raw'
+import sceneSource from './scene.ts?raw'
+import textureSource from './texture.ts?raw'
+
 import { clearTier, currentTier, quality, setTier, tierIsAutomatic } from './quality'
 
 describe('the quality tiers', () => {
@@ -38,10 +43,17 @@ describe('the quality tiers', () => {
     expect(low.stains).toBe(false)
   })
 
-  it('keeps the lighting at every tier, because flat light reads as broken', () => {
-    for (const tier of ['low', 'balanced', 'high'] as const) {
-      setTier(tier)
-      expect(quality().volumetrics, tier).toBe(true)
+  it('is only ever asked for a budget it actually spends', () => {
+    // A field nothing reads is an API that lies: the comment promises a
+    // behaviour and the tier appears to control something it does not.
+    const fields = Object.keys(quality()).filter((f) => f !== 'tier')
+    const source = [roomSource, classicSource, textureSource, sceneSource].join('\n')
+    for (const field of fields) {
+      // Read either straight off the call or off a local holding the budget,
+      // so this notices a dead field without dictating the calling style.
+      expect(source, `nothing reads the ${field} budget`).toMatch(
+        new RegExp(`(quality\\(\\)|budget)\\.${field}\\b`),
+      )
     }
   })
 })

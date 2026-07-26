@@ -23,11 +23,9 @@
 import { clamp, clamp01 } from './easing'
 import { mixHex, ROOM, SPINES, skyAt } from './palette'
 import { bakeBackdrop, bakeForeground, blitBackdrop, unitKey } from './backdrop'
-import { drawWallPanels, panelsOwnPosterSlot } from './panelsLayer'
-import { panelStore } from '../panels'
-import { PROP_IDS, propStore } from './props'
+import { drawWallPanels, panelsOwnPosterSlot, wallPanelsKey } from './panelsLayer'
 import { quality } from './quality'
-import { drawLivingProps, drawRestingProps } from './propsLayer'
+import { drawLivingProps, drawRestingProps, restingPropsKey } from './propsLayer'
 import { contactShadow, FLOOR_Y, STAGE, WALK_RANGE } from './stage'
 import { hash2, textureRect } from './texture'
 
@@ -1488,21 +1486,16 @@ function hourBucket(hour: number): number {
 }
 
 function backdropKey(u: number): string {
-  const layout = PROP_IDS.map((id) => `${id}:${propStore.spotOf(id)}`).join(',')
-  const wall = panelStore
-    .list()
-    .map((panel) => `${panel.panel_id}:${panel.kind}`)
-    .join(',')
   return [
     'enhanced',
     unitKey(u),
     quality().tier,
     // The view through the window is baked, so the hour is an input to it.
     String(BAKED_STATE_BUCKET),
-    // Resting props and wall panels are painted into the bake, so moving a mug
-    // or hanging a panel has to invalidate it.
-    layout,
-    wall,
+    // Resting props and wall panels are painted into the bake. Both keys are
+    // owned by the layers that draw them, so the two cannot drift apart.
+    restingPropsKey(),
+    wallPanelsKey(),
   ].join('|')
 }
 

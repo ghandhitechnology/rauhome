@@ -31,8 +31,6 @@ export type QualityBudget = {
   floorDetail: boolean
   /** Film grain over the finished frame. */
   grain: boolean
-  /** Volumetric shaft and lamp cone. Flat lighting without them. */
-  volumetrics: boolean
 }
 
 const BUDGETS: Record<QualityTier, QualityBudget> = {
@@ -45,7 +43,6 @@ const BUDGETS: Record<QualityTier, QualityBudget> = {
     clouds: 7,
     floorDetail: true,
     grain: true,
-    volumetrics: true,
   },
   balanced: {
     tier: 'balanced',
@@ -56,7 +53,6 @@ const BUDGETS: Record<QualityTier, QualityBudget> = {
     clouds: 4,
     floorDetail: true,
     grain: true,
-    volumetrics: true,
   },
   low: {
     tier: 'low',
@@ -69,7 +65,6 @@ const BUDGETS: Record<QualityTier, QualityBudget> = {
     clouds: 2,
     floorDetail: false,
     grain: false,
-    volumetrics: true,
   },
 }
 
@@ -100,8 +95,6 @@ export function detectTier(): QualityTier {
   return 'high'
 }
 
-let override: QualityTier | null = null
-
 function stored(): QualityTier | null {
   try {
     const value = localStorage.getItem(KEY)
@@ -112,9 +105,25 @@ function stored(): QualityTier | null {
   return null
 }
 
+/**
+ * Both answers are resolved once and kept.
+ *
+ * `quality()` is read several times per frame — by the sky, the light shaft,
+ * the lamp cone, the film grain and both cache keys. Asking localStorage each
+ * time would put a synchronous storage read on the hot path, and `detectTier`
+ * reads `window.innerWidth`, which can force a layout. Either would be a
+ * per-frame cost in the middle of a change whose whole point is removing them.
+ */
+let chosen: QualityTier | null = stored()
+let detected: QualityTier | null = null
+
 /** The tier in force: the user's choice, else what the machine looks like. */
 export function currentTier(): QualityTier {
-  return override ?? stored() ?? detectTier()
+  if (chosen) return chosen
+  // Deliberately not re-detected on resize: a tier that flips mid-session
+  // would repaint every baked layer at the moment the window is being dragged.
+  if (!detected) detected = detectTier()
+  return detected
 }
 
 export function quality(): QualityBudget {
@@ -122,17 +131,17 @@ export function quality(): QualityBudget {
 }
 
 export function setTier(tier: QualityTier): void {
-  override = tier
+  chosen = tier
   try {
     localStorage.setItem(KEY, tier)
   } catch {
-    /* ignore */
+    /* ignore — the choice still holds for this session */
   }
 }
 
 /** Forget an explicit choice and go back to judging the machine. */
 export function clearTier(): void {
-  override = null
+  chosen = null
   try {
     localStorage.removeItem(KEY)
   } catch {
@@ -142,5 +151,11 @@ export function clearTier(): void {
 
 /** For the settings UI: whether the current tier was chosen or detected. */
 export function tierIsAutomatic(): boolean {
-  return override === null && stored() === null
+  return chosen === null
+}
+
+/** Another tab changed the setting. Only the UI needs telling; see `Face`. */
+export function adoptStoredTier(): QualityTier {
+  chosen = stored()
+  return currentTier()
 }

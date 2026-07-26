@@ -10,11 +10,9 @@
 
 import { bakeBackdrop, blitBackdrop, ROOM_LEFT, ROOM_TOP, ROOM_W, unitKey } from './backdrop'
 import { clamp, clamp01 } from './easing'
-import { drawWallPanels } from './panelsLayer'
+import { drawWallPanels, panelsOwnPosterSlot, wallPanelsKey } from './panelsLayer'
 import { mixHex, ROOM, skyAt } from './paletteClassic'
-import { panelStore } from '../panels'
-import { PROP_IDS, propStore } from './props'
-import { drawLivingProps, drawRestingProps } from './propsLayer'
+import { drawLivingProps, drawRestingProps, restingPropsKey } from './propsLayer'
 import { quality } from './quality'
 import { hash2 } from './texture'
 import { FLOOR_Y, STAGE, WALK_RANGE } from './stage'
@@ -379,9 +377,14 @@ function paintClassicStatic(ctx: Ctx, u: number) {
 
   drawClassicWainscot(ctx, u)
 
-  drawPoster(ctx, u)
+  // The poster stands down as soon as there is something real to hang, or the
+  // two overlap and the panel wears a brown border the enhanced room lacks.
+  if (!panelsOwnPosterSlot()) drawPoster(ctx, u)
   drawWallPanels(ctx, u)
   drawWindowRecess(ctx, u)
+  // Inside the bake and before the props, so a mug left on the sill sits in
+  // front of the view rather than behind it. The hour is in the cache key.
+  drawWindowGlass(ctx, u, BAKED_STATE)
   drawShelf(ctx, u)
 
   // Skirting with a two-step profile, which is most of what reads as a
@@ -471,21 +474,40 @@ function drawClassicFloor(ctx: Ctx, u: number) {
 
 /** Names every input the baked classic painting depends on. */
 function classicKey(u: number): string {
-  const layout = PROP_IDS.map((id) => `${id}:${propStore.spotOf(id)}`).join(',')
-  const wall = panelStore.list().map((panel) => `${panel.panel_id}:${panel.kind}`).join(',')
-  return ['classic', unitKey(u), quality().tier, layout, wall].join('|')
+  return [
+    'classic',
+    unitKey(u),
+    quality().tier,
+    // The view through the window is baked, so the hour is an input to it.
+    String(BAKED_STATE_BUCKET),
+    // Both owned by the layers that paint them, so key and painter cannot drift.
+    restingPropsKey(),
+    wallPanelsKey(),
+  ].join('|')
+}
+
+/** The state the backdrop was last painted at; see `hourBucket`. */
+let BAKED_STATE: RoomState = { hour: 12, lamp: 0, screen: 0, time: 0 }
+let BAKED_STATE_BUCKET = -1
+
+/** Twelve-minute buckets: nothing in the baked view moves faster than that. */
+function hourBucket(hour: number): number {
+  return Math.round(hour * 5)
 }
 
 export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
+  BAKED_STATE = s
+  BAKED_STATE_BUCKET = hourBucket(s.hour)
   const baked = bakeBackdrop(u, classicKey(u), paintClassicStatic)
   if (baked) blitBackdrop(ctx, u, baked)
   else paintClassicStatic(ctx, u)
 
   // Only what actually moves.
-  drawWindowGlass(ctx, u, s)
   drawWindowFrame(ctx, u)
-  drawLightShaft(ctx, u, s)
+  // Before the shaft, so every floor object takes the same glaze; drawn after
+  // it, the plant alone stayed unlit while the things beside it did not.
   drawLivingProps(ctx, u, s.time)
+  drawLightShaft(ctx, u, s)
   drawMonitor(ctx, u, s)
   drawLamp(ctx, u, s)
 }
