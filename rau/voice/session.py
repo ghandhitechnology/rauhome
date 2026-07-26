@@ -195,7 +195,6 @@ class VoiceSession:
         self._active_turn: Optional[_Turn] = None
         self.phase = "idle"  # idle | listening | thinking | speaking
         self.closed = False
-        _warm_reactions()
 
     # ── plumbing ─────────────────────────────────────────────────────
 
@@ -782,7 +781,7 @@ class VoiceSession:
 _WARMED = threading.Event()
 
 
-def _warm_reactions() -> None:
+def warm_reactions() -> None:
     """
     Synthesise the hesitations once, in the background, on first connect.
 
@@ -790,6 +789,11 @@ def _warm_reactions() -> None:
     least sure anything is working, and latency is most visible — is the one
     turn with nothing to cover it, because its clip is still being fetched.
     After the first run these are all disk reads.
+
+    Called by the socket handler rather than by `VoiceSession.__init__`, so
+    that constructing a session is free of side effects. Warming is a
+    connection-lifecycle concern, and a constructor that quietly makes ten
+    billed API calls is a trap for every test that builds one.
     """
     if _WARMED.is_set():
         return
