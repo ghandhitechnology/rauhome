@@ -127,6 +127,24 @@ function driveBody(event: LiveEvent) {
       })
       break
     }
+    case 'browse_started': {
+      // Send him to the computer for as long as the fetch actually takes.
+      const watchdog = typeof event.watchdog_ms === 'number' ? event.watchdog_ms : 90_000
+      bodyController.sustain(
+        {
+          anchor: 'now',
+          station: 'desk',
+          motion: 'search',
+          gaze: 'screen',
+          hold_ms: 1000,
+        },
+        watchdog,
+      )
+      break
+    }
+    case 'browse_finished':
+      bodyController.endSustain()
+      break
     case 'panel_shown':
       panelStore.add({
         panel_id: String(event.panel_id ?? ''),

@@ -27,6 +27,8 @@ _READONLY_ALLOW = frozenset(
     {
         "read_file",
         "memory_read",
+        # Reading a page changes nothing on this machine.
+        "browse_web",
         "list_skills",
         "use_skill",
         "body_choreography",

@@ -221,6 +221,9 @@ export class BodyController {
   /** Cue indices waiting for the body, in plan order. */
   private queue: number[] = []
   private active: BodyCue | null = null
+  /** A cue held open until some real work reports that it finished. */
+  private sustained: BodyCue | null = null
+  private sustainTimer: Timeout | null = null
   /** Waiting for a room target to report arrival before starting hold_ms. */
   private holdPending = false
   private holdTimer: Timeout | null = null
@@ -361,6 +364,53 @@ export class BodyController {
    * someone has grabbed the character mid-choreography, playing out the
    * remaining cues over the top of what they asked for is not deference.
    */
+  /**
+   * Hold a cue for as long as some real work takes, rather than for a
+   * duration guessed in advance.
+   *
+   * A page fetch is seconds, and how many is not knowable when the cue is
+   * written: a fixed hold either drops him out of the pose mid-load or leaves
+   * him typing at nothing after the answer arrives. `watchdogMs` is the
+   * backstop for the case where the work never reports finishing at all.
+   */
+  sustain(cue: BodyCue, watchdogMs = 90_000): void {
+    this.dropPlan()
+    this.sustained = cue
+    this.active = cue
+    this.announceCue(cue)
+    for (const target of this.targets) {
+      try {
+        target.applyCue(cue)
+      } catch {
+        /* one broken avatar must not stall the rest */
+      }
+    }
+    this.sustainTimer = setTimeout(() => this.endSustain(), Math.max(0, watchdogMs))
+  }
+
+  /** The work finished (or gave up). Hand the body back. */
+  endSustain(): void {
+    if (this.sustainTimer !== null) {
+      clearTimeout(this.sustainTimer)
+      this.sustainTimer = null
+    }
+    if (!this.sustained) return
+    this.sustained = null
+    this.active = null
+    this.announceCue(null)
+    for (const target of this.targets) {
+      try {
+        target.releaseCue()
+      } catch {
+        /* as above */
+      }
+    }
+  }
+
+  get sustaining(): boolean {
+    return this.sustained !== null
+  }
+
   humanTakeover(): void {
     this.dropPlan()
   }
@@ -469,6 +519,11 @@ export class BodyController {
   }
 
   private dropPlan(): void {
+    if (this.sustainTimer !== null) {
+      clearTimeout(this.sustainTimer)
+      this.sustainTimer = null
+    }
+    this.sustained = null
     this.clearTimers()
     this.holdPending = false
     this.plan = null

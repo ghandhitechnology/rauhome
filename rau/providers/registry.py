@@ -74,6 +74,9 @@ def _default_models() -> Dict[str, Any]:
             "model": "",
             "language": "en",
         },
+        "browse": {
+            "provider": "auto",
+        },
     }
 
 
@@ -200,6 +203,7 @@ def _validated_models(cfg: Dict[str, Any]) -> Dict[str, Any]:
     defaults = _default_models()
     checked.setdefault("tts", deepcopy(defaults["tts"]))
     checked.setdefault("stt", deepcopy(defaults["stt"]))
+    checked.setdefault("browse", deepcopy(defaults["browse"]))
 
     tts = checked.get("tts")
     if not isinstance(tts, dict):
@@ -254,6 +258,14 @@ def _validated_models(cfg: Dict[str, Any]) -> Dict[str, Any]:
             or any(char in value for char in "\0\r\n")
         ):
             raise ValueError(f"stt.{key} is invalid")
+
+    browse = checked.get("browse")
+    if not isinstance(browse, dict):
+        raise ValueError("browse model slot must be an object")
+    from rau.browse.registry import PROVIDER_IDS as BROWSE_IDS
+
+    if browse.get("provider") not in BROWSE_IDS:
+        raise ValueError(f"browse.provider must be one of {', '.join(BROWSE_IDS)}")
     return checked
 
 

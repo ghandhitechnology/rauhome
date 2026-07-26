@@ -6,6 +6,7 @@
  */
 
 import { clamp, clamp01, damp } from './easing'
+import { quality } from './quality'
 import { drawCarriedProp } from './propsLayer'
 import { CLAWD } from './palette'
 import type { ParamSet } from './params'
@@ -184,6 +185,7 @@ export class Scene {
 
   /** Subtle film grain, redrawn as sparse dots rather than per-pixel noise. */
   private drawGrain(ctx: CanvasRenderingContext2D) {
+    if (!quality().grain) return
     const w = ctx.canvas.width
     const h = ctx.canvas.height
     ctx.save()

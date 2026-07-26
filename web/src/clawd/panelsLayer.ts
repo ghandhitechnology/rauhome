@@ -151,3 +151,17 @@ export function drawWallPanels(
   })
   return placed
 }
+
+/**
+ * Everything `drawWallPanels` depends on, as a cache key.
+ *
+ * The title is in here because it is rendered as text: `replaceAll` can change
+ * a title under an existing id on reconnect, and keying on the id alone would
+ * leave the old words on the wall.
+ */
+export function wallPanelsKey(): string {
+  return panelStore
+    .list()
+    .map((panel) => `${panel.panel_id}:${panel.kind}:${panel.title}`)
+    .join(',')
+}
