@@ -22,8 +22,10 @@
 
 import { clamp, clamp01 } from './easing'
 import { mixHex, ROOM, SPINES, skyAt } from './palette'
-import { drawWallPanels, panelsOwnPosterSlot } from './panelsLayer'
-import { drawRestingProps } from './propsLayer'
+import { bakeBackdrop, bakeForeground, blitBackdrop, unitKey } from './backdrop'
+import { drawWallPanels, panelsOwnPosterSlot, wallPanelsKey } from './panelsLayer'
+import { quality } from './quality'
+import { drawLivingProps, drawRestingProps, restingPropsKey } from './propsLayer'
 import { contactShadow, FLOOR_Y, STAGE, WALK_RANGE } from './stage'
 import { hash2, textureRect } from './texture'
 
@@ -146,7 +148,7 @@ function nightAt(hour: number): number {
 const WINDOW = { x: 20, y: 10, w: 34, h: 34 }
 
 /** Sky, city and glass, inside the window opening. */
-function drawWindowGlass(ctx: Ctx, u: number, s: RoomState) {
+function drawSky(ctx: Ctx, u: number, s: RoomState) {
   const sky = skyAt(s.hour)
   const { x, y, w, h } = WINDOW
   const night = nightAt(s.hour)
@@ -164,19 +166,8 @@ function drawWindowGlass(ctx: Ctx, u: number, s: RoomState) {
   ctx.fillStyle = grad
   ctx.fillRect(x * u, y * u, w * u, h * u)
 
-  // Stars, fading in with the night. Deterministic, so they do not crawl.
-  if (night > 0.15) {
-    ctx.globalAlpha = night * 0.85
-    for (let i = 0; i < 46; i++) {
-      const sx = x + hash2(i, 1, 7) * w
-      const sy = y + hash2(i, 2, 7) * h * 0.62
-      // Slow, out-of-phase twinkle.
-      const tw = 0.45 + 0.55 * (Math.sin(s.time * 0.9 + i * 2.1) * 0.5 + 0.5)
-      ctx.globalAlpha = night * 0.8 * tw * (0.35 + hash2(i, 3, 7) * 0.65)
-      r(ctx, u, sx, sy, 0.42, 0.42, '#FFF6E0')
-    }
-    ctx.globalAlpha = 1
-  }
+  // Stars and cloud drift are the only parts of the view that move, so they
+  // are drawn live over this bake by `drawSkyLife`.
 
   // Sun or moon, tracking an arc across the opening through the day.
   const dayT = clamp01((s.hour - 6) / 12)
@@ -195,18 +186,6 @@ function drawWindowGlass(ctx: Ctx, u: number, s: RoomState) {
     r(ctx, u, mx - 0.1, my - 1.1, 1.4, 2.2, mixHex('#E8EEFF', sky.top, 0.55))
   }
 
-  // Cloud bank: soft horizontal smears drifting slowly.
-  ctx.globalAlpha = 0.16 + (1 - night) * 0.16
-  for (let i = 0; i < 7; i++) {
-    const drift = (s.time * (0.22 + (i % 3) * 0.12) + i * 13) % (w + 30)
-    const cx = x - 14 + drift
-    const cy = y + 3 + hash2(i, 9, 3) * h * 0.42
-    const cw = 7 + hash2(i, 10, 3) * 12
-    ctx.fillStyle = mixHex(sky.haze, '#FFFFFF', 0.35)
-    ctx.fillRect(cx * u, cy * u, cw * u, 1.6 * u)
-    ctx.fillRect((cx + 2) * u, (cy - 1.1) * u, (cw - 5) * u, 1.2 * u)
-  }
-  ctx.globalAlpha = 1
 
   // Skyline in two layers, the near one darker — the whole reason a city
   // reads as having depth rather than being a cut-out.
@@ -262,7 +241,8 @@ function drawWindowGlass(ctx: Ctx, u: number, s: RoomState) {
   ctx.restore()
 }
 
-function drawWindow(ctx: Ctx, u: number, s: RoomState) {
+/** The opening's recess and its sill — masonry, so it bakes. */
+function drawWindowRecess(ctx: Ctx, u: number) {
   const { x, y, w, h } = WINDOW
 
   // Reveal: the wall has thickness, so the opening sits in a recess. The lip
@@ -279,24 +259,6 @@ function drawWindow(ctx: Ctx, u: number, s: RoomState) {
   // A hairline of light on the reveal's outer edge, where it catches the room.
   r(ctx, u, x - 2.2, y - 2.2, w + 4.4, 0.28, mixHex(ROOM.wallWarm, '#FFFFFF', 0.1))
 
-  drawWindowGlass(ctx, u, s)
-
-  // Mullions, drawn as bars with their own lit edge.
-  const bar = (bx: number, by: number, bw: number, bh: number) => {
-    r(ctx, u, bx, by, bw, bh, ROOM.woodShade)
-    r(ctx, u, bx, by, bw, Math.min(0.45, bh), mixHex(ROOM.wood, '#FFFFFF', 0.18))
-  }
-  bar(x + w / 2 - 0.7, y, 1.4, h)
-  bar(x, y + h * 0.44 - 0.7, w, 1.4)
-
-  // Frame: outer casing, then an inner bevel catching the sky light.
-  ctx.strokeStyle = ROOM.woodShade
-  ctx.lineWidth = 2.2 * u
-  ctx.strokeRect(x * u, y * u, w * u, h * u)
-  ctx.strokeStyle = mixHex(ROOM.wood, '#FFFFFF', 0.22)
-  ctx.lineWidth = 0.5 * u
-  ctx.strokeRect((x + 1.1) * u, (y + 1.1) * u, (w - 2.2) * u, (h - 2.2) * u)
-
   // Sill with a nosing and the shadow it throws on the wall below.
   slab(ctx, u, x - 3, y + h, w + 6, 2.2, ROOM.wood, ROOM.woodLit, ROOM.woodShade, 0.5)
   textureRect(ctx, 'wood', u, x - 3, y + h, w + 6, 2.2, 0.5)
@@ -308,9 +270,71 @@ function drawWindow(ctx: Ctx, u: number, s: RoomState) {
   ctx.fillStyle = sillShadow
   ctx.fillRect((x - 3) * u, (y + h + 2.2) * u, (w + 6) * u, 4.8 * u)
   ctx.restore()
+}
 
-  drawSillObjects(ctx, u, s)
-  drawCurtains(ctx, u, s)
+/**
+ * The parts of the view that move: stars breathing, cloud bands drifting.
+ *
+ * Everything else behind the glass — the gradient, the city, the sun — is
+ * baked with the hour, because it only changes as the light does.
+ */
+function drawSkyLife(ctx: Ctx, u: number, s: RoomState) {
+  const { x, y, w, h } = WINDOW
+  const night = nightAt(s.hour)
+  const budget = quality()
+  if (night <= 0.15 && budget.clouds === 0) return
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x * u, y * u, w * u, h * u)
+  ctx.clip()
+
+  if (night > 0.15) {
+    for (let i = 0; i < budget.stars; i++) {
+      const sx = x + hash2(i, 1, 7) * w
+      const sy = y + hash2(i, 2, 7) * h * 0.62
+      const tw = 0.45 + 0.55 * (Math.sin(s.time * 0.9 + i * 2.1) * 0.5 + 0.5)
+      ctx.globalAlpha = night * 0.8 * tw * (0.35 + hash2(i, 3, 7) * 0.65)
+      r(ctx, u, sx, sy, 0.42, 0.42, '#FFF6E0')
+    }
+  }
+
+  const sky = skyAt(s.hour)
+  ctx.globalAlpha = 0.16 + (1 - night) * 0.16
+  ctx.fillStyle = mixHex(sky.haze, '#FFFFFF', 0.35)
+  for (let i = 0; i < budget.clouds; i++) {
+    const drift = (s.time * (0.22 + (i % 3) * 0.12) + i * 13) % (w + 30)
+    const cx = x - 14 + drift
+    const cy = y + 3 + hash2(i, 9, 3) * h * 0.42
+    const cw = 7 + hash2(i, 10, 3) * 12
+    ctx.fillRect(cx * u, cy * u, cw * u, 1.6 * u)
+    ctx.fillRect((cx + 2) * u, (cy - 1.1) * u, (cw - 5) * u, 1.2 * u)
+  }
+  ctx.restore()
+}
+
+/**
+ * Joinery over the glass.
+ *
+ * Not baked: the sky behind it is drawn live, so the bars have to go back on
+ * top afterwards or the view covers its own window.
+ */
+function drawWindowFrame(ctx: Ctx, u: number) {
+  const { x, y, w, h } = WINDOW
+
+  const bar = (bx: number, by: number, bw: number, bh: number) => {
+    r(ctx, u, bx, by, bw, bh, ROOM.woodShade)
+    r(ctx, u, bx, by, bw, Math.min(0.45, bh), mixHex(ROOM.wood, '#FFFFFF', 0.18))
+  }
+  bar(x + w / 2 - 0.7, y, 1.4, h)
+  bar(x, y + h * 0.44 - 0.7, w, 1.4)
+
+  ctx.strokeStyle = ROOM.woodShade
+  ctx.lineWidth = 2.2 * u
+  ctx.strokeRect(x * u, y * u, w * u, h * u)
+  ctx.strokeStyle = mixHex(ROOM.wood, '#FFFFFF', 0.22)
+  ctx.lineWidth = 0.5 * u
+  ctx.strokeRect((x + 1.1) * u, (y + 1.1) * u, (w - 2.2) * u, (h - 2.2) * u)
 }
 
 /** A little pot and a forgotten mug on the sill — signs of use. */
@@ -415,7 +439,7 @@ function drawRadiator(ctx: Ctx, u: number) {
 
 // ── wall ──────────────────────────────────────────────────────────────
 
-function drawWallSurface(ctx: Ctx, u: number, s: RoomState) {
+function drawWallSurface(ctx: Ctx, u: number) {
   // Base gradient: light pools near the ceiling and falls away to the floor.
   const wall = ctx.createLinearGradient(0, 0, 0, FLOOR_Y * u)
   wall.addColorStop(0, ROOM.wallLit)
@@ -445,7 +469,7 @@ function drawWallSurface(ctx: Ctx, u: number, s: RoomState) {
 
   // Age: soft stains where damp and hands have got at it.
   ctx.save()
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < (quality().stains ? 9 : 0); i++) {
     const sx = ROOM_LEFT + hash2(i, 41, 13) * ROOM_W
     const sy = 8 + hash2(i, 42, 13) * (FLOOR_Y - 16)
     const rad = 5 + hash2(i, 43, 13) * 12
@@ -467,7 +491,6 @@ function drawWallSurface(ctx: Ctx, u: number, s: RoomState) {
   ctx.fillRect(ROOM_LEFT * u, 0, ROOM_W * u, 9 * u)
   ctx.restore()
 
-  void s
 }
 
 /**
@@ -597,7 +620,10 @@ function drawFittings(ctx: Ctx, u: number) {
 }
 
 /** Wall clock, with hands that actually tell the room's time. */
-function drawClock(ctx: Ctx, u: number, s: RoomState) {
+const CLOCK = { cx: 66, cy: 15, rad: 4.6 }
+
+/** The dial. Never changes, so it bakes with the wall. */
+function drawClockFace(ctx: Ctx, u: number) {
   const cx = 66
   const cy = 15
   const rad = 4.6
@@ -639,6 +665,11 @@ function drawClock(ctx: Ctx, u: number, s: RoomState) {
     )
   }
 
+}
+
+/** The hands, which are the only part of a clock that is worth redrawing. */
+function drawClockHands(ctx: Ctx, u: number, s: RoomState) {
+  const { cx, cy, rad } = CLOCK
   const hand = (angle: number, length: number, width: number, colour: string) => {
     ctx.save()
     ctx.translate(cx * u, cy * u)
@@ -777,7 +808,7 @@ function jointX(index: number, t: number): number {
   return STAGE.w / 2 + index * (7 + t * 13)
 }
 
-function drawFloor(ctx: Ctx, u: number, s: RoomState) {
+function drawFloor(ctx: Ctx, u: number) {
   const depth = STAGE.h - FLOOR_Y
   const floor = ctx.createLinearGradient(0, FLOOR_Y * u, 0, STAGE.h * u)
   floor.addColorStop(0, ROOM.floor)
@@ -807,10 +838,11 @@ function drawFloor(ctx: Ctx, u: number, s: RoomState) {
   textureRect(ctx, 'wood', u, ROOM_LEFT, FLOOR_Y, ROOM_W, depth, 0.55, true)
 
   // Board ends, staggered so no two rows break in the same place.
+  const detail = quality().floorDetail
   ctx.save()
   ctx.globalAlpha = 0.35
   ctx.fillStyle = ROOM.floorSeam
-  for (let i = -18; i <= 32; i++) {
+  for (let i = detail ? -18 : 33; i <= 32; i++) {
     for (let k = 0; k < 3; k++) {
       const t = 0.18 + k * 0.3 + hash2(i, k, 63) * 0.16
       const y = FLOOR_Y + t * depth
@@ -843,7 +875,7 @@ function drawFloor(ctx: Ctx, u: number, s: RoomState) {
   ctx.save()
   ctx.globalAlpha = 0.26
   ctx.fillStyle = '#0B0806'
-  for (let i = -18; i <= 32; i += 1) {
+  for (let i = detail ? -18 : 33; i <= 32; i += 1) {
     for (let k = 0; k < 3; k++) {
       const t = 0.18 + k * 0.3 + hash2(i, k, 63) * 0.16
       const y = FLOOR_Y + t * depth
@@ -867,9 +899,16 @@ function drawFloor(ctx: Ctx, u: number, s: RoomState) {
   ctx.fillRect(ROOM_LEFT * u, FLOOR_Y * u, ROOM_W * u, depth * u)
   ctx.restore()
 
-  // Varnish sheen: daylight along the boards, and the lamp's own reflection
-  // smeared down the grain under the desk.
+}
+
+/**
+ * Varnish catching the light. Lives outside the bake because it is the one
+ * part of the floor that changes as the hour turns and the lamp comes on.
+ */
+function drawFloorSheen(ctx: Ctx, u: number, s: RoomState) {
+  const depth = STAGE.h - FLOOR_Y
   const day = daylightAt(s.hour)
+  if (day <= 0.05 && s.lamp <= 0.02) return
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   if (day > 0.05) {
@@ -936,7 +975,7 @@ function drawLightShaft(ctx: Ctx, u: number, s: RoomState) {
 
   // Motes drifting through the beam.
   ctx.fillStyle = ROOM.dust
-  for (let i = 0; i < 46; i++) {
+  for (let i = 0; i < quality().motes; i++) {
     const seed = i * 12.9898
     const drift = (s.time * (0.1 + (i % 5) * 0.03) + hash2(i, 1, 2)) % 1
     const px = x + 3 + hash2(i, 2, 2) * (w + 32) + drift * 9
@@ -958,7 +997,8 @@ function drawLightShaft(ctx: Ctx, u: number, s: RoomState) {
  */
 const DESK = { x: 96, y: 60, w: 30, h: 8 }
 
-function drawDesk(ctx: Ctx, u: number, s: RoomState) {
+/** The desk carcass and its clutter — furniture, so it bakes. */
+function drawDeskBody(ctx: Ctx, u: number) {
   const { x, y, w } = DESK
 
   contactShadow(ctx, u, x + w / 2, FLOOR_Y + 1, w * 0.65, 2.4, 0.55)
@@ -994,8 +1034,12 @@ function drawDesk(ctx: Ctx, u: number, s: RoomState) {
   ctx.fillRect(x * u, (y + 2.4) * u, w * u, 2.6 * u)
   ctx.restore()
 
-  drawMonitor(ctx, u, s)
   drawDeskClutter(ctx, u)
+}
+
+/** The parts of the desk that are lit or animated: the screen, mostly. */
+function drawDeskSurface(ctx: Ctx, u: number, s: RoomState) {
+  drawMonitor(ctx, u, s)
 }
 
 function drawMonitor(ctx: Ctx, u: number, s: RoomState) {
@@ -1174,7 +1218,7 @@ function drawLamp(ctx: Ctx, u: number, s: RoomState) {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
     ctx.fillStyle = ROOM.dust
-    for (let i = 0; i < 22; i++) {
+    for (let i = 0; i < Math.round(quality().motes * 0.48); i++) {
       const rise = (s.time * (0.05 + (i % 4) * 0.02) + hash2(i, 11, 4)) % 1
       const spread = 3 + rise * 9
       const mx = head.x + (hash2(i, 12, 4) - 0.5) * spread * 2
@@ -1399,29 +1443,81 @@ function drawFloorProps(ctx: Ctx, u: number) {
 
 // ── composition ───────────────────────────────────────────────────────
 
-export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
-  drawWallSurface(ctx, u, s)
+/**
+ * Everything that does not change between frames.
+ *
+ * Painted once into the backdrop cache. This is where the bulk of the room's
+ * draw calls live — the floorboards alone are hundreds — so moving them here
+ * is what makes the scene affordable on a slow machine, and what lets the
+ * detail be generous without that being a performance decision.
+ */
+/**
+ * The room state the bake was painted for.
+ *
+ * Set immediately before painting, so the baked sky and the key that names it
+ * cannot disagree about which hour they belong to.
+ */
+let BAKED_STATE: RoomState = { hour: 12, lamp: 0, screen: 0, time: 0 }
 
+function paintStatic(ctx: Ctx, u: number) {
+  drawWallSurface(ctx, u)
   if (!panelsOwnPosterSlot()) drawPoster(ctx, u)
-  drawClock(ctx, u, s)
   drawPinboard(ctx, u)
   drawWallPanels(ctx, u)
-  drawWindow(ctx, u, s)
+  drawClockFace(ctx, u)
+  drawWindowRecess(ctx, u)
+  drawSky(ctx, u, BAKED_STATE)
   drawShelf(ctx, u)
   drawFittings(ctx, u)
-
   drawSkirting(ctx, u)
-  drawFloor(ctx, u, s)
-  drawLightShaft(ctx, u, s)
+  drawFloor(ctx, u)
   drawRug(ctx, u)
-
-  // All furniture sits behind the character. In a side-on view, standing
-  // behind a desk slices the silhouette in half and the character stops
-  // reading — everything stages cleanly with Clawd in front.
   drawRadiator(ctx, u)
   drawFloorProps(ctx, u)
-  drawRestingProps(ctx, u, s.time)
-  drawDesk(ctx, u, s)
+  drawDeskBody(ctx, u)
+  // Last, so a mug on the desk sits on the desk and not under it.
+  drawRestingProps(ctx, u, 0, { still: true })
+}
+
+/** Names every input the baked painting depends on. */
+/** Twelve-minute buckets: the sky is baked, and it moves slowly. */
+function hourBucket(hour: number): number {
+  return Math.round(hour * 5)
+}
+
+function backdropKey(u: number): string {
+  return [
+    'enhanced',
+    unitKey(u),
+    quality().tier,
+    // The view through the window is baked, so the hour is an input to it.
+    String(BAKED_STATE_BUCKET),
+    // Resting props and wall panels are painted into the bake. Both keys are
+    // owned by the layers that draw them, so the two cannot drift apart.
+    restingPropsKey(),
+    wallPanelsKey(),
+  ].join('|')
+}
+
+let BAKED_STATE_BUCKET = -1
+
+export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
+  BAKED_STATE = s
+  BAKED_STATE_BUCKET = hourBucket(s.hour)
+  const baked = bakeBackdrop(u, backdropKey(u), paintStatic)
+  if (baked) blitBackdrop(ctx, u, baked)
+  else paintStatic(ctx, u)
+
+  // ── everything that actually moves ───────────────────────────────
+  drawSkyLife(ctx, u, s)
+  drawWindowFrame(ctx, u)
+  drawSillObjects(ctx, u, s)
+  drawCurtains(ctx, u, s)
+  drawClockHands(ctx, u, s)
+  drawFloorSheen(ctx, u, s)
+  drawLightShaft(ctx, u, s)
+  drawLivingProps(ctx, u, s.time)
+  drawDeskSurface(ctx, u, s)
   drawLamp(ctx, u, s)
 }
 
@@ -1429,7 +1525,21 @@ export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
  * Out-of-focus foreground for depth. Drawn over the character, so it is kept
  * to the extreme edges where it never hides him.
  */
+/**
+ * Out-of-focus foreground for depth. Drawn over the character, so it is kept
+ * to the extreme edges where it never hides him.
+ *
+ * Baked: it never changes, and `ctx.filter = 'blur(...)'` forces its own
+ * compositing pass — one of the few genuinely expensive things a 2D canvas
+ * can be asked to do, and it was being asked every frame.
+ */
 export function drawRoomFore(ctx: Ctx, u: number) {
+  const baked = bakeForeground(u, `enhanced|${unitKey(u)}`, paintFore)
+  if (baked) blitBackdrop(ctx, u, baked)
+  else paintFore(ctx, u)
+}
+
+function paintFore(ctx: Ctx, u: number) {
   ctx.save()
   ctx.globalAlpha = 0.55
   ctx.filter = 'blur(7px)'

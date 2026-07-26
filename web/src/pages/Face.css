@@ -178,6 +178,12 @@
   transform: scale(0.96);
 }
 
+.chip.is-active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: transparent;
+}
+
 .face-field {
   display: flex;
   flex-direction: column;
