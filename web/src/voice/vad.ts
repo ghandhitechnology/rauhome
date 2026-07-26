@@ -37,6 +37,7 @@ export class Vad {
   private speechMs = 0
   private silenceMs = 0
   private active = false
+  private hangoverScale = 1
 
   constructor(opts: VadOptions = {}) {
     this.opts = { ...DEFAULTS, ...opts }
@@ -46,6 +47,24 @@ export class Vad {
     this.speechMs = 0
     this.silenceMs = 0
     this.active = false
+    this.hangoverScale = 1
+  }
+
+  /**
+   * How long to wait before calling the utterance finished, this time.
+   *
+   * Fed from the partial transcript, which arrives a beat before the silence
+   * runs out — so a sentence that trails off on "and…" gets room to continue
+   * while a finished question is answered promptly. Clamped rather than
+   * trusted: a bad transcript should shade the timing, never own it.
+   */
+  setHangoverScale(scale: number) {
+    this.hangoverScale = Math.min(3, Math.max(0.5, Number.isFinite(scale) ? scale : 1))
+  }
+
+  /** The silence currently required to end the utterance, ms. */
+  get hangoverMs() {
+    return this.opts.hangoverMs * this.hangoverScale
   }
 
   get speaking() {
@@ -67,7 +86,12 @@ export class Vad {
     if (!this.active) {
       this.floor = level < this.floor ? this.floor * 0.9 + level * 0.1 : this.floor * 0.995 + level * 0.005
     }
-    const loud = level > Math.max(this.floor + this.opts.threshold, this.floor * 1.8)
+    const enter = Math.max(this.floor + this.opts.threshold, this.floor * 1.8)
+    // Hysteresis. Speech is not a steady tone — it has gaps at every stop
+    // consonant, and a single gate at the entry level drops out inside words
+    // like "st-op", restarting the hangover mid-syllable. Staying in costs
+    // less evidence than getting in, which is how the ear works too.
+    const loud = level > (this.active ? enter * 0.62 : enter)
 
     if (loud) {
       this.speechMs += dtMs
@@ -78,7 +102,7 @@ export class Vad {
       }
     } else {
       this.silenceMs += dtMs
-      if (this.active && this.silenceMs >= this.opts.hangoverMs) {
+      if (this.active && this.silenceMs >= this.hangoverMs) {
         this.active = false
         this.speechMs = 0
         return 'end'

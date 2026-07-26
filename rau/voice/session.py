@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from rau.events import BUS
 from rau.face import brain, choreography
+from rau.voice import reactions
 from rau.voice.stt import get_stt_provider, resolve_stt
 from rau.voice.tts_stream import SR, SentenceTiming, pcm_duration_ms, speak_stream
 from rau import state
@@ -46,6 +47,12 @@ MAX_TEXT_TURN_CHARS = 16_000
 MAX_PLAYBACK_AHEAD_SEC = 0.8
 #: Soft beat before first TTS audio — imperfect timing without filler words.
 PRE_SPEECH_LAG_SEC = 0.2
+#: How long a turn may be silent before a hesitation is played over the gap.
+#:
+#: Under this, the reply is already fast enough that a filler would be the
+#: slowest part of it. Over it, the silence has started to read as lag. Tuned
+#: to sit just past the point where a person would have drawn breath.
+REACTION_AFTER_SEC = 0.45
 #: Bound LLM→TTS so a stalled consumer backpressures the model producer.
 TOKEN_PIPE_MAXSIZE = 32
 
@@ -69,7 +76,7 @@ class Utterance:
     def add(self, text: str, pcm: bytes) -> SpokenChunk:
         duration_ms = pcm_duration_ms(pcm)
         chunk = SpokenChunk(text=text, start_ms=self.total_ms, duration_ms=duration_ms)
-        if self.chunks and self.chunks[-1].text == text:
+        if text and self.chunks and self.chunks[-1].text == text:
             # Low-latency TTS can deliver many PCM fragments for one sentence.
             # They form one audible sentence, not many repeated timeline items.
             previous = self.chunks[-1]
@@ -90,7 +97,10 @@ class Utterance:
         kept: List[str] = []
         for c in self.chunks:
             if played_ms >= c.start_ms + c.duration_ms * 0.5:
-                kept.append(c.text)
+                # A hesitation holds time in the timeline but is not speech: he
+                # did not say "hmm", and the model must not remember saying it.
+                if c.text:
+                    kept.append(c.text)
             else:
                 break
         return " ".join(kept).strip()
@@ -117,6 +127,9 @@ class _Turn:
     #: Where the sentence currently being synthesised starts in the timeline.
     sentence_start_ms: float = 0.0
     first_audio_at: float = 0.0
+    #: Set once a hesitation has been played for this turn, so the real reply
+    #: never arrives behind a second one.
+    reacted: bool = False
     thread: Optional[threading.Thread] = None
     producer: Optional[threading.Thread] = None
     reply: Any = None
@@ -144,6 +157,14 @@ class _Turn:
                 return 0.0
             elapsed_ms = (time.monotonic() - self.first_audio_at) * 1000.0
             return min(self.utterance.total_ms, max(0.0, elapsed_ms))
+
+    def claim_reaction(self) -> bool:
+        """True for exactly one caller, and only while nothing has been said."""
+        with self.lock:
+            if self.reacted or self.first_audio_at:
+                return False
+            self.reacted = True
+            return True
 
     def mark_interrupted_sent(self) -> bool:
         with self.lock:
@@ -174,6 +195,7 @@ class VoiceSession:
         self._active_turn: Optional[_Turn] = None
         self.phase = "idle"  # idle | listening | thinking | speaking
         self.closed = False
+        _warm_reactions()
 
     # ── plumbing ─────────────────────────────────────────────────────
 
@@ -478,6 +500,7 @@ class VoiceSession:
         from rau.heartbeat.presence import note_user_reply
 
         note_user_reply()
+        family = reactions.classify(turn.text)
         tokens = _TokenPipe()
 
         def produce() -> None:
@@ -540,6 +563,10 @@ class VoiceSession:
                     turn=turn, t="say", text=sentence, turn_id=turn.turn_id
                 )
             with turn.lock:
+                # Claimed here as well as in `react`, so a fast reply closes
+                # the window instead of arriving behind a hesitation for a gap
+                # that turned out not to exist.
+                turn.reacted = True
                 if not turn.first_audio_at:
                     turn.first_audio_at = time.monotonic()
                 chunk = turn.utterance.add(sentence, pcm)
@@ -572,6 +599,53 @@ class VoiceSession:
             if pcm and not turn.cancel.is_set():
                 audio_sent = True
             on_audio(pcm)
+
+        def react() -> None:
+            """
+            Cover the gap before the first real word, if there is one.
+
+            Runs on its own thread because the turn thread is about to block
+            inside `speak_stream` for as long as the first sentence takes to
+            synthesise — which is precisely the interval being covered.
+            """
+            try:
+                _react()
+            except Exception:
+                # A hesitation is decoration in front of the thing the user
+                # actually asked for. Anything that goes wrong here costs the
+                # decoration and must not be visible anywhere else.
+                pass
+
+        def _react() -> None:
+            # Never shorter than the pre-speech lag plus a beat. The turn
+            # thread does not even enter `speak_stream` until that lag is up,
+            # so a shorter wait would fire the hesitation before the pipeline
+            # it exists to cover had a chance to produce anything — which is
+            # every turn, which is the loading noise this is trying not to be.
+            if turn.cancel.wait(max(REACTION_AFTER_SEC, PRE_SPEECH_LAG_SEC + 0.15)):
+                return
+            if not self._is_current(turn) or not turn.claim_reaction():
+                return
+            text = reactions.POOL.choose(family)
+            pcm = reactions.POOL.audio(text)
+            # Between choosing and synthesising, the real reply may have caught
+            # up. Speaking now would put a hesitation after the first sentence.
+            if not pcm or turn.cancel.is_set() or not self._is_current(turn):
+                return
+            with turn.lock:
+                if turn.first_audio_at:
+                    return
+                turn.first_audio_at = time.monotonic()
+                # Empty text: it holds its place in the timeline so every
+                # sentence after it is aligned correctly, but it is not speech.
+                turn.utterance.add("", pcm)
+            self.set_phase_threadsafe("speaking", turn=turn)
+            self.send_audio_threadsafe(pcm, turn=turn)
+
+        reactor = threading.Thread(
+            target=react, daemon=True, name=f"rau-voice-react-{turn.ident}"
+        )
+        reactor.start()
 
         tts_failed = False
         try:
@@ -703,6 +777,33 @@ class VoiceSession:
             for worker in workers:
                 if worker is not None and worker.is_alive():
                     await asyncio.to_thread(worker.join, CLOSE_JOIN_SEC)
+
+
+_WARMED = threading.Event()
+
+
+def _warm_reactions() -> None:
+    """
+    Synthesise the hesitations once, in the background, on first connect.
+
+    Otherwise the very first turn of a session — the one where the user is
+    least sure anything is working, and latency is most visible — is the one
+    turn with nothing to cover it, because its clip is still being fetched.
+    After the first run these are all disk reads.
+    """
+    if _WARMED.is_set():
+        return
+    _WARMED.set()
+
+    def go() -> None:
+        try:
+            reactions.POOL.warm()
+        except Exception:
+            # A pool that cannot warm simply means turns sound like they
+            # answered quickly. It must never affect the connection.
+            pass
+
+    threading.Thread(target=go, daemon=True, name="rau-voice-warm").start()
 
 
 class _TokenPipe:
