@@ -24,7 +24,7 @@ class ControlStoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_schema_wal_and_global_computer_lease(self):
-        self.assertEqual(self.store.schema_status()["schema_version"], 2)
+        self.assertEqual(self.store.schema_status()["schema_version"], 3)
         first = self.store.create_computer_session(
             {"id": "one", "state": "active", "deadline": time.time() + 60}
         )

@@ -88,6 +88,10 @@ class JobIn(BaseModel):
     goal: str
 
 
+class JobSteerIn(BaseModel):
+    instruction: str = Field(min_length=1, max_length=4_000)
+
+
 class IdentityApplyFresh(BaseModel):
     mode: str = "fresh"
 
@@ -423,6 +427,57 @@ def api_jobs_cancel(job_id: str):
     if not result.get("ok"):
         return JSONResponse(result, status_code=404)
     return result
+
+
+@app.post("/api/jobs/{job_id}/pause")
+def api_jobs_pause(job_id: str):
+    result = orchestrator.pause_job(job_id)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404)
+    return result
+
+
+@app.post("/api/jobs/{job_id}/resume")
+def api_jobs_resume(job_id: str):
+    result = orchestrator.resume_job(job_id)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404)
+    return result
+
+
+@app.post("/api/jobs/{job_id}/steer")
+def api_jobs_steer(job_id: str, body: JobSteerIn):
+    result = orchestrator.steer_job(job_id, body.instruction)
+    if not result.get("ok"):
+        code = 400 if "instruction" in str(result.get("error") or "") else 409
+        return JSONResponse(result, status_code=code)
+    return result
+
+
+@app.get("/api/activity")
+def api_activity(
+    turn_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    after_seq: int = 0,
+    limit: int = 200,
+):
+    from rau.activity import ACTIVITY
+
+    return {
+        "activity": ACTIVITY.list(
+            turn_id=turn_id,
+            job_id=job_id,
+            after_seq=max(0, after_seq),
+            limit=max(1, min(1000, limit)),
+        )
+    }
+
+
+@app.get("/api/activity/active")
+def api_activity_active(limit: int = 200):
+    from rau.activity import ACTIVITY
+
+    return {"activity": ACTIVITY.active(limit=max(1, min(1000, limit)))}
 
 
 @app.get("/api/schedules")
@@ -1042,14 +1097,14 @@ def api_chat(body: ChatIn):
     if not text:
         return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
     note_user_reply()
-    state.add_log("user", text)
     turn_id = choreography.new_turn_id()
+    state.add_log("user", text, turn_id)
     try:
         # The broadcast lives inside chat_streaming; nothing extra to do here.
         reply = str(brain.chat_streaming(text, on_token=lambda _t: None, turn_id=turn_id))
     except Exception as e:
         reply = f"I hit a snag thinking: {e}"
-    state.add_log("rau", reply)
+    state.add_log("rau", reply, turn_id)
     # Sticky mood / runtime emotion already applied inside chat_streaming.
     emo = state.get_emotion()
     state.set_emotion(str(emo.get("emotion") or "curious"), reply)

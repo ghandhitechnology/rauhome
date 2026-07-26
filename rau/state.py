@@ -130,11 +130,12 @@ def set_emotion(emotion: str, text: str = "") -> Dict[str, Any]:
         return _public_state()
 
 
-def add_log(role: str, text: str) -> None:
+def add_log(role: str, text: str, turn_id: Optional[str] = None) -> None:
     with _lock:
-        _chat_log.append(
-            {"role": role, "text": text, "time": time.strftime("%H:%M:%S")}
-        )
+        entry = {"role": role, "text": text, "time": time.strftime("%H:%M:%S")}
+        if turn_id:
+            entry["turn_id"] = turn_id
+        _chat_log.append(entry)
         if len(_chat_log) > MAX_LOG:
             del _chat_log[: len(_chat_log) - MAX_LOG]
 
@@ -188,6 +189,8 @@ def enable_durable_state() -> Dict[str, Any]:
                 "lease_owner": durable.get("lease_owner"),
                 "lease_expires": durable.get("lease_expires"),
                 "scheduled_run_id": durable.get("scheduled_run_id"),
+                "origin_turn_id": durable.get("origin_turn_id"),
+                "plan_revision": int(durable.get("plan_revision") or 1),
                 "terminal_reason": str(durable.get("terminal_reason") or ""),
                 "created": float(durable.get("created") or time.time()),
                 "updated": float(durable.get("updated") or time.time()),
@@ -278,6 +281,9 @@ def create_job(
     goal: str,
     parent_id: Optional[str] = None,
     depth: int = 0,
+    *,
+    origin_turn_id: Optional[str] = None,
+    plan_revision: int = 1,
 ) -> Dict[str, Any]:
     now = time.time()
     with _lock:
@@ -292,6 +298,8 @@ def create_job(
             # view stays flat and unaware of it.
             "parent_id": parent_id,
             "depth": depth,
+            "origin_turn_id": origin_turn_id,
+            "plan_revision": max(1, int(plan_revision)),
             "created": now,
             "updated": now,
         }

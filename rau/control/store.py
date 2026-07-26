@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from rau.paths import CONTROL_DB, ensure_dirs
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ACTIVE_STATES = (
     "queued",
     "planning",
@@ -78,6 +78,8 @@ class ControlStore:
                         lease_owner TEXT,
                         lease_expires REAL,
                         scheduled_run_id TEXT,
+                        origin_turn_id TEXT,
+                        plan_revision INTEGER NOT NULL DEFAULT 1,
                         terminal_reason TEXT NOT NULL DEFAULT '',
                         created REAL NOT NULL,
                         updated REAL NOT NULL
@@ -90,16 +92,23 @@ class ControlStore:
                         job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
                         ordinal INTEGER NOT NULL,
                         title TEXT NOT NULL,
+                        goal TEXT NOT NULL DEFAULT '',
                         state TEXT NOT NULL,
                         executor TEXT NOT NULL DEFAULT 'python',
+                        effect_class TEXT NOT NULL DEFAULT 'read',
                         capabilities_json TEXT NOT NULL DEFAULT '[]',
                         dependencies_json TEXT NOT NULL DEFAULT '[]',
+                        expected_output_json TEXT NOT NULL DEFAULT '{}',
                         expected_evidence_json TEXT NOT NULL DEFAULT '[]',
                         preconditions_json TEXT NOT NULL DEFAULT '[]',
                         result_json TEXT NOT NULL DEFAULT '{}',
                         evidence_json TEXT NOT NULL DEFAULT '[]',
                         attempt INTEGER NOT NULL DEFAULT 0,
+                        retry_budget INTEGER NOT NULL DEFAULT 0,
                         strategy TEXT NOT NULL DEFAULT '',
+                        timeout_sec REAL NOT NULL DEFAULT 300,
+                        concurrency_key TEXT NOT NULL DEFAULT '',
+                        plan_revision INTEGER NOT NULL DEFAULT 1,
                         idempotency_key TEXT,
                         effect_state TEXT NOT NULL DEFAULT 'none',
                         lease_owner TEXT,
@@ -229,6 +238,31 @@ class ControlStore:
                         payload_json TEXT NOT NULL,
                         created REAL NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS activity_spans (
+                        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id TEXT NOT NULL UNIQUE,
+                        revision INTEGER NOT NULL DEFAULT 1,
+                        kind TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        label TEXT NOT NULL,
+                        summary TEXT NOT NULL DEFAULT '',
+                        details_json TEXT NOT NULL DEFAULT '{}',
+                        turn_id TEXT,
+                        job_id TEXT,
+                        step_id TEXT,
+                        parent_span_id TEXT,
+                        started REAL NOT NULL,
+                        updated REAL NOT NULL,
+                        ended REAL
+                    );
+                    CREATE INDEX IF NOT EXISTS activity_turn_idx
+                        ON activity_spans(turn_id, seq);
+                    CREATE INDEX IF NOT EXISTS activity_job_idx
+                        ON activity_spans(job_id, seq);
+                    CREATE INDEX IF NOT EXISTS activity_active_idx
+                        ON activity_spans(status, updated);
                     """
                 )
                 # Migrations are additive and safe to re-run. SQLite cannot
@@ -240,6 +274,32 @@ class ControlStore:
                 }
                 if "retry_at" not in run_columns:
                     db.execute("ALTER TABLE schedule_runs ADD COLUMN retry_at REAL")
+                job_columns = {
+                    str(row["name"]) for row in db.execute("PRAGMA table_info(jobs)")
+                }
+                if "origin_turn_id" not in job_columns:
+                    db.execute("ALTER TABLE jobs ADD COLUMN origin_turn_id TEXT")
+                if "plan_revision" not in job_columns:
+                    db.execute(
+                        "ALTER TABLE jobs ADD COLUMN plan_revision INTEGER "
+                        "NOT NULL DEFAULT 1"
+                    )
+                step_columns = {
+                    str(row["name"]) for row in db.execute("PRAGMA table_info(steps)")
+                }
+                for column, declaration in (
+                    ("goal", "TEXT NOT NULL DEFAULT ''"),
+                    ("effect_class", "TEXT NOT NULL DEFAULT 'read'"),
+                    ("expected_output_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    ("retry_budget", "INTEGER NOT NULL DEFAULT 0"),
+                    ("timeout_sec", "REAL NOT NULL DEFAULT 300"),
+                    ("concurrency_key", "TEXT NOT NULL DEFAULT ''"),
+                    ("plan_revision", "INTEGER NOT NULL DEFAULT 1"),
+                ):
+                    if column not in step_columns:
+                        db.execute(
+                            f"ALTER TABLE steps ADD COLUMN {column} {declaration}"
+                        )
                 # v1 accidentally indexed the state value, allowing one
                 # session per active state. Recreate it as a constant partial
                 # index so exactly one active machine lease exists globally.
@@ -315,6 +375,136 @@ class ControlStore:
             )
             return int(cur.lastrowid)
 
+    def create_activity_span(self, span: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a public, already-sanitized activity span."""
+        self._ensure()
+        now = time.time()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO activity_spans(
+                    id, revision, kind, source, status, label, summary,
+                    details_json, turn_id, job_id, step_id, parent_span_id,
+                    started, updated, ended
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(span["id"]),
+                    int(span.get("revision") or 1),
+                    str(span.get("kind") or "execution"),
+                    str(span.get("source") or "rau"),
+                    str(span.get("status") or "running"),
+                    str(span.get("label") or "Working"),
+                    str(span.get("summary") or ""),
+                    _json(span.get("details") or {}),
+                    span.get("turn_id"),
+                    span.get("job_id"),
+                    span.get("step_id"),
+                    span.get("parent_span_id"),
+                    float(span.get("started") or now),
+                    float(span.get("updated") or now),
+                    span.get("ended"),
+                ),
+            )
+            row = db.execute(
+                "SELECT * FROM activity_spans WHERE id=?", (str(span["id"]),)
+            ).fetchone()
+        assert row is not None
+        return self._activity_row(row)
+
+    def update_activity_span(
+        self, span_id: str, changes: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        self._ensure()
+        allowed = {
+            "status",
+            "label",
+            "summary",
+            "details",
+            "ended",
+            "updated",
+        }
+        assignments: List[str] = []
+        values: List[Any] = []
+        for key, value in changes.items():
+            if key not in allowed:
+                continue
+            column = "details_json" if key == "details" else key
+            if key == "details":
+                value = _json(value or {})
+            assignments.append(f"{column}=?")
+            values.append(value)
+        if not assignments:
+            return self.get_activity_span(span_id)
+        assignments.extend(("revision=revision+1", "updated=?"))
+        values.append(float(changes.get("updated") or time.time()))
+        values.append(span_id)
+        with self._lock, self._connect() as db:
+            db.execute(
+                f"UPDATE activity_spans SET {', '.join(assignments)} WHERE id=?",
+                tuple(values),
+            )
+            row = db.execute(
+                "SELECT * FROM activity_spans WHERE id=?", (span_id,)
+            ).fetchone()
+        return self._activity_row(row) if row else None
+
+    def get_activity_span(self, span_id: str) -> Optional[Dict[str, Any]]:
+        self._ensure()
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM activity_spans WHERE id=?", (span_id,)
+            ).fetchone()
+        return self._activity_row(row) if row else None
+
+    def list_activity(
+        self,
+        *,
+        turn_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+        after_seq: int = 0,
+        limit: int = 200,
+        active_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        self._ensure()
+        cursor = max(0, int(after_seq))
+        clauses = ["seq>?"]
+        values: List[Any] = [cursor]
+        if turn_id:
+            clauses.append("turn_id=?")
+            values.append(turn_id)
+        if job_id:
+            clauses.append("job_id=?")
+            values.append(job_id)
+        if active_only:
+            clauses.append("status IN ('queued','running','awaiting_confirm')")
+        values.append(max(1, min(1000, int(limit))))
+        order = "seq" if cursor else "seq DESC"
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT * FROM activity_spans
+                WHERE {' AND '.join(clauses)}
+                ORDER BY {order} LIMIT ?
+                """,
+                tuple(values),
+            ).fetchall()
+        values_out = [self._activity_row(row) for row in rows]
+        return values_out if cursor else list(reversed(values_out))
+
+    def purge_activity(self, before: float) -> int:
+        self._ensure()
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                """
+                DELETE FROM activity_spans
+                WHERE updated<? AND status NOT IN
+                    ('queued','running','awaiting_confirm')
+                """,
+                (float(before),),
+            )
+            return int(cursor.rowcount)
+
     def claim_idempotency(
         self, key: str, scope: str, request: Any
     ) -> Dict[str, Any]:
@@ -369,8 +559,9 @@ class ControlStore:
                 INSERT INTO jobs(
                     id, goal, state, progress, result, parent_id, depth,
                     plan_json, budget_json, executor, attempt, lease_owner,
-                    lease_expires, scheduled_run_id, terminal_reason, created, updated
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    lease_expires, scheduled_run_id, origin_turn_id,
+                    plan_revision, terminal_reason, created, updated
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     state=excluded.state, progress=excluded.progress,
                     result=excluded.result, parent_id=excluded.parent_id,
@@ -379,6 +570,8 @@ class ControlStore:
                     attempt=excluded.attempt, lease_owner=excluded.lease_owner,
                     lease_expires=excluded.lease_expires,
                     scheduled_run_id=excluded.scheduled_run_id,
+                    origin_turn_id=excluded.origin_turn_id,
+                    plan_revision=excluded.plan_revision,
                     terminal_reason=excluded.terminal_reason,
                     updated=excluded.updated
                 """,
@@ -397,6 +590,8 @@ class ControlStore:
                     job.get("lease_owner"),
                     job.get("lease_expires"),
                     job.get("scheduled_run_id"),
+                    job.get("origin_turn_id"),
+                    int(job.get("plan_revision") or 1),
                     str(job.get("terminal_reason") or ""),
                     float(job.get("created") or now),
                     float(job.get("updated") or now),
@@ -445,22 +640,33 @@ class ControlStore:
             db.execute(
                 """
                 INSERT INTO steps(
-                    id, job_id, ordinal, title, state, executor,
+                    id, job_id, ordinal, title, goal, state, executor,
+                    effect_class,
                     capabilities_json, dependencies_json,
-                    expected_evidence_json, preconditions_json, result_json,
-                    evidence_json, attempt, strategy, idempotency_key,
+                    expected_output_json, expected_evidence_json,
+                    preconditions_json, result_json,
+                    evidence_json, attempt, retry_budget, strategy,
+                    timeout_sec, concurrency_key, plan_revision, idempotency_key,
                     effect_state, lease_owner, lease_expires, deadline,
                     terminal_reason, created, updated
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
+                    title=excluded.title, goal=excluded.goal,
                     state=excluded.state, executor=excluded.executor,
+                    effect_class=excluded.effect_class,
                     capabilities_json=excluded.capabilities_json,
                     dependencies_json=excluded.dependencies_json,
+                    expected_output_json=excluded.expected_output_json,
                     expected_evidence_json=excluded.expected_evidence_json,
                     preconditions_json=excluded.preconditions_json,
                     result_json=excluded.result_json,
                     evidence_json=excluded.evidence_json,
-                    attempt=excluded.attempt, strategy=excluded.strategy,
+                    attempt=excluded.attempt,
+                    retry_budget=excluded.retry_budget,
+                    strategy=excluded.strategy,
+                    timeout_sec=excluded.timeout_sec,
+                    concurrency_key=excluded.concurrency_key,
+                    plan_revision=excluded.plan_revision,
                     idempotency_key=excluded.idempotency_key,
                     effect_state=excluded.effect_state,
                     lease_owner=excluded.lease_owner,
@@ -474,16 +680,23 @@ class ControlStore:
                     step["job_id"],
                     int(step.get("ordinal") or 0),
                     str(step.get("title") or ""),
+                    str(step.get("goal") or step.get("title") or ""),
                     str(step.get("state") or "queued"),
                     str(step.get("executor") or "python"),
+                    str(step.get("effect_class") or "read"),
                     _json(step.get("capabilities") or []),
                     _json(step.get("dependencies") or []),
+                    _json(step.get("expected_output") or {}),
                     _json(step.get("expected_evidence") or []),
                     _json(step.get("preconditions") or []),
                     _json(step.get("result") or {}),
                     _json(step.get("evidence") or []),
                     int(step.get("attempt") or 0),
+                    int(step.get("retry_budget") or 0),
                     str(step.get("strategy") or ""),
+                    float(step.get("timeout_sec") or 300),
+                    str(step.get("concurrency_key") or ""),
+                    int(step.get("plan_revision") or 1),
                     step.get("idempotency_key"),
                     str(step.get("effect_state") or "none"),
                     step.get("lease_owner"),
@@ -612,6 +825,7 @@ class ControlStore:
                     "schedules",
                     "schedule_runs",
                     "computer_sessions",
+                    "activity_spans",
                 )
             }
         return {
@@ -1236,6 +1450,18 @@ class ControlStore:
                 """,
                 (stamp,),
             )
+            db.execute(
+                """
+                UPDATE activity_spans
+                SET status='interrupted', revision=revision+1,
+                    summary=CASE
+                        WHEN summary='' THEN 'Interrupted by process restart'
+                        ELSE summary END,
+                    updated=?, ended=?
+                WHERE status IN ('queued','running','awaiting_confirm')
+                """,
+                (stamp, stamp),
+            )
             return int(cur.rowcount)
 
     @staticmethod
@@ -1246,17 +1472,24 @@ class ControlStore:
         return value
 
     @staticmethod
+    def _activity_row(row: sqlite3.Row) -> Dict[str, Any]:
+        value = dict(row)
+        value["details"] = _object(value.pop("details_json", "{}"), {})
+        return value
+
+    @staticmethod
     def _step_row(row: sqlite3.Row) -> Dict[str, Any]:
         value = dict(row)
         for key in (
             "capabilities",
             "dependencies",
+            "expected_output",
             "expected_evidence",
             "preconditions",
             "result",
             "evidence",
         ):
-            default: Any = {} if key == "result" else []
+            default: Any = {} if key in {"result", "expected_output"} else []
             value[key] = _object(value.pop(f"{key}_json", ""), default)
         return value
 

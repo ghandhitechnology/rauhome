@@ -8,6 +8,9 @@ import {
 } from 'react'
 import { Link } from '../router'
 import ChatMarkdown from '../components/ChatMarkdown'
+import ActivityInspector, {
+  ActivityChip,
+} from '../components/ActivityInspector'
 import ClawdAvatar from '../components/ClawdAvatar'
 import PermissionMenu from '../components/PermissionMenu'
 import SlashMenu from '../components/SlashMenu'
@@ -188,6 +191,7 @@ export default function Conversation() {
   const [streaming, setStreaming] = useState<{ turnId: string; text: string } | null>(null)
   const [sendError, setSendError] = useState('')
   const [offline, setOffline] = useState(false)
+  const [activityOpen, setActivityOpen] = useState(false)
   const threadRef = useRef<HTMLElement>(null)
   const composeRef = useRef<HTMLElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -467,8 +471,23 @@ export default function Conversation() {
           <Link to="/face" className="convo-room-link">
             Open the room →
           </Link>
+          <ActivityChip
+            open={activityOpen}
+            onToggle={() => setActivityOpen((value) => !value)}
+            className="convo-activity-chip"
+          />
         </div>
       </header>
+
+      {activityOpen && (
+        <aside className="convo-activity-drawer" aria-label="All active Rau work">
+          <ActivityInspector
+            global
+            defaultOpen
+            onClose={() => setActivityOpen(false)}
+          />
+        </aside>
+      )}
 
       {confirm && (
         <div className="convo-confirm">
@@ -522,6 +541,9 @@ export default function Conversation() {
               ) : (
                 <ChatMarkdown text={m.text || ''} />
               )}
+              {m.role !== 'user' && m.turn_id && (
+                <ActivityInspector turnId={String(m.turn_id)} />
+              )}
             </article>
           )
         })}
@@ -532,6 +554,9 @@ export default function Conversation() {
               <span className="time">now</span>
             </div>
             <ChatMarkdown text={liveReply} />
+            {streaming?.turnId && (
+              <ActivityInspector turnId={streaming.turnId} />
+            )}
           </article>
         )}
         {(sending || (mode === 'voice' && voice.phase === 'thinking')) && !liveReply && (

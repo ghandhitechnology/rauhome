@@ -20,6 +20,10 @@ class Message:
     #: Optional images for multimodal tool results (e.g. CUA screenshots).
     #: Each entry: {"mime": "image/png", "b64": "..."}.
     images: Optional[List[Dict[str, str]]] = None
+    #: Provider-visible reasoning continuation required across tool rounds.
+    #: Opaque signatures/encrypted blocks stay here and never enter activity.
+    reasoning: str = ""
+    reasoning_details: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -33,6 +37,8 @@ class ToolCall:
 class ChatResult:
     content: str
     tool_calls: List[ToolCall] = field(default_factory=list)
+    reasoning: str = ""
+    reasoning_details: Optional[List[Dict[str, Any]]] = None
     raw: Any = None
 
 
@@ -63,13 +69,21 @@ class ToolCallDelta:
 
 
 @dataclass
+class ReasoningDelta:
+    """Readable reasoning explicitly returned by the provider."""
+
+    text: str
+    provider_format: str = "reasoning"
+
+
+@dataclass
 class StreamDone:
     """Terminal event carrying the assembled result."""
 
     result: ChatResult
 
 
-StreamEvent = Any  # TextDelta | ToolCallDelta | StreamDone
+StreamEvent = Any  # TextDelta | ReasoningDelta | ToolCallDelta | StreamDone
 
 
 def normalize_tool_arguments(raw: Any) -> Dict[str, Any]:
@@ -322,7 +336,12 @@ def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
             continue
 
         if m.role != "assistant" or not m.tool_calls:
-            out.append({"role": m.role, "content": m.content})
+            encoded: Dict[str, Any] = {"role": m.role, "content": m.content}
+            if m.role == "assistant" and m.reasoning:
+                encoded["reasoning_content"] = m.reasoning
+            if m.role == "assistant" and m.reasoning_details:
+                encoded["reasoning_details"] = m.reasoning_details
+            out.append(encoded)
             i += 1
             continue
 
@@ -332,11 +351,10 @@ def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
         paired, orphans = pair_tool_calls(m, msgs[i + 1 : end])
 
         if paired:
-            out.append(
-                {
-                    "role": "assistant",
-                    "content": m.content or None,
-                    "tool_calls": [
+            assistant_payload: Dict[str, Any] = {
+                "role": "assistant",
+                "content": m.content or None,
+                "tool_calls": [
                         {
                             "id": tc.id,
                             "type": "function",
@@ -347,8 +365,12 @@ def messages_to_openai(messages: Iterable[Message]) -> List[Dict[str, Any]]:
                         }
                         for tc, _ in paired
                     ],
-                }
-            )
+            }
+            if m.reasoning:
+                assistant_payload["reasoning_content"] = m.reasoning
+            if m.reasoning_details:
+                assistant_payload["reasoning_details"] = m.reasoning_details
+            out.append(assistant_payload)
             # Every result has to land before any other role resumes.
             out.extend(
                 {

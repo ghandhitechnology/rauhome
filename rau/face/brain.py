@@ -11,10 +11,17 @@ from rau.agent import orchestrator
 from rau.agent import tools as agent_tools
 from rau.agent.danger import classify_tool
 from rau.events import BUS
+from rau.activity import ACTIVITY
 from rau.face import choreography, panels, props, web
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, recent_context
-from rau.providers.base import Message, StreamDone, TextDelta, tool_result_text
+from rau.providers.base import (
+    Message,
+    ReasoningDelta,
+    StreamDone,
+    TextDelta,
+    tool_result_text,
+)
 from rau.providers.registry import chat_for_slot, load_settings
 from rau.skills import goals as goal_store
 from rau.skills.loader import skills_public
@@ -448,7 +455,10 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 name, reason="room is in read-only mode — cannot start deep work"
             )
         if name == "start_hard_task":
-            return orchestrator.start_hard_task(str(args.get("goal") or ""))
+            return orchestrator.start_hard_task(
+                str(args.get("goal") or ""),
+                origin_turn_id=choreography.current_turn_id() or None,
+            )
         return orchestrator.redirect_hard_task(str(args.get("goal") or ""))
     if name == "cancel_hard_task":
         return orchestrator.cancel_hard_task()
@@ -531,10 +541,61 @@ def _record_tool_round(
             role="assistant",
             content=result.content,
             tool_calls=list(result.tool_calls),
+            reasoning=str(getattr(result, "reasoning", "") or ""),
+            reasoning_details=getattr(result, "reasoning_details", None),
         )
     )
     for tc in result.tool_calls:
-        tr = _run_face_tool(tc.name, tc.arguments)
+        turn_id = choreography.current_turn_id() or None
+        label = {
+            "read_file": "Reading a file",
+            "write_file": "Writing a file",
+            "edit_file": "Editing a file",
+            "run_shell": "Running a command",
+            "browse_web": "Browsing the web",
+            "start_hard_task": "Starting deep work",
+            "body_choreography": "Planning movement",
+        }.get(tc.name, f"Using {tc.name.replace('_', ' ')}")
+        public_span = ACTIVITY.start(
+            "tool",
+            label,
+            source="face",
+            turn_id=turn_id,
+            details={"tool": tc.name, "arguments": tc.arguments},
+            # Preserve the established choreography ordering: the plan event
+            # reaches the body first, while the tool span is still persisted
+            # synchronously before execution.
+            broadcast=tc.name != "body_choreography",
+        )
+        try:
+            tr = _run_face_tool(tc.name, tc.arguments)
+        except Exception as exc:
+            if tc.name == "body_choreography":
+                ACTIVITY.announce(public_span["id"])
+            ACTIVITY.finish(
+                public_span["id"],
+                status="failed",
+                summary=f"{label} failed",
+                details={"tool": tc.name, "error": str(exc)},
+            )
+            raise
+        if tc.name == "body_choreography":
+            ACTIVITY.announce(public_span["id"])
+        ok = bool(tr.get("ok", True))
+        ACTIVITY.finish(
+            public_span["id"],
+            status="completed" if ok else "failed",
+            summary=(
+                str(tr.get("summary") or "Finished")
+                if ok
+                else str(tr.get("error") or "Tool failed")
+            ),
+            details={
+                "tool": tc.name,
+                "ok": ok,
+                "result": tr,
+            },
+        )
         if on_tool:
             on_tool(tc.name, tc.arguments, tr)
         if tc.name == "use_skill" and tr.get("ok") and tr.get("prompt"):
@@ -782,6 +843,8 @@ def chat_streaming(
         # remembered, or Rau will not know he already acknowledged the request.
         heard: List[str] = []
 
+        reasoning_span_id: Optional[str] = None
+        response_span_id: Optional[str] = None
         try:
             with choreography.turn_scope(turn):
                 for _ in range(6):
@@ -806,6 +869,28 @@ def chat_streaming(
                             chunks.append(event.text)
                             heard.append(event.text)
                             emit(event.text)
+                            # Create this only after the first visible token so
+                            # activity persistence cannot lengthen TTFT.
+                            if response_span_id is None:
+                                response_span_id = ACTIVITY.start(
+                                    "execution",
+                                    "Responding",
+                                    source="face",
+                                    summary="Composing the response",
+                                    turn_id=turn,
+                                )["id"]
+                        elif isinstance(event, ReasoningDelta):
+                            if reasoning_span_id is None:
+                                reasoning_span_id = ACTIVITY.start(
+                                    "reasoning",
+                                    "Reasoning",
+                                    source=getattr(
+                                        event, "provider_format", "provider"
+                                    ),
+                                    summary="",
+                                    turn_id=turn,
+                                )["id"]
+                            ACTIVITY.delta(reasoning_span_id, text=event.text)
                         elif isinstance(event, StreamDone):
                             result = event.result
                     if result is None:
@@ -820,13 +905,46 @@ def chat_streaming(
                         heard.append(result.content)
                         emit(result.content)
                     break
+                if reasoning_span_id is not None:
+                    ACTIVITY.finish(reasoning_span_id, summary="Reasoning complete")
+                if response_span_id is not None:
+                    ACTIVITY.finish(
+                        response_span_id,
+                        summary="Response ready",
+                    )
         except Cancelled:
+            if reasoning_span_id is not None:
+                ACTIVITY.finish(
+                    reasoning_span_id,
+                    status="cancelled",
+                    summary="Reasoning interrupted",
+                )
+            if response_span_id is not None:
+                ACTIVITY.finish(
+                    response_span_id,
+                    status="cancelled",
+                    summary="Response interrupted",
+                )
             broadcast.cancelled("".join(heard).strip())
             raise
         except Exception as exc:
             # A provider can fail after yielding prose. Preserve that partial reply
             # in the reserved slot; an empty failure must not leave a ghost turn.
             _finish_stream_turn(pending, "".join(heard).strip())
+            if reasoning_span_id is not None:
+                ACTIVITY.finish(
+                    reasoning_span_id,
+                    status="failed",
+                    summary="Reasoning failed",
+                    details={"error": str(exc)},
+                )
+            if response_span_id is not None:
+                ACTIVITY.finish(
+                    response_span_id,
+                    status="failed",
+                    summary="Response failed",
+                    details={"error": str(exc)},
+                )
             broadcast.error(str(exc))
             raise
 

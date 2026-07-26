@@ -64,19 +64,48 @@ export type Job = {
   budget?: Record<string, number>
   parent_id?: string | null
   lifecycle_state?: string
+  origin_turn_id?: string | null
+  plan_revision?: number
 }
 
 export type AgentStep = {
   id: string
   ordinal: number
   title: string
+  goal?: string
   state: string
   executor: string
+  effect_class?: string
+  capabilities?: string[]
   dependencies: string[]
+  expected_output?: Record<string, unknown>
+  expected_evidence?: string[]
   evidence: Array<Record<string, unknown>>
   attempt: number
+  retry_budget?: number
   strategy: string
   result: Record<string, unknown>
+  terminal_reason?: string
+  plan_revision?: number
+}
+
+export type ActivitySpan = {
+  id: string
+  seq: number
+  revision: number
+  kind: 'reasoning' | 'planning' | 'tool' | 'approval' | 'execution' | 'verification' | 'retry' | 'completion'
+  source: string
+  status: string
+  label: string
+  summary: string
+  details: Record<string, unknown>
+  turn_id?: string | null
+  job_id?: string | null
+  step_id?: string | null
+  parent_span_id?: string | null
+  started: number
+  updated: number
+  ended?: number | null
 }
 
 export type Schedule = {
@@ -318,6 +347,29 @@ export const api = {
     req<any>('/api/jobs', { method: 'POST', body: JSON.stringify({ goal }) }),
   cancelJob: (id: string) =>
     req<any>(`/api/jobs/${id}/cancel`, { method: 'POST', body: '{}' }),
+  pauseJob: (id: string) =>
+    req<any>(`/api/jobs/${id}/pause`, { method: 'POST', body: '{}' }),
+  resumeJob: (id: string) =>
+    req<any>(`/api/jobs/${id}/resume`, { method: 'POST', body: '{}' }),
+  steerJob: (id: string, instruction: string) =>
+    req<any>(`/api/jobs/${id}/steer`, {
+      method: 'POST',
+      body: JSON.stringify({ instruction }),
+    }),
+  activity: (filters: {
+    turnId?: string
+    jobId?: string
+    afterSeq?: number
+    limit?: number
+  } = {}) => {
+    const query = new URLSearchParams()
+    if (filters.turnId) query.set('turn_id', filters.turnId)
+    if (filters.jobId) query.set('job_id', filters.jobId)
+    if (filters.afterSeq) query.set('after_seq', String(filters.afterSeq))
+    if (filters.limit) query.set('limit', String(filters.limit))
+    return req<{ activity: ActivitySpan[] }>(`/api/activity?${query.toString()}`)
+  },
+  activeActivity: () => req<{ activity: ActivitySpan[] }>('/api/activity/active'),
   confirmations: () => req<{ confirmations: any[] }>('/api/confirmations?state_filter=pending'),
   schedules: () => req<{ schedules: Schedule[] }>('/api/schedules'),
   scheduleRuns: (id: string) =>
@@ -353,7 +405,7 @@ export const api = {
       body: '{}',
     }),
   chat: (text: string) =>
-    req<{ ok: boolean; reply: string }>('/api/chat', {
+    req<{ ok: boolean; reply: string; turn_id: string }>('/api/chat', {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),

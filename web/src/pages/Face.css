@@ -98,6 +98,32 @@
   border-color: transparent;
 }
 
+.face-activity-chip {
+  pointer-events: auto;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(12, 10, 10, 0.5);
+  backdrop-filter: blur(10px);
+}
+
+.face-activity-drawer {
+  position: absolute;
+  top: 3.6rem;
+  right: 1.25rem;
+  z-index: 13;
+  width: min(380px, calc(100vw - 2.5rem));
+  max-height: calc(100vh - 8rem);
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--r-lg);
+  background: rgba(14, 12, 12, 0.9);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow-3);
+}
+
+.face-activity-drawer .activity-summary {
+  border-top: 0;
+}
+
 /* ── director panel ────────────────────────────────────────── */
 
 .face-panel {

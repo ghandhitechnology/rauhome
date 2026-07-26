@@ -45,6 +45,7 @@ def capabilities_for_goal(goal: str, executor: str) -> list[str]:
 def tools_for_goal(goal: str) -> list[Dict[str, Any]]:
     """Expose only tool schemas plausibly relevant to this plan step."""
     from rau.agent.tools import TOOL_SCHEMAS
+    from rau.agent.tool_registry import descriptor
 
     capabilities = set(capabilities_for_goal(goal, "python"))
     names = {
@@ -55,35 +56,15 @@ def tools_for_goal(goal: str) -> list[Dict[str, Any]]:
         "list_skills",
         "spawn_subagent",
     }
-    if capabilities & {"filesystem", "shell"}:
-        names.update({"run_shell", "read_file", "write_file", "edit_file"})
-    if "computer_use" in capabilities:
-        names.update(
-            {
-                "computer_status",
-                "computer_observe",
-                "computer_inspect_ui",
-                "computer_focus",
-                "computer_act",
-                "computer_wait_for",
-                "computer_assert",
-                "computer_finish",
-            }
-        )
-    if "scheduling" in capabilities:
-        names.update(
-            {
-                "list_schedules",
-                "create_schedule",
-                "update_schedule",
-                "delete_schedule",
-                "pause_schedule",
-                "resume_schedule",
-                "run_schedule_now",
-            }
-        )
-    if "external_apps" in capabilities:
-        names.update({"composio_search", "composio_execute"})
+    for schema in TOOL_SCHEMAS:
+        name = str(schema.get("function", {}).get("name") or "")
+        item = descriptor(name)
+        if item is None:
+            continue
+        if item.capability in capabilities:
+            names.add(name)
+        if item.capability == "filesystem" and capabilities & {"filesystem", "shell"}:
+            names.add(name)
     return [
         schema
         for schema in TOOL_SCHEMAS
@@ -159,6 +140,10 @@ class PythonExecutor:
                 blockers=list(value.get("blockers") or []),
                 remaining_risks=list(value.get("remaining_risks") or []),
             )
+        if isinstance(value, str):
+            return JobResult(outcome="completed", summary=value)
+        if value is None:
+            raise RuntimeError("worker exited without a terminal result")
         return JobResult(outcome="completed", summary=step.title)
 
     def cancel(self, step: AgentStep) -> bool:

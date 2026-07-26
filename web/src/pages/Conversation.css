@@ -86,6 +86,25 @@
   color: var(--accent);
 }
 
+.convo-activity-chip {
+  margin: 0.45rem 0 0 auto;
+}
+
+.convo-activity-drawer {
+  position: fixed;
+  z-index: 40;
+  top: 4rem;
+  right: 1rem;
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 8rem);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow-3);
+}
+
 /* ── confirm strip ─────────────────────────────────────────── */
 
 .convo-confirm {
@@ -200,6 +219,11 @@
 
 .convo-msg .chat-md {
   margin: 0;
+}
+
+.convo-msg .activity-inspector {
+  margin: 0.55rem -1rem -0.8rem;
+  width: calc(100% + 2rem);
 }
 
 /* The reply still arriving: a caret on the last line, and no entrance

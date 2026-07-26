@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '../router'
 import ClawdRoom, { type ClawdRoomApi } from '../components/ClawdRoom'
+import ActivityInspector, {
+  ActivityChip,
+} from '../components/ActivityInspector'
 import PermissionMenu from '../components/PermissionMenu'
 import { EMPTY_SIGNALS, type Signals } from '../clawd/director'
 import type { MotionName } from '../clawd/motions'
@@ -64,6 +67,7 @@ export default function Face() {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [panel, setPanel] = useState(false)
+  const [activityOpen, setActivityOpen] = useState(false)
   const [wall, setWall] = useState<PanelSummary[]>(() => panelStore.list())
   const [hour, setHour] = useState<number | null>(null)
   const [lamp, setLamp] = useState<boolean | undefined>(undefined)
@@ -271,7 +275,10 @@ export default function Face() {
   // Escape closes the director panel; Enter focuses the input.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPanel(false)
+      if (e.key === 'Escape') {
+        setPanel(false)
+        setActivityOpen(false)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -357,6 +364,14 @@ export default function Face() {
           </div>
         </div>
         <div className="face-top-right">
+          <ActivityChip
+            open={activityOpen}
+            onToggle={() => {
+              setPanel(false)
+              setActivityOpen((value) => !value)
+            }}
+            className="face-activity-chip"
+          />
           <span className={`mode-pill ${isVoice ? 'on' : ''}`} title="Shift+Space to switch">
             <i className="mode-dot" />
             {isVoice ? 'voice' : 'chat'}
@@ -364,13 +379,26 @@ export default function Face() {
           </span>
           <button
             className={`face-toggle ${panel ? 'on' : ''}`}
-            onClick={() => setPanel((p) => !p)}
+            onClick={() => {
+              setActivityOpen(false)
+              setPanel((p) => !p)
+            }}
             aria-expanded={panel}
           >
             Direct
           </button>
         </div>
       </header>
+
+      {activityOpen && (
+        <aside className="face-activity-drawer" aria-label="Rau agent activity">
+          <ActivityInspector
+            global
+            defaultOpen
+            onClose={() => setActivityOpen(false)}
+          />
+        </aside>
+      )}
 
       {isVoice && (
         <div className="voice-hud">
@@ -418,7 +446,12 @@ export default function Face() {
         </div>
       )}
 
-      <div className={`face-panel ${panel ? 'open' : ''}`}>
+      <div
+        className={`face-panel ${panel ? 'open' : ''}`}
+        aria-hidden={!panel}
+        inert={!panel}
+        hidden={!panel}
+      >
         <div className="face-panel-inner">
           <h3>Motions</h3>
           <div className="chip-row">
