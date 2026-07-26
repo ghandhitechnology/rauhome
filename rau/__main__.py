@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
@@ -11,6 +12,9 @@ from rau.paths import ensure_dirs
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Separates a real long-lived runtime from import-only test clients. Durable
+    # recovery, schedulers, and the desktop pet are process services and should
+    # never start merely because a module was imported.
     load_dotenv()
     ensure_dirs()
     parser = argparse.ArgumentParser(prog="rau")
@@ -18,11 +22,33 @@ def main(argv: list[str] | None = None) -> None:
         "mode",
         nargs="?",
         default="all",
-        choices=["hub", "face", "all", "text"],
-        help="hub = API+UI only; face = voice; all = hub+face; text = hub + text face controls",
+        choices=["hub", "face", "all", "text", "doctor", "launch-agent"],
+        help="run Rau, diagnose it, or manage its single LaunchAgent",
+    )
+    parser.add_argument(
+        "launch_action",
+        nargs="?",
+        choices=["install", "status", "remove"],
+        default="status",
     )
     parser.add_argument("--no-audio", action="store_true", help="Start face without mic loop")
     args = parser.parse_args(argv)
+
+    if args.mode == "doctor":
+        from rau.doctor import format_report, run_doctor
+
+        report = run_doctor()
+        print(format_report(report))
+        raise SystemExit(0 if report["ok"] else 1)
+
+    if args.mode == "launch-agent":
+        from rau import launch_agent
+
+        action = getattr(launch_agent, args.launch_action)
+        print(action())
+        return
+
+    os.environ.setdefault("RAU_RUNTIME", "1")
 
     if args.mode in ("hub", "all", "text"):
         if args.mode == "hub":

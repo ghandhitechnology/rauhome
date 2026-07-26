@@ -35,6 +35,13 @@ _READONLY_ALLOW = frozenset(
         "finish",
         "cancel_hard_task",
         "composio_search",
+        "list_schedules",
+        "computer_status",
+        "computer_observe",
+        "computer_inspect_ui",
+        "computer_wait_for",
+        "computer_assert",
+        "computer_finish",
     }
 )
 
@@ -151,6 +158,17 @@ def is_readonly_allowed(name: str, arguments: Optional[Dict[str, Any]] = None) -
         if action in DANGEROUS_CUA:
             return False
         return action in ("", "screenshot", "scroll", "wait", "status", "cua_status")
+    if n.startswith("computer_"):
+        return n in {
+            "computer_status",
+            "computer_observe",
+            "computer_inspect_ui",
+            "computer_wait_for",
+            "computer_assert",
+            "computer_finish",
+        }
+    if n == "list_schedules":
+        return True
     return False
 
 

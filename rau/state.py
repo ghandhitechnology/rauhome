@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 _lock = threading.RLock()
@@ -29,7 +30,7 @@ _state: Dict[str, Any] = {
 
 _chat_log: List[Dict[str, Any]] = []
 MAX_LOG = 100
-_control_queue: List[Dict[str, Any]] = []
+_control_queue = deque(maxlen=256)
 _browser_voice_sessions = 0
 _listening_before_browser_voice: Optional[bool] = None
 
@@ -41,6 +42,27 @@ MAX_JOBS = 40
 
 ACTIVE_JOB_STATES = ("running", "awaiting_confirm")
 TERMINAL_JOB_STATES = ("done", "failed", "cancelled")
+
+_durable_enabled = False
+
+_TO_DURABLE_STATE = {
+    "running": "running",
+    "awaiting_confirm": "awaiting_confirm",
+    "done": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+_FROM_DURABLE_STATE = {
+    "queued": "running",
+    "planning": "running",
+    "running": "running",
+    "verifying": "running",
+    "awaiting_confirm": "awaiting_confirm",
+    "completed": "done",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "interrupted": "failed",
+}
 
 IDLE_HARD_TASK: Dict[str, Any] = {
     "state": "idle",
@@ -131,7 +153,79 @@ def pop_control() -> Optional[Dict[str, Any]]:
     with _lock:
         if not _control_queue:
             return None
-        return _control_queue.pop(0)
+        return _control_queue.popleft()
+
+
+def enable_durable_state() -> Dict[str, Any]:
+    """Hydrate restart-visible jobs and enable persistence for future updates."""
+    global _durable_enabled
+    from rau.control import control_store
+
+    control_store.initialize()
+    interrupted = control_store.mark_unfinished_interrupted()
+    loaded = control_store.load_jobs(limit=MAX_JOBS)
+    with _lock:
+        for durable in loaded:
+            state_name = _FROM_DURABLE_STATE.get(
+                str(durable.get("state") or ""), "failed"
+            )
+            result = str(durable.get("result") or "")
+            if durable.get("state") == "interrupted" and not result:
+                result = "Job interrupted by a process restart."
+            _jobs[str(durable["id"])] = {
+                "id": str(durable["id"]),
+                "goal": str(durable.get("goal") or ""),
+                "state": state_name,
+                "lifecycle_state": str(durable.get("state") or ""),
+                "progress": str(durable.get("progress") or ""),
+                "result": result,
+                "parent_id": durable.get("parent_id"),
+                "depth": int(durable.get("depth") or 1),
+                "executor": str(durable.get("executor") or "python"),
+                "attempt": int(durable.get("attempt") or 0),
+                "plan": durable.get("plan") or {},
+                "budget": durable.get("budget") or {},
+                "lease_owner": durable.get("lease_owner"),
+                "lease_expires": durable.get("lease_expires"),
+                "scheduled_run_id": durable.get("scheduled_run_id"),
+                "terminal_reason": str(durable.get("terminal_reason") or ""),
+                "created": float(durable.get("created") or time.time()),
+                "updated": float(durable.get("updated") or time.time()),
+            }
+        _trim_jobs()
+        _durable_enabled = True
+    return {"ok": True, "loaded": len(loaded), "interrupted": interrupted}
+
+
+def durable_enabled() -> bool:
+    return _durable_enabled
+
+
+def _persist_job(job: Dict[str, Any]) -> None:
+    if not _durable_enabled:
+        return
+    from rau.control import control_store
+
+    durable = dict(job)
+    lifecycle = str(job.get("lifecycle_state") or "")
+    durable["state"] = (
+        lifecycle
+        if lifecycle
+        in {
+            "queued",
+            "planning",
+            "running",
+            "verifying",
+            "awaiting_confirm",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }
+        else _TO_DURABLE_STATE.get(str(job.get("state") or ""), "failed")
+    )
+    durable["lifecycle_state"] = durable["state"]
+    control_store.upsert_job(durable)
 
 
 def set_listening(on: bool) -> None:
@@ -191,6 +285,7 @@ def create_job(
             "id": job_id,
             "goal": goal,
             "state": "running",
+            "lifecycle_state": "running",
             "progress": "starting",
             "result": "",
             # Carried so a client can draw the tree; the single-slot hard_task
@@ -201,7 +296,9 @@ def create_job(
             "updated": now,
         }
         _trim_jobs()
-        return _job_view(_jobs[job_id])
+        view = _job_view(_jobs[job_id])
+    _persist_job(view)
+    return view
 
 
 def update_job(job_id: str, **kwargs: Any) -> Dict[str, Any]:
@@ -218,8 +315,14 @@ def update_job(job_id: str, **kwargs: Any) -> Dict[str, Any]:
         if job["state"] in TERMINAL_JOB_STATES:
             return _job_view(job)
         job.update(kwargs)
+        if "state" in kwargs and "lifecycle_state" not in kwargs:
+            job["lifecycle_state"] = _TO_DURABLE_STATE.get(
+                str(kwargs["state"]), str(kwargs["state"])
+            )
         job["updated"] = time.time()
-        return _job_view(job)
+        view = _job_view(job)
+    _persist_job(view)
+    return view
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -255,6 +358,10 @@ def set_confirm(job_id: str, payload: Optional[Dict[str, Any]]) -> None:
             _confirms.pop(job_id, None)
         else:
             _confirms[job_id] = dict(payload)
+    if payload is not None and _durable_enabled:
+        from rau.control import control_store
+
+        control_store.save_confirmation(payload)
 
 
 def get_confirm() -> Optional[Dict[str, Any]]:

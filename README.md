@@ -38,6 +38,16 @@ bash launch.sh --text          # hub without mic loop
 
 Open `http://127.0.0.1:8765` — first visit forces Setup (Fresh or Hard startup).
 
+Install optional subsystems explicitly; normal startup never installs or builds:
+
+```bash
+scripts/setup.sh --voice
+scripts/setup.sh --computer-use
+scripts/setup.sh --pi --web
+python -m rau doctor
+python -m rau launch-agent install   # one supervisor, never one entry per schedule
+```
+
 ## How it works
 
 ```
@@ -87,6 +97,34 @@ Skills live in `skills/*/SKILL.md` and are always injectable. In talk:
 | `/effort low\|medium\|high\|max` | Thinking depth |
 
 Dashboard also has **Model effort** knobs (face / subagent / dream) and a skills list.
+
+## Durable operations
+
+The **Operations** page shows persisted job plans, step evidence, budgets,
+schedules and coalesced occurrences, pending approvals, and computer sessions.
+Schedules use UTC storage plus an IANA timezone (default `Asia/Seoul`), never
+overlap, and safely coalesce downtime. Computer use holds one exclusive
+machine lease, resolves Accessibility targets before visual coordinates, and
+re-observes to verify each mutation.
+
+Resource profiles tune model limits, worker parallelism, canvas frame rate,
+pixel ratio, and background activity. Pi and local speech models stay unloaded
+until selected.
+
+To record the required 30-minute before/after idle measurements, start Rau,
+capture its root PID, then run:
+
+```bash
+venv/bin/python scripts/measure_power.py measure --pid PID --duration 1800 \
+  --label before --output measurements/before.json
+venv/bin/python scripts/measure_power.py measure --pid PID --duration 1800 \
+  --label after --output measurements/after.json
+venv/bin/python scripts/measure_power.py compare \
+  measurements/before.json measurements/after.json
+```
+
+On macOS the report reads per-process idle and interrupt wakeups directly from
+`libproc`; no `sudo` or heavyweight status scan is required.
 
 ## Safety model
 

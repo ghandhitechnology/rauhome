@@ -324,6 +324,15 @@ def _context_budget() -> int:
     return int(load_settings().get("face_context_budget") or FACE_CONTEXT_BUDGET)
 
 
+def _face_max_tokens(slot: Dict[str, Any]) -> int:
+    from rau.resources import current_profile
+
+    return min(
+        int(slot.get("max_tokens") or 512),
+        int(current_profile()["face_max_tokens"]),
+    )
+
+
 def _fold_history(snapshot: List[Message], budget: int) -> None:
     """
     Summarize the front of `snapshot` and splice the result back in.
@@ -549,7 +558,7 @@ def _call_face(provider, slot, messages):
     return provider.chat(
         messages,
         model=slot.get("model") or "deepseek-v4-flash",
-        max_tokens=int(slot.get("max_tokens") or 512),
+        max_tokens=_face_max_tokens(slot),
         temperature=float(slot.get("temperature") or 0.9),
         tools=FACE_TOOLS,
         effort=str(slot.get("effort") or "medium"),
@@ -784,7 +793,7 @@ def chat_streaming(
                     for event in provider.stream_turn(
                         messages,
                         model=slot.get("model") or "deepseek-v4-flash",
-                        max_tokens=int(slot.get("max_tokens") or 512),
+                        max_tokens=_face_max_tokens(slot),
                         temperature=float(slot.get("temperature") or 0.9),
                         tools=FACE_TOOLS,
                         effort=str(slot.get("effort") or "medium"),
@@ -879,7 +888,7 @@ def chat_stream(user_text: str) -> Generator[str, None, str]:
             for token in provider.chat_stream(
                 messages,
                 model=slot.get("model") or "deepseek-v4-flash",
-                max_tokens=int(slot.get("max_tokens") or 512),
+                max_tokens=_face_max_tokens(slot),
                 temperature=float(slot.get("temperature") or 0.9),
                 effort=str(slot.get("effort") or "medium"),
             ):

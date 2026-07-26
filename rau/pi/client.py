@@ -43,6 +43,8 @@ class RunResult:
     state: str
     result: str = ""
     error: str = ""
+    completion: Dict[str, Any] = field(default_factory=dict)
+    session_path: str = ""
 
     @property
     def ok(self) -> bool:
@@ -298,6 +300,10 @@ class PiSidecar:
                         state=str(state),
                         result=str(event.get("result") or ""),
                         error=str(event.get("error") or ""),
+                        completion=dict(event.get("completion") or {})
+                        if isinstance(event.get("completion"), dict)
+                        else {},
+                        session_path=str(event.get("session_path") or ""),
                     )
         except Exception as e:
             self._cancel_quiet(run_id)
@@ -317,6 +323,10 @@ class PiSidecar:
                     state=str(recovered["state"]),
                     result=str(recovered.get("result") or ""),
                     error=str(recovered.get("error") or ""),
+                    completion=dict(recovered.get("completion") or {})
+                    if isinstance(recovered.get("completion"), dict)
+                    else {},
+                    session_path=str(recovered.get("session_path") or ""),
                 )
             else:
                 self._cancel_quiet(run_id)
@@ -404,6 +414,8 @@ class PiSidecar:
             "state": state,
             "result": snap.get("result") or "",
             "error": snap.get("error") or "",
+            "completion": snap.get("completion") or {},
+            "session_path": snap.get("session_path") or "",
         }
 
     def _cancel_quiet(self, run_id: str) -> None:

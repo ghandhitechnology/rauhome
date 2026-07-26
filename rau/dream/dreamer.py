@@ -16,6 +16,12 @@ from rau import state
 
 _thread: Optional[threading.Thread] = None
 _stop = threading.Event()
+_timer_state = {
+    "last_day": "",
+    "failure_day": "",
+    "failures": 0,
+    "next_retry": 0.0,
+}
 
 
 def _in_window(now: datetime, start: str, end: str) -> bool:
@@ -132,13 +138,46 @@ def dream_loop() -> None:
 
 
 def start_dreamer() -> None:
-    global _thread
-    if _thread and _thread.is_alive():
-        return
-    _stop.clear()
-    _thread = threading.Thread(target=dream_loop, daemon=True, name="rau-dream")
-    _thread.start()
+    from rau.scheduler import SCHEDULER
+
+    SCHEDULER.register_timer(
+        "dream", _dream_tick, interval_sec=60.0, initial_delay_sec=1.0
+    )
 
 
 def stop_dreamer() -> None:
-    _stop.set()
+    from rau.scheduler import SCHEDULER
+
+    SCHEDULER.unregister_timer("dream")
+
+
+def _dream_tick() -> None:
+    settings = load_settings()
+    start = settings.get("dream_window_start") or "02:00"
+    end = settings.get("dream_window_end") or "05:00"
+    day = ""
+    try:
+        now = datetime.now()
+        day = now.strftime("%Y-%m-%d")
+        if day != _timer_state["failure_day"]:
+            _timer_state.update(
+                failure_day=day, failures=0, next_retry=0.0
+            )
+        if (
+            day != _timer_state["last_day"]
+            and int(_timer_state["failures"]) < 3
+            and time.time() >= float(_timer_state["next_retry"])
+            and _in_window(now, start, end)
+            and not should_defer()
+        ):
+            run_dream(day)
+            _timer_state.update(last_day=day, failures=0)
+    except Exception as exc:
+        failures = int(_timer_state["failures"]) + 1
+        delay = 300 if failures == 1 else 1800
+        _timer_state.update(
+            failures=failures, next_retry=time.time() + delay
+        )
+        BUS.emit(
+            "dream_error", day=day or None, attempt=failures, error=str(exc)
+        )

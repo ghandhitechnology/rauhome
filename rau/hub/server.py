@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -36,10 +37,12 @@ from rau.providers.registry import (
     load_settings,
     provider_status,
     save_models,
+    save_settings,
 )
 from rau.providers import verify as provider_verify
 from rau.skills import goals as goal_store
 from rau.skills.loader import load_skill, skills_public
+from rau.scheduler import SCHEDULER
 from rau import state
 
 load_dotenv(override=False)
@@ -139,12 +142,56 @@ class EffortIn(BaseModel):
     all: Optional[str] = None
 
 
+class ResourceProfileIn(BaseModel):
+    profile: str = Field(pattern="^(eco|balanced|performance)$")
+
+
 class GoalIn(BaseModel):
     text: str = Field(min_length=1, max_length=4_000)
 
 
 class GoalNoteIn(BaseModel):
     text: str
+
+
+class ScheduleIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    goal: str = Field(min_length=1, max_length=100_000)
+    trigger: Dict[str, Any]
+    timezone: str = Field(default="Asia/Seoul", min_length=1, max_length=100)
+    enabled: bool = True
+    resource_profile: str = Field(
+        default="balanced", pattern="^(eco|balanced|performance)$"
+    )
+    permission_policy: str = Field(
+        default="approval", pattern="^(readonly|approval)$"
+    )
+    budget: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SchedulePatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    goal: Optional[str] = Field(default=None, min_length=1, max_length=100_000)
+    trigger: Optional[Dict[str, Any]] = None
+    timezone: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    enabled: Optional[bool] = None
+    resource_profile: Optional[str] = Field(
+        default=None, pattern="^(eco|balanced|performance)$"
+    )
+    permission_policy: Optional[str] = Field(
+        default=None, pattern="^(readonly|approval)$"
+    )
+    budget: Optional[Dict[str, Any]] = None
+
+
+class ComputerSessionIn(BaseModel):
+    app: Optional[str] = Field(default=None, max_length=200)
+    frontmost: bool = True
+    deadline_sec: float = Field(default=900, ge=30, le=3600)
+
+
+class ComputerCommandIn(BaseModel):
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class VoicePreviewIn(BaseModel):
@@ -173,8 +220,15 @@ async def _startup() -> None:
     from rau.pet import pet_binary, start_pet
 
     load_presence()
-    start_dreamer()
-    start_heartbeat()
+    runtime = os.environ.get("RAU_RUNTIME") == "1"
+    if runtime:
+        state.enable_durable_state()
+        SCHEDULER.start()
+        from rau.resources import current_profile
+
+        if current_profile()["dream_enabled"]:
+            start_dreamer()
+        start_heartbeat()
     settings = load_settings()
     port = int(settings.get("hub_port") or 8765)
     # The pet is a client, so it needs an address it can dial. A wildcard bind
@@ -183,13 +237,28 @@ async def _startup() -> None:
     host = str(settings.get("hub_host") or "127.0.0.1")
     if host in ("", "0.0.0.0", "::", "[::]"):
         host = "127.0.0.1"
-    try:
-        if start_pet(f"http://{host}:{port}"):
-            print(f"Desktop pet: {pet_binary()}")
-    except Exception as exc:  # noqa: BLE001
-        # A cosmetic companion window must never be the reason the hub —
-        # and with it the whole app — refuses to come up.
-        print(f"Desktop pet not started: {exc}")
+    if runtime:
+        try:
+            if start_pet(f"http://{host}:{port}"):
+                print(f"Desktop pet: {pet_binary()}")
+        except Exception as exc:  # noqa: BLE001
+            # A cosmetic companion window must never be the reason the hub —
+            # and with it the whole app — refuses to come up.
+            print(f"Desktop pet not started: {exc}")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    from rau.dream.dreamer import stop_dreamer
+    from rau.heartbeat.presence import stop_heartbeat
+    from rau.pet import stop_pet
+    from rau.pi.supervisor import PI_SUPERVISOR
+
+    stop_dreamer()
+    stop_heartbeat()
+    SCHEDULER.stop()
+    stop_pet()
+    PI_SUPERVISOR.stop()
 
 
 @app.get("/api/status")
@@ -199,6 +268,9 @@ def api_status():
     snap["identity_ready"] = identity_store.has_soul()
     snap["providers"] = provider_status()
     snap["mcp"] = MCP.status()
+    from rau.resources import current_profile
+
+    snap["resource_profile"] = current_profile()
     snap["memory"] = memory_store.summary()
     models = load_models()
     from rau.providers.reasoning import effort_snapshot
@@ -210,6 +282,21 @@ def api_status():
     snap["permissions"] = perms
     snap["permission_mode"] = global_mode(perms)
     return snap
+
+
+@app.get("/api/health")
+def api_health():
+    """Cheap liveness snapshot; never scans providers, memory, or the filesystem."""
+    snap = state.status_snapshot()
+    return {
+        "ok": True,
+        "timestamp": snap["timestamp"],
+        "listening": snap["listening"],
+        "face_busy": snap["face_busy"],
+        "hard_task": snap["hard_task"],
+        "confirm": snap["confirm"],
+        "scheduler": SCHEDULER.status() if state.durable_enabled() else {"running": False},
+    }
 
 
 @app.get("/api/emotion")
@@ -306,12 +393,208 @@ def api_jobs_start(body: JobIn):
     return result
 
 
+@app.get("/api/jobs/{job_id}")
+def api_job_get(job_id: str):
+    job = orchestrator.get_job(job_id)
+    if job is None:
+        return JSONResponse({"ok": False, "error": "unknown job"}, status_code=404)
+    steps = []
+    if state.durable_enabled():
+        from rau.control import control_store
+
+        steps = control_store.list_steps(job_id)
+    return {"job": job, "steps": steps}
+
+
+@app.get("/api/confirmations")
+def api_confirmations_list(state_filter: str = "pending"):
+    if not state.durable_enabled():
+        pending = state.get_confirm()
+        return {"confirmations": [pending] if pending else []}
+    from rau.control import control_store
+
+    allowed = state_filter if state_filter in {"pending", "decided", "expired"} else None
+    return {"confirmations": control_store.list_confirmations(state=allowed)}
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 def api_jobs_cancel(job_id: str):
     result = orchestrator.cancel_job(job_id)
     if not result.get("ok"):
         return JSONResponse(result, status_code=404)
     return result
+
+
+@app.get("/api/schedules")
+def api_schedules_list():
+    return {"schedules": SCHEDULER.store.list_schedules()}
+
+
+@app.post("/api/schedules")
+def api_schedules_create(body: ScheduleIn):
+    try:
+        return {"ok": True, "schedule": SCHEDULER.create(body.model_dump())}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/schedules/{schedule_id}")
+def api_schedule_get(schedule_id: str):
+    schedule = SCHEDULER.store.get_schedule(schedule_id)
+    if schedule is None:
+        return JSONResponse({"ok": False, "error": "unknown schedule"}, status_code=404)
+    return {"schedule": schedule}
+
+
+@app.patch("/api/schedules/{schedule_id}")
+def api_schedule_patch(schedule_id: str, body: SchedulePatch):
+    try:
+        schedule = SCHEDULER.update(
+            schedule_id, body.model_dump(exclude_none=True)
+        )
+        return {"ok": True, "schedule": schedule}
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "unknown schedule"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.delete("/api/schedules/{schedule_id}")
+def api_schedule_delete(schedule_id: str):
+    if not SCHEDULER.delete(schedule_id):
+        return JSONResponse({"ok": False, "error": "unknown schedule"}, status_code=404)
+    return {"ok": True, "id": schedule_id}
+
+
+@app.post("/api/schedules/{schedule_id}/run")
+def api_schedule_run(schedule_id: str):
+    try:
+        return {"ok": True, "run": SCHEDULER.run_now(schedule_id)}
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "unknown schedule"}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+
+@app.post("/api/schedules/{schedule_id}/pause")
+def api_schedule_pause(schedule_id: str):
+    try:
+        return {"ok": True, "schedule": SCHEDULER.pause(schedule_id)}
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "unknown schedule"}, status_code=404)
+
+
+@app.post("/api/schedules/{schedule_id}/resume")
+def api_schedule_resume(schedule_id: str):
+    try:
+        return {"ok": True, "schedule": SCHEDULER.resume(schedule_id)}
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "unknown schedule"}, status_code=404)
+
+
+@app.get("/api/schedules/{schedule_id}/runs")
+def api_schedule_runs(schedule_id: str, limit: int = 100):
+    if SCHEDULER.store.get_schedule(schedule_id) is None:
+        return JSONResponse({"ok": False, "error": "unknown schedule"}, status_code=404)
+    return {
+        "runs": SCHEDULER.store.list_schedule_runs(
+            schedule_id, limit=max(1, min(1000, limit))
+        )
+    }
+
+
+@app.get("/api/computer/sessions")
+def api_computer_sessions():
+    from rau.computer.session import COMPUTER
+
+    return COMPUTER.status()
+
+
+@app.post("/api/computer/sessions")
+def api_computer_session_start(body: ComputerSessionIn):
+    from rau.computer.session import COMPUTER
+
+    try:
+        return {
+            "ok": True,
+            "session": COMPUTER.start(
+                app=body.app,
+                frontmost=body.frontmost,
+                deadline_sec=body.deadline_sec,
+            ),
+        }
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+
+@app.get("/api/computer/sessions/{session_id}")
+def api_computer_session_get(session_id: str):
+    from rau.computer.session import COMPUTER
+
+    result = COMPUTER.status(session_id)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404)
+    return result
+
+
+@app.post("/api/computer/sessions/{session_id}/observe")
+def api_computer_observe(session_id: str, body: ComputerCommandIn):
+    from rau.computer.session import COMPUTER
+
+    try:
+        return COMPUTER.observe(session_id, **body.payload)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+
+@app.post("/api/computer/sessions/{session_id}/act")
+def api_computer_act(session_id: str, body: ComputerCommandIn):
+    from rau.computer.session import COMPUTER
+
+    try:
+        return COMPUTER.act(session_id, body.payload)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+
+@app.post("/api/computer/sessions/{session_id}/assert")
+def api_computer_assert(session_id: str, body: ComputerCommandIn):
+    from rau.computer.session import COMPUTER
+
+    try:
+        return COMPUTER.assert_condition(session_id, body.payload)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+
+@app.post("/api/computer/sessions/{session_id}/wait")
+def api_computer_wait(session_id: str, body: ComputerCommandIn):
+    from rau.computer.session import COMPUTER
+
+    payload = dict(body.payload)
+    condition = payload.pop("condition", payload)
+    try:
+        return COMPUTER.wait_for(
+            session_id,
+            condition,
+            timeout_sec=float(payload.get("timeout_sec") or 15.0),
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+
+@app.post("/api/computer/sessions/{session_id}/finish")
+def api_computer_finish(session_id: str, body: ComputerCommandIn):
+    from rau.computer.session import COMPUTER
+
+    try:
+        return COMPUTER.finish(
+            session_id,
+            outcome=str(body.payload.get("outcome") or "completed"),
+            summary=str(body.payload.get("summary") or ""),
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
 
 
 @app.get("/api/identity")
@@ -468,6 +751,25 @@ def api_effort_get():
     from rau.providers.reasoning import effort_snapshot
 
     return effort_snapshot(load_models())
+
+
+@app.get("/api/resource-profile")
+def api_resource_profile_get():
+    from rau.resources import current_profile
+
+    return current_profile()
+
+
+@app.put("/api/resource-profile")
+def api_resource_profile_put(body: ResourceProfileIn):
+    from rau.resources import profile_policy
+
+    settings = load_settings()
+    settings["resource_profile"] = body.profile
+    save_settings(settings)
+    profile = profile_policy(body.profile)
+    BUS.emit("resource_profile", profile=profile)
+    return profile
 
 
 @app.put("/api/effort")
@@ -974,6 +1276,7 @@ if WEB_DIST.exists():
 def main() -> None:
     import uvicorn
 
+    os.environ.setdefault("RAU_RUNTIME", "1")
     settings = load_settings()
     host = settings.get("hub_host") or "127.0.0.1"
     port = int(settings.get("hub_port") or 8765)

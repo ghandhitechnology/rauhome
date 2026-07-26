@@ -32,6 +32,17 @@ let socket: WebSocket | null = null
 let retries = 0
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let connected = false
+let activityTimer: ReturnType<typeof setTimeout> | null = null
+
+function markActive(durationMs = 2500) {
+  if (typeof document === 'undefined') return
+  document.documentElement.dataset.rauActive = 'true'
+  if (activityTimer) clearTimeout(activityTimer)
+  activityTimer = setTimeout(() => {
+    delete document.documentElement.dataset.rauActive
+    activityTimer = null
+  }, durationMs)
+}
 
 function setConnected(next: boolean) {
   if (connected === next) return
@@ -82,6 +93,18 @@ bodyController.onCueChange((cue) => {
 })
 
 function driveBody(event: LiveEvent) {
+  if (
+    event.kind.startsWith('chat_') ||
+    event.kind.startsWith('job_') ||
+    event.kind.startsWith('hard_task') ||
+    event.kind.startsWith('computer_')
+  ) {
+    markActive()
+  }
+  if (event.kind === 'resource_profile' && event.profile && typeof event.profile === 'object') {
+    const name = String((event.profile as Record<string, unknown>).name || 'balanced')
+    document.documentElement.dataset.resourceProfile = name
+  }
   const turnId = typeof event.turn_id === 'string' ? event.turn_id : ''
   switch (event.kind) {
     case 'chat_started':

@@ -68,6 +68,7 @@ export default function Dashboard() {
   const [live, setLive] = useState(false)
   const [busyEffort, setBusyEffort] = useState('')
   const [effortError, setEffortError] = useState('')
+  const [resourceProfile, setResourceProfile] = useState<'eco' | 'balanced' | 'performance'>('balanced')
 
   async function refresh() {
     try {
@@ -87,6 +88,7 @@ export default function Dashboard() {
       } else if (s.effort) {
         setEffort(parseEffort(s.effort))
       }
+      setResourceProfile(s.resource_profile?.name || 'balanced')
     } catch {
       /* hub down */
     }
@@ -94,7 +96,11 @@ export default function Dashboard() {
 
   useEffect(() => {
     refresh()
-    const id = setInterval(refresh, 2000)
+    // WebSocket events are the normal update path. The slow fallback only
+    // probes while disconnected, avoiding repeated provider/memory scans.
+    const id = setInterval(() => {
+      if (!liveChannel.isConnected()) void refresh()
+    }, 15_000)
     // One socket per page, shared with the body controller — two would give
     // the dashboard and the avatar beside it two views of the same turn.
     const offStatus = liveChannel.onStatus(setLive)
@@ -209,6 +215,23 @@ export default function Dashboard() {
         </div>
 
         <h3 className="section-title">Model effort</h3>
+        <p className="muted" style={{ marginTop: 0 }}>Whole-runtime power profile</p>
+        <div className="effort-seg" style={{ marginBottom: '1rem' }}>
+          {(['eco', 'balanced', 'performance'] as const).map((profile) => (
+            <button
+              key={profile}
+              className={`effort-btn ${resourceProfile === profile ? 'active' : ''}`}
+              onClick={() => {
+                api.putResourceProfile(profile).then((result) => {
+                  setResourceProfile(result.name)
+                  document.documentElement.dataset.resourceProfile = result.name
+                }).catch(() => {})
+              }}
+            >
+              {profile}
+            </button>
+          ))}
+        </div>
         <p className="muted" style={{ marginTop: 0 }}>
           Thinking depth for the current provider/model. Levels adapt to what that
           backend supports. Also `/effort …` in talk for face.

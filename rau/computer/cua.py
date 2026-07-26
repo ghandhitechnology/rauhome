@@ -209,6 +209,16 @@ def _frontmost_app_name(timeout: float = AUTOMATION_TIMEOUT_SEC) -> str:
     return out if code == 0 else ""
 
 
+def _bundle_id(app: str) -> str:
+    if not app:
+        return ""
+    code, out = _osascript(
+        f"id of application {_apple_string(app)}",
+        timeout=AUTOMATION_TIMEOUT_SEC,
+    )
+    return out.strip() if code == 0 else ""
+
+
 def _window_info(
     *,
     app: Optional[str] = None,
@@ -249,6 +259,7 @@ def _window_info(
             continue
         entry = {
             "window_id": int(wid),
+            "owner_pid": int(win.get("kCGWindowOwnerPID") or 0),
             "app": owner,
             "title": str(win.get("kCGWindowName") or ""),
             "bounds": {
@@ -331,6 +342,7 @@ def capture_screenshot(
             window_meta = {
                 "window_id": info["window_id"],
                 "app": info["app"],
+                "bundle_id": _bundle_id(str(info["app"])),
                 "title": info.get("title") or "",
                 "window_bounds": window_bounds,
             }

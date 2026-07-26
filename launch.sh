@@ -20,20 +20,17 @@ for arg in "$@"; do
   esac
 done
 
-if [ ! -d "$ROOT/venv" ]; then
-  echo "Creating venv..."
-  PY=python3
-  if command -v python3.11 >/dev/null 2>&1; then PY=python3.11; fi
-  "$PY" -m venv "$ROOT/venv"
+if [ ! -x "$ROOT/venv/bin/python" ]; then
+  echo "Rau is not installed. Run: bash scripts/setup.sh --all" >&2
+  exit 1
 fi
 # shellcheck disable=SC1091
 source "$ROOT/venv/bin/activate"
-pip install -q -r "$ROOT/requirements.txt"
 
 WEB_INDEX="$ROOT/web/dist/index.html"
-if [ ! -f "$WEB_INDEX" ] || find "$ROOT/web/src" "$ROOT/web/package.json" "$ROOT/web/vite.config.ts" -newer "$WEB_INDEX" -print -quit | grep -q .; then
-  echo "Building web UI..."
-  (cd "$ROOT/web" && npm ci && npm run build)
+if [ ! -f "$WEB_INDEX" ]; then
+  echo "Web UI is not built. Run: bash scripts/setup.sh --web" >&2
+  exit 1
 fi
 
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"

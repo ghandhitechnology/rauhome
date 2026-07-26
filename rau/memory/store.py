@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -15,7 +18,23 @@ def _today() -> str:
 
 
 def _stamp() -> str:
-    return datetime.now().strftime("%H%M%S")
+    return f"{datetime.now().strftime('%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
+
+
+def _atomic_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def append_diary(role: str, text: str, *, meta: Optional[Dict[str, Any]] = None) -> Path:
@@ -32,16 +51,16 @@ def append_diary(role: str, text: str, *, meta: Optional[Dict[str, Any]] = None)
     ]
     if meta:
         body.extend(["```json", json.dumps(meta, indent=2), "```", ""])
-    path.write_text("\n".join(body), encoding="utf-8")
+    _atomic_text(path, "\n".join(body))
     return path
 
 
 def append_trace(kind: str, payload: Dict[str, Any]) -> Path:
     ensure_dirs()
     path = TRACES_DIR / f"{_today()}-{_stamp()}-{kind}.json"
-    path.write_text(
+    _atomic_text(
+        path,
         json.dumps({"ts": time.time(), "kind": kind, **payload}, indent=2) + "\n",
-        encoding="utf-8",
     )
     return path
 
@@ -49,7 +68,7 @@ def append_trace(kind: str, payload: Dict[str, Any]) -> Path:
 def write_daily_log(day: str, content: str) -> Path:
     ensure_dirs()
     path = DAILY_DIR / f"{day}.md"
-    path.write_text(content.strip() + "\n", encoding="utf-8")
+    _atomic_text(path, content.strip() + "\n")
     return path
 
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import subprocess
+import queue
+import threading
 import time
 from threading import Event, Thread
 from typing import Optional
@@ -25,6 +27,7 @@ _stop = Event()
 #: Id of the confirm the face last read aloud, so a spoken yes/no lands on it.
 _spoken_confirm_id: Optional[str] = None
 _threads: list = []
+_audio_capture = None
 
 
 def get_vad():
@@ -64,9 +67,81 @@ def _open_ffmpeg():
     )
 
 
-def record_speech() -> Optional[np.ndarray]:
-    model = get_vad()
-    proc = _open_ffmpeg()
+class _AudioCapture:
+    """One long-lived microphone process with a bounded latest-frame queue."""
+
+    def __init__(self) -> None:
+        self.frames: queue.Queue[bytes] = queue.Queue(maxsize=100)
+        self.stop_event = Event()
+        self.process: Optional[subprocess.Popen] = None
+        self.thread: Optional[Thread] = None
+
+    def start(self) -> None:
+        if self.thread and self.thread.is_alive():
+            return
+        self.stop_event.clear()
+        self.process = _open_ffmpeg()
+        self.thread = Thread(
+            target=self._pump, daemon=True, name="rau-audio-capture"
+        )
+        self.thread.start()
+
+    def _pump(self) -> None:
+        frame_bytes = 512 * 2
+        while not self.stop_event.is_set():
+            process = self.process
+            if process is None or process.stdout is None:
+                return
+            raw = process.stdout.read(frame_bytes)
+            if not raw or len(raw) < frame_bytes:
+                return
+            try:
+                self.frames.put_nowait(raw)
+            except queue.Full:
+                try:
+                    self.frames.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.frames.put_nowait(raw)
+                except queue.Full:
+                    pass
+
+    def flush(self) -> None:
+        while True:
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                return
+
+    def read(self, timeout: float = 1.0) -> bytes:
+        try:
+            return self.frames.get(timeout=timeout)
+        except queue.Empty:
+            return b""
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        process = self.process
+        self.process = None
+        if process is not None and process.poll() is None:
+            process.kill()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+
+
+def record_speech(*, local_vad: bool = True) -> Optional[np.ndarray]:
+    global _audio_capture
+
+    model = get_vad() if local_vad else None
+    if _audio_capture is None:
+        _audio_capture = _AudioCapture()
+        _audio_capture.start()
+    elif not _audio_capture.thread or not _audio_capture.thread.is_alive():
+        _audio_capture.stop()
+        _audio_capture = _AudioCapture()
+        _audio_capture.start()
+    _audio_capture.flush()
     frame_size = 512
     bytes_per_frame = frame_size * 2
     voiced = []
@@ -75,57 +150,62 @@ def record_speech() -> Optional[np.ndarray]:
     max_silence = int(SILENCE_SEC * SAMPLE_RATE / frame_size)
     max_frames = int(MAX_RECORD_SEC * SAMPLE_RATE / frame_size)
     frames = 0
-    try:
-        while frames < max_frames and not _stop.is_set():
-            raw = proc.stdout.read(bytes_per_frame)
-            if not raw or len(raw) < bytes_per_frame:
-                break
-            frame = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            frames += 1
-            speech = False
-            if model is not None:
-                try:
-                    from silero_vad import VADIterator
+    while frames < max_frames and not _stop.is_set():
+        raw = _audio_capture.read()
+        if not raw or len(raw) < bytes_per_frame:
+            continue
+        frame = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        frames += 1
+        speech = False
+        if model is not None:
+            try:
+                speech = float(np.abs(frame).mean()) > 0.01
+                import torch
 
-                    # energy fallback inside loop if iterator API awkward
-                    speech = float(np.abs(frame).mean()) > 0.01
-                    # Better: use model probability
-                    import torch
-
-                    t = torch.from_numpy(frame)
-                    if t.ndim == 1:
-                        speech = bool(model(t, SAMPLE_RATE).item() > 0.5)
-                except Exception:
-                    speech = float(np.abs(frame).mean()) > 0.012
-            else:
+                t = torch.from_numpy(frame)
+                if t.ndim == 1:
+                    speech = bool(model(t, SAMPLE_RATE).item() > 0.5)
+            except Exception:
                 speech = float(np.abs(frame).mean()) > 0.012
+        else:
+            speech = float(np.abs(frame).mean()) > 0.012
 
-            if speech:
-                started = True
-                silence_frames = 0
-                voiced.append(frame)
-            elif started:
-                silence_frames += 1
-                voiced.append(frame)
-                if silence_frames >= max_silence:
-                    break
-    finally:
-        proc.kill()
+        if speech:
+            started = True
+            silence_frames = 0
+            voiced.append(frame)
+        elif started:
+            silence_frames += 1
+            voiced.append(frame)
+            if silence_frames >= max_silence:
+                break
     if not voiced:
         return None
     return np.concatenate(voiced)
 
 
 def stt(audio: np.ndarray) -> str:
-    global _whisper_model
-    from faster_whisper import WhisperModel
+    import asyncio
 
-    if _whisper_model is None:
-        _whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
-    segments, _ = _whisper_model.transcribe(
-        audio, language=None, beam_size=5, vad_filter=False
-    )
-    return " ".join(s.text for s in segments).strip()
+    from rau.voice.stt import get_stt_provider
+
+    provider = get_stt_provider()
+    pcm = (np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes()
+
+    async def transcribe() -> str:
+        async def source():
+            yield pcm
+
+        final = ""
+        try:
+            async for transcript in provider.stream(source()):
+                if transcript.final:
+                    final = transcript.text
+        finally:
+            await provider.close()
+        return final.strip()
+
+    return asyncio.run(transcribe())
 
 
 def play_audio(audio: np.ndarray, sr: int = 24000) -> None:
@@ -227,6 +307,9 @@ def start_face(*, with_audio: bool = True) -> None:
         global _spoken_confirm_id
         print("Rau face listening...")
         tts_warmup()
+        global _audio_capture
+        _audio_capture = _AudioCapture()
+        _audio_capture.start()
         last_progress_spoke = 0.0
         while not _stop.is_set():
             if not state.status_snapshot().get("listening"):
@@ -243,7 +326,10 @@ def start_face(*, with_audio: bool = True) -> None:
                 last_progress_spoke = time.time()
 
             state.set_emotion("curious", "")
-            audio = record_speech()
+            from rau.voice.stt import resolve_stt
+
+            selected_stt, _ = resolve_stt()
+            audio = record_speech(local_vad=selected_stt == "local")
             if audio is None or len(audio) < 1000:
                 continue
             state.set_emotion("determined", "")
@@ -291,5 +377,10 @@ def start_face(*, with_audio: bool = True) -> None:
 
 
 def stop_face() -> None:
+    global _audio_capture
+
     _stop.set()
+    if _audio_capture is not None:
+        _audio_capture.stop()
+        _audio_capture = None
     state.set_voice_pipeline(False)

@@ -60,8 +60,24 @@ export default function Pet() {
 
   useEffect(() => {
     void refresh()
-    const id = window.setInterval(() => void refresh(), 2000)
-    return () => window.clearInterval(id)
+    const id = window.setInterval(() => {
+      if (!live.isConnected()) void refresh()
+    }, 15_000)
+    const off = live.subscribe((event) => {
+      if (
+        event.kind === 'chat_done' ||
+        event.kind === 'chat_error' ||
+        event.kind === 'hard_task' ||
+        event.kind === 'confirm_request' ||
+        event.kind === 'confirm_result'
+      ) {
+        void refresh()
+      }
+    })
+    return () => {
+      window.clearInterval(id)
+      off()
+    }
   }, [refresh])
 
   // Face mutex + user hide: hub broadcasts pet_visibility over /ws.

@@ -3,6 +3,7 @@ import { api } from './api'
 import { ModeProvider, useMode } from './mode'
 import { useGlobalHotkey } from './hooks/useGlobalHotkey'
 import { Link, Navigate, useLocation } from './router'
+import { live } from './live'
 
 const Conversation = lazy(() => import('./pages/Conversation'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -11,11 +12,13 @@ const Pet = lazy(() => import('./pages/Pet'))
 const Identity = lazy(() => import('./pages/Identity'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Setup = lazy(() => import('./pages/Setup'))
+const Operations = lazy(() => import('./pages/Operations'))
 
 const NAV = [
   { to: '/', label: 'Talk' },
   { to: '/face', label: 'Face' },
   { to: '/dashboard', label: 'Dashboard' },
+  { to: '/operations', label: 'Operations' },
   { to: '/identity', label: 'Identity' },
   { to: '/settings', label: 'Settings' },
 ]
@@ -49,6 +52,15 @@ function Shell() {
       // wizard — only fail closed when we never knew better.
       .catch(() => setReady((r) => (r === null ? false : r)))
   }, [loc.pathname])
+
+  useEffect(() => {
+    api.resourceProfile().then((profile) => {
+      document.documentElement.dataset.resourceProfile = profile.name || 'balanced'
+    }).catch(() => {
+      document.documentElement.dataset.resourceProfile = 'balanced'
+    })
+    live.start()
+  }, [])
 
   if (ready === null) {
     return (
@@ -144,6 +156,8 @@ function RoutePage({
       return <Pet />
     case '/dashboard':
       return <Dashboard />
+    case '/operations':
+      return <Operations />
     case '/setup':
       return <Setup onDone={onSetupDone} />
     case '/identity':

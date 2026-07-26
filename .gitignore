@@ -19,6 +19,7 @@ secrets/
 memories/
 identity/soul*.bak.md
 backups/
+measurements/
 /skills/
 node_modules/
 pet/node_modules/

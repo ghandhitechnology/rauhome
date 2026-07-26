@@ -48,11 +48,43 @@ class EventBus:
             except RuntimeError:
                 # The subscriber loop has already closed.
                 pass
+        # The live bus remains best-effort and fast. When the runtime durable
+        # plane is enabled, append a bounded envelope after delivery so a disk
+        # problem cannot prevent the UI from seeing current state.
+        try:
+            from rau import state
+
+            if state.durable_enabled():
+                from rau.control import control_store
+
+                safe_payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"image_b64", "audio", "content"}
+                }
+                encoded = str(safe_payload)
+                if len(encoded) > 20_000:
+                    safe_payload = {"truncated": True, "size": len(encoded)}
+                control_store.append_event(
+                    str(kind),
+                    "job" if payload.get("job_id") or payload.get("id") else "runtime",
+                    str(payload.get("job_id") or payload.get("id") or "") or None,
+                    safe_payload,
+                    created=float(event["ts"]),
+                )
+        except Exception:
+            pass
         return event
 
     def on(self, kind: str, fn: Callable[[Dict[str, Any]], None]) -> None:
         with self._lock:
             self._subs[kind].append(fn)
+
+    def off(self, kind: str, fn: Callable[[Dict[str, Any]], None]) -> None:
+        with self._lock:
+            self._subs[kind] = [
+                existing for existing in self._subs.get(kind, []) if existing != fn
+            ]
 
     def subscribe_async(self) -> asyncio.Queue:
         loop = asyncio.get_running_loop()
