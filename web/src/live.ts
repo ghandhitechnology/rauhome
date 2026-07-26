@@ -12,7 +12,9 @@
  * next turn rather than acting out an expired one.
  */
 
-import { bodyController, type BodyPlan } from './clawd/body'
+import { bodyController, type BodyCue, type BodyPlan } from './clawd/body'
+import { PROP_SPOTS, propStore, type PropId, type SpotId } from './clawd/props'
+import { panelStore } from './panels'
 
 export type LiveEvent = { kind: string; [key: string]: unknown }
 
@@ -44,6 +46,41 @@ function setConnected(next: boolean) {
 }
 
 /** Route a hub event into the body controller. */
+
+/**
+ * Expand one `prop_move` into the performance of moving something.
+ *
+ * Walk to it, take its weight, carry it across, set it down. The object's
+ * visual state follows these steps rather than jumping to the answer, which is
+ * the whole difference between a room he lives in and a database of positions.
+ */
+function errandPlan(errandId: string, from: SpotId, to: SpotId): BodyCue[] {
+  const origin = PROP_SPOTS[from]
+  const target = PROP_SPOTS[to]
+  const step = (cue: Omit<BodyCue, 'anchor'>): BodyCue => ({ anchor: 'now', ...cue })
+  return [
+    step({ station: origin.station, gaze: 'floor', hold_ms: 400, errand: { id: errandId, phase: 'travel' } }),
+    step({ motion: 'lift', hold_ms: 1100, errand: { id: errandId, phase: 'lift' } }),
+    step({
+      motion: 'carry',
+      station: target.station,
+      hold_ms: 500,
+      errand: { id: errandId, phase: 'carry' },
+    }),
+    step({ motion: 'place', gaze: 'floor', hold_ms: 1150, errand: { id: errandId, phase: 'place' } }),
+  ]
+}
+
+// One sequencer owns the object's state: every mounted avatar performs the
+// same cue, but the errand advances once.
+bodyController.onCueChange((cue) => {
+  const errand = cue?.errand
+  if (errand) propStore.advance(errand.id, errand.phase)
+  else if (propStore.activeErrand?.phase === 'place') {
+    propStore.advance(propStore.activeErrand.id, 'done')
+  }
+})
+
 function driveBody(event: LiveEvent) {
   const turnId = typeof event.turn_id === 'string' ? event.turn_id : ''
   switch (event.kind) {
@@ -72,6 +109,34 @@ function driveBody(event: LiveEvent) {
       break
     case 'chat_error':
       bodyController.cancel(turnId, 'error')
+      break
+    case 'prop_layout':
+      propStore.setLayout((event.layout ?? {}) as Partial<Record<PropId, SpotId>>)
+      break
+    case 'prop_move': {
+      const prop = String(event.object ?? '') as PropId
+      const from = String(event.from ?? '') as SpotId
+      const to = String(event.to ?? '') as SpotId
+      const errandId = String(event.errand_id ?? '')
+      if (!errandId || !(from in PROP_SPOTS) || !(to in PROP_SPOTS)) break
+      propStore.begin({ id: errandId, prop, from, to })
+      bodyController.applyPlan({
+        turn_id: turnId || errandId,
+        plan_id: errandId,
+        cues: errandPlan(errandId, from, to),
+      })
+      break
+    }
+    case 'panel_shown':
+      panelStore.add({
+        panel_id: String(event.panel_id ?? ''),
+        title: String(event.title ?? 'Untitled'),
+        kind: String(event.panel_kind ?? 'report'),
+        created: Number(event.created ?? Date.now() / 1000),
+      })
+      break
+    case 'panel_cleared':
+      panelStore.clear()
       break
   }
 }

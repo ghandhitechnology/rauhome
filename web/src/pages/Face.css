@@ -453,3 +453,54 @@
     flex-wrap: wrap;
   }
 }
+
+/* ── panels Rau has put on the wall ─────────────────────────── */
+
+.face-wall {
+  position: absolute;
+  top: 4.6rem;
+  left: 1rem;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-width: 15rem;
+}
+
+.face-wall-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: rgba(12, 9, 8, 0.72);
+  backdrop-filter: blur(8px);
+  color: var(--ink);
+  cursor: pointer;
+  animation: pop-in var(--dur-3) var(--spring) both;
+  transition:
+    border-color var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease);
+}
+
+.face-wall-chip:hover {
+  border-color: var(--accent-a40);
+  transform: translateX(2px);
+}
+
+.face-wall-kind {
+  font-size: 0.58rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.face-wall-title {
+  font-size: 0.84rem;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

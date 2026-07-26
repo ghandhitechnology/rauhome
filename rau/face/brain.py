@@ -11,7 +11,7 @@ from rau.agent import orchestrator
 from rau.agent import tools as agent_tools
 from rau.agent.danger import classify_tool
 from rau.events import BUS
-from rau.face import choreography
+from rau.face import choreography, panels, props
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, recent_context
 from rau.providers.base import Message, StreamDone, TextDelta, tool_result_text
@@ -192,6 +192,8 @@ FACE_TOOLS = [
         },
     },
     choreography.BODY_CHOREOGRAPHY_TOOL,
+    props.MOVE_OBJECT_TOOL,
+    panels.SHOW_PANEL_TOOL,
 ]
 
 #: The face model is chosen for latency, so its window is held far below what
@@ -415,6 +417,8 @@ def _system_prompt(extra: str = "") -> str:
             "Escalate multi-step work with start_hard_task. Only you speak.",
             "\n" + SPEECH_HABITS_PROMPT,
             "\n" + choreography.PROMPT,
+            "\n" + props.prompt_fragment(),
+            "\n" + panels.prompt_fragment(),
         ]
     )
     if extra:
@@ -445,6 +449,13 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         # Local, visual and reversible — nothing here leaves the machine, so it
         # never needs the confirmation the face has nowhere to wait for.
         return choreography.submit_plan(args)
+    if name == "move_object":
+        # Rearranging his own room: visual, local, and undoable by asking.
+        return props.move_object(args)
+    if name == "show_panel":
+        # The markup never runs anywhere it could reach this app — see
+        # rau/face/panels.py for the two barriers that make that true.
+        return panels.show_panel(args)
     if name in ("set_goal", "clear_goal", "goal_note"):
         if room_mode == "readonly":
             return deny_result(name, reason="room is in read-only mode")

@@ -22,15 +22,12 @@
 
 import { clamp, clamp01 } from './easing'
 import { mixHex, ROOM, SPINES, skyAt } from './palette'
+import { drawWallPanels, panelsOwnPosterSlot } from './panelsLayer'
+import { drawRestingProps } from './propsLayer'
+import { contactShadow, FLOOR_Y, STAGE, WALK_RANGE } from './stage'
 import { hash2, textureRect } from './texture'
 
-export const STAGE = { w: 160, h: 90 }
-
-/** Y of the floor line, in stage units. Clawd's feet rest here. */
-export const FLOOR_Y = 68
-
-/** Horizontal range Clawd is allowed to walk between. */
-export const WALK_RANGE = { min: 14, max: 146 }
+export { STAGE, FLOOR_Y, WALK_RANGE }
 
 /**
  * How far past the stage the room is painted.
@@ -109,28 +106,6 @@ function slab(
   r(ctx, u, x, y, w, h, body)
   r(ctx, u, x, y, w, edge, lit)
   r(ctx, u, x, y + h - edge, w, edge, shade)
-}
-
-/** Soft dark ellipse where an object meets the floor. */
-function contactShadow(
-  ctx: Ctx,
-  u: number,
-  cx: number,
-  cy: number,
-  rx: number,
-  ry: number,
-  alpha = 0.5,
-) {
-  ctx.save()
-  const g = ctx.createRadialGradient(cx * u, cy * u, 0, cx * u, cy * u, rx * u)
-  g.addColorStop(0, `rgba(0,0,0,${alpha})`)
-  g.addColorStop(0.6, `rgba(0,0,0,${alpha * 0.42})`)
-  g.addColorStop(1, 'rgba(0,0,0,0)')
-  ctx.fillStyle = g
-  ctx.beginPath()
-  ctx.ellipse(cx * u, cy * u, rx * u, ry * u, 0, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.restore()
 }
 
 /** Additive glow, for anything that is itself a light source. */
@@ -364,17 +339,7 @@ function drawSillObjects(ctx: Ctx, u: number, s: RoomState) {
     }
   }
 
-  // Mug, right of the opening, with a ring stain under it.
-  const mx = x + 27
-  ctx.save()
-  ctx.globalAlpha = 0.35
-  r(ctx, u, mx - 0.4, base - 0.5, 4, 0.5, '#000000')
-  ctx.restore()
-  r(ctx, u, mx, base - 3.2, 3.2, 3.2, ROOM.paper)
-  r(ctx, u, mx, base - 3.2, 3.2, 0.5, '#FFFFFF')
-  r(ctx, u, mx, base - 0.6, 3.2, 0.6, ROOM.paperShade)
-  r(ctx, u, mx + 3.2, base - 2.4, 0.9, 1.7, ROOM.paper)
-  r(ctx, u, mx + 3.7, base - 2, 0.5, 0.9, ROOM.wall)
+  // The mug is a movable prop now — see props.ts.
 }
 
 /** Curtains hung either side, breathing very slightly. */
@@ -1030,7 +995,7 @@ function drawDesk(ctx: Ctx, u: number, s: RoomState) {
   ctx.restore()
 
   drawMonitor(ctx, u, s)
-  drawDeskClutter(ctx, u, s)
+  drawDeskClutter(ctx, u)
 }
 
 function drawMonitor(ctx: Ctx, u: number, s: RoomState) {
@@ -1092,7 +1057,7 @@ function drawMonitor(ctx: Ctx, u: number, s: RoomState) {
 }
 
 /** Everything that accumulates on a desk that is actually used. */
-function drawDeskClutter(ctx: Ctx, u: number, s: RoomState) {
+function drawDeskClutter(ctx: Ctx, u: number) {
   const { x, y } = DESK
 
   // Mousemat, keyboard, mouse.
@@ -1106,26 +1071,6 @@ function drawDeskClutter(ctx: Ctx, u: number, s: RoomState) {
   ctx.restore()
   r(ctx, u, x + 18.4, y - 1.9, 1.8, 1.2, ROOM.metal)
   r(ctx, u, x + 18.4, y - 1.9, 1.8, 0.35, ROOM.metalLit)
-
-  // Mug with a curl of steam.
-  const mugX = x + 23.5
-  ctx.save()
-  ctx.globalAlpha = 0.4
-  r(ctx, u, mugX - 0.3, y - 0.4, 4, 0.5, '#000000')
-  ctx.restore()
-  r(ctx, u, mugX, y - 3.4, 3.3, 3.4, ROOM.paper)
-  r(ctx, u, mugX, y - 3.4, 3.3, 0.45, '#FFFFFF')
-  r(ctx, u, mugX + 2.4, y - 3.4, 0.9, 3.4, ROOM.paperShade)
-  r(ctx, u, mugX + 3.3, y - 2.6, 1, 1.8, ROOM.paper)
-  r(ctx, u, mugX + 3.8, y - 2.2, 0.5, 1, ROOM.wall)
-  ctx.save()
-  ctx.globalAlpha = 0.16
-  for (let i = 0; i < 5; i++) {
-    const t = ((s.time * 0.5 + i * 0.2) % 1)
-    ctx.globalAlpha = 0.16 * (1 - t)
-    r(ctx, u, mugX + 1.2 + Math.sin(t * 5 + i) * 1.1, y - 4 - t * 5, 0.5, 0.9, '#FFFFFF')
-  }
-  ctx.restore()
 
   // A short stack of paper with a pen across it.
   r(ctx, u, x + 0.5, y - 0.8, 6.5, 0.8, ROOM.paperShade)
@@ -1332,54 +1277,6 @@ function drawShelf(ctx: Ctx, u: number) {
   }
 }
 
-function drawPlant(ctx: Ctx, u: number, s: RoomState) {
-  const x = 58
-  const base = FLOOR_Y
-
-  contactShadow(ctx, u, x + 4.5, base + 0.8, 8, 2.2, 0.55)
-
-  // Pot: tapered, with a rim and a highlight down one side.
-  ctx.fillStyle = ROOM.fabricDeep
-  ctx.beginPath()
-  ctx.moveTo((x + 0.6) * u, (base - 8) * u)
-  ctx.lineTo((x + 8.4) * u, (base - 8) * u)
-  ctx.lineTo((x + 7.4) * u, base * u)
-  ctx.lineTo((x + 1.6) * u, base * u)
-  ctx.closePath()
-  ctx.fill()
-  textureRect(ctx, 'weave', u, x, base - 8, 9, 8, 0.3)
-  r(ctx, u, x + 1.2, base - 8, 1.2, 8, mixHex(ROOM.fabric, '#FFFFFF', 0.12))
-  r(ctx, u, x + 6.6, base - 8, 1, 8, mixHex(ROOM.fabricDeep, '#000000', 0.35))
-  r(ctx, u, x - 0.2, base - 9, 9.4, 1.4, ROOM.fabric)
-  r(ctx, u, x - 0.2, base - 9, 9.4, 0.4, ROOM.fabricLit)
-  r(ctx, u, x + 0.8, base - 7.8, 7.4, 0.7, ROOM.soil)
-
-  // Fronds: each blade is a stack of blocks bending under its own weight.
-  const blades = [
-    { dx: 1.2, h: 17, lean: -1.4, tone: 0 },
-    { dx: 2.8, h: 23, lean: -0.4, tone: 1 },
-    { dx: 4.4, h: 26, lean: 0.3, tone: 0 },
-    { dx: 5.8, h: 21, lean: 1.2, tone: 1 },
-    { dx: 7, h: 14, lean: 1.9, tone: 0 },
-  ]
-  blades.forEach((b, i) => {
-    const sway = Math.sin(s.time * 0.55 + i * 1.3) * 1.1
-    for (let seg = 0; seg < b.h; seg += 1.3) {
-      const t = seg / b.h
-      const off = (b.lean + sway * 0.4) * t * t * 2.6
-      const width = 1.3 - t * 0.5
-      r(
-        ctx, u,
-        x + b.dx + off, base - 8.6 - seg,
-        width, 1.35,
-        t > 0.62 ? ROOM.leafLit : b.tone ? ROOM.leaf : ROOM.leafDeep,
-      )
-      // A lighter midrib catching the light.
-      if (t < 0.85) r(ctx, u, x + b.dx + off + width * 0.3, base - 8.6 - seg, 0.3, 1.35, ROOM.leafLit)
-    }
-  })
-}
-
 function drawRug(ctx: Ctx, u: number) {
   const x = 60
   const y = FLOOR_Y + 0.5
@@ -1445,25 +1342,8 @@ function drawRug(ctx: Ctx, u: number) {
 
 /** Loose things on the floor: a book stack, a box, a guitar by the shelf. */
 function drawFloorProps(ctx: Ctx, u: number) {
-  // Leaning stack of books, left of the plant.
-  const bx = 46
-  contactShadow(ctx, u, bx + 3, FLOOR_Y + 0.8, 5.5, 1.6, 0.5)
-  for (let i = 0; i < 5; i++) {
-    const bw = 6.5 - i * 0.5
-    const off = Math.sin(i * 1.7) * 0.5
-    const tone = SPINES[(i + 2) % SPINES.length]
-    r(ctx, u, bx + off, FLOOR_Y - 1.2 - i * 1.2, bw, 1.2, tone)
-    r(ctx, u, bx + off, FLOOR_Y - 1.2 - i * 1.2, bw, 0.3, mixHex(tone, '#FFFFFF', 0.28))
-    r(ctx, u, bx + off, FLOOR_Y - 0.4 - i * 1.2, bw, 0.25, mixHex(tone, '#000000', 0.4))
-  }
-
-  // Cardboard box against the left wall.
-  const cx = 6
-  contactShadow(ctx, u, cx + 5, FLOOR_Y + 0.8, 7, 1.8, 0.5)
-  slab(ctx, u, cx, FLOOR_Y - 8, 10, 8, ROOM.cork, mixHex(ROOM.cork, '#FFFFFF', 0.2), mixHex(ROOM.cork, '#000000', 0.4), 0.5)
-  textureRect(ctx, 'paper', u, cx, FLOOR_Y - 8, 10, 8, 0.5)
-  r(ctx, u, cx + 4.6, FLOOR_Y - 8, 0.8, 8, mixHex(ROOM.cork, '#000000', 0.35))
-  r(ctx, u, cx + 1, FLOOR_Y - 5, 6, 0.8, mixHex(ROOM.paper, ROOM.cork, 0.4))
+  // The books, the box, the mug and the plant are movable now — see
+  // props.ts. Only the fixtures are drawn here.
 
   // Guitar leaning against the wall past the shelf, clear of the desk — half
   // a guitar behind a desk leg reads as a dark blob, not an instrument.
@@ -1522,9 +1402,10 @@ function drawFloorProps(ctx: Ctx, u: number) {
 export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
   drawWallSurface(ctx, u, s)
 
-  drawPoster(ctx, u)
+  if (!panelsOwnPosterSlot()) drawPoster(ctx, u)
   drawClock(ctx, u, s)
   drawPinboard(ctx, u)
+  drawWallPanels(ctx, u)
   drawWindow(ctx, u, s)
   drawShelf(ctx, u)
   drawFittings(ctx, u)
@@ -1539,7 +1420,7 @@ export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
   // reading — everything stages cleanly with Clawd in front.
   drawRadiator(ctx, u)
   drawFloorProps(ctx, u)
-  drawPlant(ctx, u, s)
+  drawRestingProps(ctx, u, s.time)
   drawDesk(ctx, u, s)
   drawLamp(ctx, u, s)
 }

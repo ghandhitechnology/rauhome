@@ -44,6 +44,32 @@ export const BODY_MOTIONS = [
   'shrug',
   'stretch',
   'shuffle',
+  'search',
+  'scribble',
+  'read',
+  'present',
+  'point',
+  'lift',
+  'place',
+  'carry',
+  'push',
+  'doze',
+  'yawn',
+  'stargaze',
+  'sit',
+  'sip',
+  'water',
+  'tiptoe',
+  'pace',
+  'peek',
+  'groove',
+  'facepalm',
+  'applaud',
+  'shiver',
+  'stumble',
+  'tidy',
+  'loiter',
+  'ponder',
 ] as const satisfies readonly MotionName[]
 
 /** Places a plan may name. Mirrors `STATIONS` in rau/face/choreography.py. */
@@ -96,6 +122,14 @@ export type BodyCue = {
   station?: StationId
   /** How long this cue owns the body, milliseconds. */
   hold_ms: number
+  /**
+   * Client-side only: the step of a carrying errand this cue performs.
+   *
+   * The server never sends this. `live.ts` expands one `prop_move` into the
+   * walk / lift / carry / place sequence and tags each cue, so the object's
+   * visual state follows the performance instead of jumping to the answer.
+   */
+  errand?: { id: string; phase: 'travel' | 'lift' | 'carry' | 'place' }
 }
 
 export type BodyPlan = {
@@ -203,6 +237,30 @@ export class BodyController {
    * gesture would land early.
    */
   private audioTurns = new Set<string>()
+
+  /**
+   * Notified as the active cue changes — the cue on apply, null on release.
+   * One sequencer drives the errand, rather than each mounted avatar racing
+   * to advance the same object.
+   */
+  private cueWatchers = new Set<(cue: BodyCue | null) => void>()
+
+  onCueChange(fn: (cue: BodyCue | null) => void): () => void {
+    this.cueWatchers.add(fn)
+    return () => {
+      this.cueWatchers.delete(fn)
+    }
+  }
+
+  private announceCue(cue: BodyCue | null) {
+    for (const fn of [...this.cueWatchers]) {
+      try {
+        fn(cue)
+      } catch {
+        /* a broken watcher must not stall the plan */
+      }
+    }
+  }
 
   /** Test seam: the clock the plan deadline is measured against. */
   now: () => number = () => Date.now()
@@ -373,6 +431,7 @@ export class BodyController {
     if (index === undefined) return
     const cue = this.plan.cues[index]
     this.active = cue
+    this.announceCue(cue)
     this.holdPending = false
     for (const target of this.targets) {
       try {
@@ -397,6 +456,7 @@ export class BodyController {
     this.holdPending = false
     if (!this.active) return
     this.active = null
+    this.announceCue(null)
     for (const target of this.targets) {
       try {
         target.releaseCue()
@@ -416,6 +476,7 @@ export class BodyController {
     this.queue = []
     if (this.active) {
       this.active = null
+    this.announceCue(null)
       for (const target of this.targets) {
         try {
           target.releaseCue()

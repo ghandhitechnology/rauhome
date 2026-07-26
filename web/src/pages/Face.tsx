@@ -12,6 +12,8 @@ import {
 import { useMode } from '../mode'
 import { useVoiceSession } from '../voice'
 import { api } from '../api'
+import PanelViewer from '../components/PanelViewer'
+import { panelStore, type PanelSummary } from '../panels'
 import './Face.css'
 
 const MOTION_BUTTONS: { id: MotionName; label: string }[] = [
@@ -53,6 +55,7 @@ export default function Face() {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [panel, setPanel] = useState(false)
+  const [wall, setWall] = useState<PanelSummary[]>(() => panelStore.list())
   const [hour, setHour] = useState<number | null>(null)
   const [lamp, setLamp] = useState<boolean | undefined>(undefined)
   const [roomVisual, setRoomVisual] = useState<RoomVisual>(() => loadRoomVisual())
@@ -237,6 +240,17 @@ export default function Face() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Panels Rau has put on the wall; the documents themselves are only ever
+  // mounted inside PanelViewer's sandboxed frame.
+  useEffect(() => panelStore.subscribe(() => setWall(panelStore.list())), [])
+
+  useEffect(() => {
+    api
+      .panels()
+      .then((d) => panelStore.replaceAll(d.panels || []))
+      .catch(() => {})
+  }, [])
+
   const isVoice = mode === 'voice'
 
   return (
@@ -250,6 +264,24 @@ export default function Face() {
         roomVisual={roomVisual}
         onReady={onReady}
       />
+
+      {wall.length > 0 && (
+        <div className="face-wall" role="group" aria-label="Panels on the wall">
+          {wall.map((p) => (
+            <button
+              key={p.panel_id}
+              className={`face-wall-chip kind-${p.kind}`}
+              onClick={() => panelStore.show(p.panel_id)}
+              title={`Open “${p.title}”`}
+            >
+              <span className="face-wall-kind">{p.kind}</span>
+              <span className="face-wall-title">{p.title}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <PanelViewer />
 
       <header className="face-top">
         <div className="face-top-left">
