@@ -13,6 +13,11 @@ export const CLAWD = {
 
 /** Warm interior palette for the room scene. */
 export const ROOM = {
+  /** Warm timber tone for mouldings and panelling. */
+  wallWarm: '#453730',
+  /** Board-to-board stain variation and the seam between them. */
+  floorWarm: '#543D26',
+  floorSeam: '#170F09',
   wall: '#2A2320',
   wallLit: '#3A302B',
   wallShade: '#1C1714',

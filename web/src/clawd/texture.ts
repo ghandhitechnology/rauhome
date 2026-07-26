@@ -13,6 +13,8 @@
  * only the light falling on it does.
  */
 
+import { quality } from './quality'
+
 /** Deterministic hash → 0..1. The same coordinate always gives the same value. */
 export function hash2(x: number, y: number, seed = 0): number {
   const n = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453123
@@ -231,6 +233,9 @@ export function textureRect(
   rotate = false,
 ) {
   if (w <= 0 || h <= 0) return
+  // The costliest pass in the room, and the first thing a slow machine gives
+  // up: the tones and the architecture survive without it.
+  if (!quality().textures) return
   const source = tile(kind, unit)
   if (!source) return
   // A pattern belongs to the context that made it, so a changed context

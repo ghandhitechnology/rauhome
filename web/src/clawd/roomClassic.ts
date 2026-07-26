@@ -8,16 +8,18 @@
  * holds at any window size.
  */
 
+import { bakeBackdrop, blitBackdrop, ROOM_LEFT, ROOM_TOP, ROOM_W, unitKey } from './backdrop'
 import { clamp, clamp01 } from './easing'
+import { drawWallPanels } from './panelsLayer'
 import { mixHex, ROOM, skyAt } from './paletteClassic'
+import { panelStore } from '../panels'
+import { PROP_IDS, propStore } from './props'
+import { drawLivingProps, drawRestingProps } from './propsLayer'
+import { quality } from './quality'
+import { hash2 } from './texture'
+import { FLOOR_Y, STAGE, WALK_RANGE } from './stage'
 
-export const STAGE = { w: 160, h: 90 }
-
-/** Y of the floor line, in stage units. Clawd's feet rest here. */
-export const FLOOR_Y = 68
-
-/** Horizontal range Clawd is allowed to walk between. */
-export const WALK_RANGE = { min: 14, max: 146 }
+export { STAGE, FLOOR_Y, WALK_RANGE }
 
 export type StationId = 'desk' | 'window' | 'shelf' | 'rug' | 'centre' | 'plant'
 
@@ -66,12 +68,18 @@ function r(ctx: Ctx, u: number, x: number, y: number, w: number, h: number, fill
 
 const WINDOW = { x: 22, y: 12, w: 30, h: 32 }
 
-function drawWindow(ctx: Ctx, u: number, s: RoomState) {
+/** The opening's recess and its sill. Masonry, so it bakes. */
+function drawWindowRecess(ctx: Ctx, u: number) {
+  const { x, y, w, h } = WINDOW
+  r(ctx, u, x - 1.5, y - 1.5, w + 3, h + 3, ROOM.wallShade)
+  r(ctx, u, x - 2, y + h, w + 4, 1.6, ROOM.wood) // sill
+  r(ctx, u, x - 2, y + h, w + 4, 0.4, ROOM.woodLit)
+}
+
+/** The view. Redrawn because the sky turns with the hour. */
+function drawWindowGlass(ctx: Ctx, u: number, s: RoomState) {
   const sky = skyAt(s.hour)
   const { x, y, w, h } = WINDOW
-
-  // Recess so the wall reads as having thickness.
-  r(ctx, u, x - 1.5, y - 1.5, w + 3, h + 3, ROOM.wallShade)
 
   const grad = ctx.createLinearGradient(0, y * u, 0, (y + h) * u)
   grad.addColorStop(0, sky.top)
@@ -105,15 +113,16 @@ function drawWindow(ctx: Ctx, u: number, s: RoomState) {
     }
   }
 
-  // Mullions.
+}
+
+/** Joinery, back on top of the live view. */
+function drawWindowFrame(ctx: Ctx, u: number) {
+  const { x, y, w, h } = WINDOW
   r(ctx, u, x + w / 2 - 0.5, y, 1, h, ROOM.wallShade)
   r(ctx, u, x, y + h / 2 - 0.5, w, 1, ROOM.wallShade)
-
-  // Frame.
   ctx.strokeStyle = ROOM.woodShade
   ctx.lineWidth = 1.6 * u
   ctx.strokeRect(x * u, y * u, w * u, h * u)
-  r(ctx, u, x - 2, y + h, w + 4, 1.6, ROOM.wood) // sill
 }
 
 /** Volumetric shaft cast from the window onto the floor. */
@@ -172,7 +181,8 @@ function drawLightShaft(ctx: Ctx, u: number, s: RoomState) {
  */
 const DESK = { x: 96, y: 60, w: 30, h: 8 }
 
-function drawDesk(ctx: Ctx, u: number, s: RoomState) {
+/** The desk carcass. Furniture, so it bakes. */
+function drawDeskBody(ctx: Ctx, u: number) {
   const { x, y, w } = DESK
 
   // Legs first so the top overlaps them.
@@ -183,7 +193,12 @@ function drawDesk(ctx: Ctx, u: number, s: RoomState) {
   r(ctx, u, x, y, w, 0.6, ROOM.woodLit)
   r(ctx, u, x, y + 2, w, 0.7, ROOM.woodShade)
 
-  // Monitor.
+  drawDeskExtras(ctx, u)
+}
+
+/** The monitor, whose screen is the one thing on this desk that moves. */
+function drawMonitor(ctx: Ctx, u: number, s: RoomState) {
+  const { x, y } = DESK
   const mx = x + 8
   const my = y - 15
   r(ctx, u, mx + 6, my + 12, 3, 3, ROOM.metal) // stand
@@ -222,14 +237,13 @@ function drawDesk(ctx: Ctx, u: number, s: RoomState) {
     ctx.restore()
   }
 
-  // Keyboard — Clawd stands behind this to type.
+}
+
+/** Keyboard and oddments. The mug left this desk to become a movable prop. */
+function drawDeskExtras(ctx: Ctx, u: number) {
+  const { x, y } = DESK
   r(ctx, u, x + 4, y - 1, 12, 1, ROOM.metal)
   r(ctx, u, x + 4, y - 1, 12, 0.35, ROOM.metalLit)
-
-  // Mug.
-  r(ctx, u, x + 22, y - 3, 3, 3, ROOM.paper)
-  r(ctx, u, x + 25, y - 2.2, 0.9, 1.6, ROOM.paper)
-  r(ctx, u, x + 22, y - 3, 3, 0.5, '#C9C2B4')
 }
 
 function drawLamp(ctx: Ctx, u: number, s: RoomState) {
@@ -298,35 +312,6 @@ function drawShelf(ctx: Ctx, u: number) {
   r(ctx, u, x + 18, y + 6.8, 1.2, 1.6, ROOM.leafLit)
 }
 
-function drawPlant(ctx: Ctx, u: number, s: RoomState) {
-  const x = 60
-  const base = FLOOR_Y
-
-  r(ctx, u, x, base - 7, 8, 7, ROOM.fabric) // pot
-  r(ctx, u, x, base - 7, 8, 0.8, ROOM.fabricLit)
-  r(ctx, u, x - 0.6, base - 7.8, 9.2, 1.2, ROOM.fabricLit) // rim
-
-  // Fronds sway on a slow sine; each blade is a stack of blocks.
-  const blades = [
-    { dx: 1, h: 15, lean: -1 },
-    { dx: 3, h: 20, lean: -0.3 },
-    { dx: 4.5, h: 22, lean: 0.4 },
-    { dx: 6, h: 17, lean: 1.1 },
-  ]
-  blades.forEach((b, i) => {
-    const sway = Math.sin(s.time * 0.55 + i * 1.3) * 0.9
-    for (let seg = 0; seg < b.h; seg += 1.4) {
-      const t = seg / b.h
-      const off = (b.lean + sway) * t * t * 2.4
-      r(
-        ctx, u,
-        x + b.dx + off, base - 7.5 - seg,
-        1.2, 1.4,
-        t > 0.6 ? ROOM.leafLit : ROOM.leaf,
-      )
-    }
-  })
-}
 
 function drawRug(ctx: Ctx, u: number) {
   const x = 62
@@ -366,52 +351,142 @@ function drawPoster(ctx: Ctx, u: number) {
 
 // ── composition ───────────────────────────────────────────────────────
 
-export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
-  // Wall with a soft top-down gradient.
+/**
+ * Architecture, drawn in flat colour.
+ *
+ * The enhanced room earns its depth from per-pixel grain and stacked
+ * gradients. This gets the same *shapes* — panelled dado, mouldings, a floor
+ * made of boards rather than a gradient with lines on it — out of plain
+ * rectangles, which cost almost nothing and, because the whole lot is baked
+ * once, cost nothing at all per frame.
+ *
+ * That is the trade: classic is not "the room with things missing", it is the
+ * room drawn with a cheaper brush.
+ */
+function paintClassicStatic(ctx: Ctx, u: number) {
+  // Wall, with a soft top-down gradient and generous bleed for camera pans.
   const wall = ctx.createLinearGradient(0, 0, 0, FLOOR_Y * u)
   wall.addColorStop(0, ROOM.wallLit)
-  wall.addColorStop(1, ROOM.wall)
+  wall.addColorStop(0.6, ROOM.wall)
+  wall.addColorStop(1, mixHex(ROOM.wall, '#000000', 0.12))
   ctx.fillStyle = wall
-  ctx.fillRect(0, 0, STAGE.w * u, FLOOR_Y * u)
+  ctx.fillRect(ROOM_LEFT * u, ROOM_TOP * u, ROOM_W * u, (FLOOR_Y - ROOM_TOP) * u)
+
+  // Crown moulding and the shadow under it.
+  r(ctx, u, ROOM_LEFT, 1.5, ROOM_W, 2.4, ROOM.wallWarm)
+  r(ctx, u, ROOM_LEFT, 1.5, ROOM_W, 0.5, mixHex(ROOM.wallWarm, '#FFFFFF', 0.3))
+  r(ctx, u, ROOM_LEFT, 3.9, ROOM_W, 0.5, ROOM.wallShade)
+
+  drawClassicWainscot(ctx, u)
 
   drawPoster(ctx, u)
-  drawWindow(ctx, u, s)
+  drawWallPanels(ctx, u)
+  drawWindowRecess(ctx, u)
   drawShelf(ctx, u)
 
-  // Skirting board grounds the wall against the floor.
-  r(ctx, u, 0, FLOOR_Y - 2.5, STAGE.w, 2.5, ROOM.skirting)
-  r(ctx, u, 0, FLOOR_Y - 2.5, STAGE.w, 0.5, mixHex(ROOM.skirting, '#FFFFFF', 0.14))
+  // Skirting with a two-step profile, which is most of what reads as a
+  // skirting rather than a dark stripe.
+  const top = FLOOR_Y - 3
+  r(ctx, u, ROOM_LEFT, top, ROOM_W, 3, ROOM.skirting)
+  r(ctx, u, ROOM_LEFT, top, ROOM_W, 0.5, mixHex(ROOM.skirting, '#FFFFFF', 0.18))
+  r(ctx, u, ROOM_LEFT, top + 1.1, ROOM_W, 0.3, mixHex(ROOM.skirting, '#000000', 0.5))
 
-  // Floor, receding slightly lighter toward the viewer.
+  drawClassicFloor(ctx, u)
+  drawRug(ctx, u)
+  drawDeskBody(ctx, u)
+  // After the desk and the shelf, so a mug on either sits on top of it.
+  drawRestingProps(ctx, u, 0, { still: true })
+}
+
+/** Panelled dado: stiles, recessed fields, and a rail — all flat fills. */
+function drawClassicWainscot(ctx: Ctx, u: number) {
+  const railY = 46
+  const top = railY + 1.4
+  const bottom = FLOOR_Y - 3
+  const height = bottom - top
+  const field = mixHex(ROOM.wall, ROOM.wallWarm, 0.55)
+
+  r(ctx, u, ROOM_LEFT, top, ROOM_W, height, field)
+
+  const pitch = 17
+  const stile = 3.4
+  for (let x = ROOM_LEFT; x < ROOM_LEFT + ROOM_W; x += pitch) {
+    const px = x + stile
+    const pw = pitch - stile * 2
+    const py = top + 2.4
+    const ph = height - 4.8
+    if (pw <= 0 || ph <= 0) continue
+    r(ctx, u, px, py, pw, ph, mixHex(field, '#000000', 0.3))
+    // Two bevel edges are enough to read as sunk; four is a diminishing return.
+    r(ctx, u, px, py, pw, 0.5, mixHex(field, '#000000', 0.55))
+    r(ctx, u, px, py + ph - 0.5, pw, 0.5, mixHex(field, '#FFFFFF', 0.16))
+  }
+
+  r(ctx, u, ROOM_LEFT, railY, ROOM_W, 1.5, ROOM.wallWarm)
+  r(ctx, u, ROOM_LEFT, railY, ROOM_W, 0.4, mixHex(ROOM.wallWarm, '#FFFFFF', 0.34))
+  r(ctx, u, ROOM_LEFT, railY + 1.5, ROOM_W, 0.4, ROOM.wallShade)
+}
+
+/** Boards that vary board to board, rather than a gradient with lines on it. */
+function drawClassicFloor(ctx: Ctx, u: number) {
+  const depth = STAGE.h - FLOOR_Y
   const floor = ctx.createLinearGradient(0, FLOOR_Y * u, 0, STAGE.h * u)
-  floor.addColorStop(0, ROOM.floorLit)
-  floor.addColorStop(1, ROOM.floor)
+  floor.addColorStop(0, ROOM.floor)
+  floor.addColorStop(0.45, ROOM.floorLit)
+  floor.addColorStop(1, mixHex(ROOM.floorWarm, '#000000', 0.22))
   ctx.fillStyle = floor
-  ctx.fillRect(0, FLOOR_Y * u, STAGE.w * u, (STAGE.h - FLOOR_Y) * u)
+  ctx.fillRect(ROOM_LEFT * u, FLOOR_Y * u, ROOM_W * u, depth * u)
 
-  // Floorboards fanning out in fake perspective.
+  const jointX = (i: number, t: number) => STAGE.w / 2 + i * (9 + t * 16)
+
+  // Each board takes its own stain: one extra fill per board, and the single
+  // biggest reason a floor stops reading as a sheet of colour.
   ctx.save()
-  ctx.globalAlpha = 0.16
-  ctx.strokeStyle = '#000'
-  ctx.lineWidth = Math.max(1, 0.18 * u)
-  for (let i = -4; i <= 12; i++) {
-    const topX = (STAGE.w / 2 + i * 12) * u
-    const botX = (STAGE.w / 2 + i * 26) * u
+  for (let i = -14; i <= 26; i++) {
+    const shift = hash2(i, 7, 55) - 0.5
+    ctx.globalAlpha = 0.14 + Math.abs(shift) * 0.18
+    ctx.fillStyle = shift > 0 ? ROOM.floorWarm : '#140D08'
     ctx.beginPath()
-    ctx.moveTo(topX, FLOOR_Y * u)
-    ctx.lineTo(botX, STAGE.h * u)
-    ctx.stroke()
+    ctx.moveTo(jointX(i, 0) * u, FLOOR_Y * u)
+    ctx.lineTo(jointX(i + 1, 0) * u, FLOOR_Y * u)
+    ctx.lineTo(jointX(i + 1, 1) * u, STAGE.h * u)
+    ctx.lineTo(jointX(i, 1) * u, STAGE.h * u)
+    ctx.closePath()
+    ctx.fill()
   }
   ctx.restore()
 
-  drawLightShaft(ctx, u, s)
-  drawRug(ctx, u)
+  ctx.save()
+  ctx.lineWidth = Math.max(1, 0.2 * u)
+  for (let i = -14; i <= 26; i++) {
+    ctx.globalAlpha = 0.3
+    ctx.strokeStyle = ROOM.floorSeam
+    ctx.beginPath()
+    ctx.moveTo(jointX(i, 0) * u, FLOOR_Y * u)
+    ctx.lineTo(jointX(i, 1) * u, STAGE.h * u)
+    ctx.stroke()
+  }
+  ctx.restore()
+}
 
-  // All furniture sits behind the character. In a side-on view, standing
-  // behind a desk slices the silhouette in half and the character stops
-  // reading — everything stages cleanly with Clawd in front.
-  drawPlant(ctx, u, s)
-  drawDesk(ctx, u, s)
+/** Names every input the baked classic painting depends on. */
+function classicKey(u: number): string {
+  const layout = PROP_IDS.map((id) => `${id}:${propStore.spotOf(id)}`).join(',')
+  const wall = panelStore.list().map((panel) => `${panel.panel_id}:${panel.kind}`).join(',')
+  return ['classic', unitKey(u), quality().tier, layout, wall].join('|')
+}
+
+export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
+  const baked = bakeBackdrop(u, classicKey(u), paintClassicStatic)
+  if (baked) blitBackdrop(ctx, u, baked)
+  else paintClassicStatic(ctx, u)
+
+  // Only what actually moves.
+  drawWindowGlass(ctx, u, s)
+  drawWindowFrame(ctx, u)
+  drawLightShaft(ctx, u, s)
+  drawLivingProps(ctx, u, s.time)
+  drawMonitor(ctx, u, s)
   drawLamp(ctx, u, s)
 }
 

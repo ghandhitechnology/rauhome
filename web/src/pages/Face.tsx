@@ -9,6 +9,13 @@ import {
   saveRoomVisual,
   type RoomVisual,
 } from '../clawd/roomVisual'
+import {
+  clearTier,
+  currentTier,
+  setTier,
+  tierIsAutomatic,
+  type QualityTier,
+} from '../clawd/quality'
 import { useMode } from '../mode'
 import { useVoiceSession } from '../voice'
 import { api } from '../api'
@@ -59,6 +66,8 @@ export default function Face() {
   const [hour, setHour] = useState<number | null>(null)
   const [lamp, setLamp] = useState<boolean | undefined>(undefined)
   const [roomVisual, setRoomVisual] = useState<RoomVisual>(() => loadRoomVisual())
+  const [tier, setTierState] = useState<QualityTier>(() => currentTier())
+  const [tierAuto, setTierAuto] = useState(() => tierIsAutomatic())
   const apiRef = useRef<ClawdRoomApi | null>(null)
   const lastReply = useRef({ at: 0, text: '', sig: '' })
   const sendingRef = useRef(false)
@@ -399,6 +408,40 @@ export default function Face() {
                 {s}
               </button>
             ))}
+          </div>
+
+          <h3>Detail</h3>
+          <p className="face-hint">
+            {tierAuto
+              ? 'Chosen for this machine. Drop it if the room ever feels heavy.'
+              : 'Set by you. Automatic judges the machine instead.'}
+          </p>
+          <div className="chip-row">
+            {(['low', 'balanced', 'high'] as const).map((level) => (
+              <button
+                key={level}
+                className={`chip ${!tierAuto && tier === level ? 'is-active' : ''}`}
+                aria-pressed={!tierAuto && tier === level}
+                onClick={() => {
+                  setTier(level)
+                  setTierState(level)
+                  setTierAuto(false)
+                }}
+              >
+                {level}
+              </button>
+            ))}
+            <button
+              className={`chip ${tierAuto ? 'is-active' : ''}`}
+              aria-pressed={tierAuto}
+              onClick={() => {
+                clearTier()
+                setTierState(currentTier())
+                setTierAuto(true)
+              }}
+            >
+              auto
+            </button>
           </div>
 
           <h3>Room</h3>

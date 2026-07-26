@@ -13,10 +13,25 @@ import { contactShadow, FLOOR_Y } from './stage'
 
 type Ctx = CanvasRenderingContext2D
 
-/** Everything currently sitting on a surface. */
-export function drawRestingProps(ctx: Ctx, u: number, time: number) {
+/** Objects that animate, and so cannot be baked into the backdrop. */
+const ANIMATED = new Set<string>(['plant'])
+
+/**
+ * Everything currently sitting on a surface.
+ *
+ * `still` selects only the objects that hold perfectly still, which is what
+ * the baked backdrop can take; the rest are drawn live each frame.
+ */
+export function drawRestingProps(
+  ctx: Ctx,
+  u: number,
+  time: number,
+  opts: { still?: boolean; living?: boolean } = {},
+) {
   const errand = propStore.activeErrand
   for (const id of PROP_IDS) {
+    if (opts.still && ANIMATED.has(id)) continue
+    if (opts.living && !ANIMATED.has(id)) continue
     // The carried one is drawn later, in front of him.
     if (errand && errand.prop === id && (errand.phase === 'carry' || errand.phase === 'place')) {
       continue
@@ -32,6 +47,11 @@ export function drawRestingProps(ctx: Ctx, u: number, time: number) {
     }
     drawProp(ctx, u, id, spot.x, spot.y, time)
   }
+}
+
+/** The objects that move on their own — just the plant, and only its fronds. */
+export function drawLivingProps(ctx: Ctx, u: number, time: number) {
+  drawRestingProps(ctx, u, time, { living: true })
 }
 
 /**
