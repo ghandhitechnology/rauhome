@@ -58,7 +58,7 @@ def _default_models() -> Dict[str, Any]:
             "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
             "model": "eleven_flash_v2_5",
             "preset": "robotic",
-            "effect": "robot",
+            "effect": "none",
             "voice_settings": {
                 "stability": 0.72,
                 "similarity_boost": 0.72,
@@ -67,12 +67,11 @@ def _default_models() -> Dict[str, Any]:
                 "use_speaker_boost": True,
             },
         },
-        # Pick the best connected backend at session start. This avoids leaving
-        # a valid Deepgram or ElevenLabs key unused while a large local Whisper
-        # model downloads on the first conversation.
+        # Prefer streaming Deepgram. resolve_stt() falls back when the key is
+        # missing so voice mode still works without it.
         "stt": {
-            "provider": "auto",
-            "model": "",
+            "provider": "deepgram",
+            "model": "nova-3",
             "language": "en",
         },
         "browse": {

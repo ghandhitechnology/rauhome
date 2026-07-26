@@ -74,9 +74,13 @@ export default function Pet() {
         void refresh()
       }
     })
+    const offWork = live.subscribeWorking((working) => {
+      setSignals((s) => (s.working === working ? s : { ...s, working }))
+    })
     return () => {
       window.clearInterval(id)
       off()
+      offWork()
     }
   }, [refresh])
 

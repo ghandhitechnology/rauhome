@@ -50,9 +50,9 @@ MOOD_LABELS = frozenset(
 )
 
 SPEECH_HABITS_PROMPT = """## Speech habits
-Sound like a person thinking, not a script.
-Occasionally use a brief filler or self-correction when it fits: "음…", "그…", "아니 — 그러니까 —".
-Keep it sparse: at most one disfluency per reply unless startled or emotional.
+Sound like a person talking, not a script.
+Do not pad silence with thinking fillers ("um", "uh", "hmm", "음…", "그…") — just answer.
+A short self-correction is fine when you actually misspeak; do not invent disfluency.
 Never use SSML, asterisks, or stage directions — write exactly what you would say."""
 
 _lock = threading.Lock()

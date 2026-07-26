@@ -162,6 +162,93 @@ describe('Director cues', () => {
   })
 })
 
+describe('Director thinking vs desk work', () => {
+  let rig: ClawdRig
+  let director: Director
+
+  beforeEach(() => {
+    rig = new ClawdRig()
+    director = new Director(rig, 'room')
+    rig.worldX = station('window').x
+  })
+
+  it('keeps the thinking bubble and think pose without walking to the desk', () => {
+    rig.worldX = station('centre').x
+    run(director, rig, 1, { ...EMPTY_SIGNALS, thinking: true })
+    expect(director.speech).toMatch(/^\.{1,3}$/)
+    expect(rig.currentMotion).toBe('think')
+    expect(director.targetStation).toBe('centre')
+    // From the window he would head for centre to think — never the desk.
+    rig.worldX = station('window').x
+    run(director, rig, 0.05, { ...EMPTY_SIGNALS, thinking: true })
+    expect(director.targetStation).toBe('centre')
+    expect(director.targetStation).not.toBe('desk')
+  })
+
+  it('clears the bubble and heads for the computer while working', () => {
+    run(director, rig, 0.1, { ...EMPTY_SIGNALS, thinking: true, working: true })
+    expect(director.speech).toBeNull()
+    expect(director.targetStation).toBe('desk')
+    run(director, rig, 8, { ...EMPTY_SIGNALS, thinking: true, working: true })
+    expectStandingAt(rig, 'desk')
+    expect(rig.currentMotion).toBe('type')
+  })
+
+  it('hurries a desk cue across the room', () => {
+    director.manual = false
+    director.applyCue(
+      cue({ anchor: 'now', station: 'desk', motion: 'type', hurry: true }),
+    )
+    // One frame of travel — hurried gait covers more ground than a stroll.
+    const before = rig.worldX
+    director.update(FRAME, EMPTY_SIGNALS)
+    const hurried = Math.abs(rig.worldX - before)
+
+    rig.worldX = before
+    director.releaseCue()
+    director.applyCue(cue({ anchor: 'now', station: 'desk', motion: 'type' }))
+    director.update(FRAME, EMPTY_SIGNALS)
+    const normal = Math.abs(rig.worldX - before)
+    expect(hurried).toBeGreaterThan(normal)
+  })
+
+  it('grows the speech bubble across chat deltas without a new reply stamp', () => {
+    const started = Date.now()
+    run(director, rig, 0.05, {
+      ...EMPTY_SIGNALS,
+      lastReplyAt: started,
+      speech: 'Hello',
+    })
+    expect(director.speech).toBe('Hello')
+    run(director, rig, 0.05, {
+      ...EMPTY_SIGNALS,
+      lastReplyAt: started,
+      speech: 'Hello there, friend',
+    })
+    expect(director.speech).toBe('Hello there, friend')
+  })
+
+  it('keeps a streaming reply visible while desk work is running', () => {
+    const started = Date.now()
+    run(director, rig, 0.05, {
+      ...EMPTY_SIGNALS,
+      streaming: true,
+      working: true,
+      lastReplyAt: started,
+      speech: 'Checking that now',
+    })
+    expect(director.speech).toBe('Checking that now')
+    run(director, rig, 0.05, {
+      ...EMPTY_SIGNALS,
+      streaming: true,
+      working: true,
+      lastReplyAt: started,
+      speech: 'Checking that now… found it',
+    })
+    expect(director.speech).toBe('Checking that now… found it')
+  })
+})
+
 describe('Director directed locomotion', () => {
   let rig: ClawdRig
   let director: Director

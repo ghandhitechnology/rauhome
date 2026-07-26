@@ -20,6 +20,7 @@ export type LiveEvent = { kind: string; [key: string]: unknown }
 
 type EventHandler = (event: LiveEvent) => void
 type StatusHandler = (connected: boolean) => void
+type WorkingHandler = (working: boolean) => void
 
 /** Reconnect backoff: 0.5s, 1s, 2s, 4s, then every 8s. */
 const RECONNECT_BASE_MS = 500
@@ -27,12 +28,68 @@ const RECONNECT_MAX_MS = 8000
 
 const handlers = new Set<EventHandler>()
 const statusHandlers = new Set<StatusHandler>()
+const workingHandlers = new Set<WorkingHandler>()
 
 let socket: WebSocket | null = null
 let retries = 0
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let connected = false
 let activityTimer: ReturnType<typeof setTimeout> | null = null
+/** Nested desk-work depth so overlapping tools keep him at the computer. */
+let deskWorkDepth = 0
+let working = false
+
+function setDeskWork(delta: number) {
+  deskWorkDepth = Math.max(0, deskWorkDepth + delta)
+  const next = deskWorkDepth > 0
+  if (next === working) return
+  working = next
+  for (const fn of [...workingHandlers]) {
+    try {
+      fn(working)
+    } catch {
+      /* one bad subscriber must not stall the rest */
+    }
+  }
+}
+
+function resetDeskWork() {
+  deskWorkDepth = 0
+  if (!working) return
+  working = false
+  for (const fn of [...workingHandlers]) {
+    try {
+      fn(false)
+    } catch {
+      /* as above */
+    }
+  }
+}
+
+function deskSustain(event: LiveEvent, fallbackMotion: 'search' | 'type') {
+  const watchdog = typeof event.watchdog_ms === 'number' ? event.watchdog_ms : 90_000
+  const motion =
+    event.motion === 'search' || event.motion === 'type' || event.motion === 'read'
+      ? (event.motion as 'search' | 'type' | 'read')
+      : fallbackMotion
+  setDeskWork(1)
+  bodyController.sustain(
+    {
+      anchor: 'now',
+      station: 'desk',
+      motion,
+      gaze: 'screen',
+      hold_ms: 1000,
+      hurry: true,
+    },
+    watchdog,
+  )
+}
+
+function deskRelease() {
+  setDeskWork(-1)
+  if (deskWorkDepth === 0) bodyController.endSustain()
+}
 
 function markActive(durationMs = 2500) {
   if (typeof document === 'undefined') return
@@ -108,6 +165,7 @@ function driveBody(event: LiveEvent) {
   const turnId = typeof event.turn_id === 'string' ? event.turn_id : ''
   switch (event.kind) {
     case 'chat_started':
+      resetDeskWork()
       bodyController.startTurn(turnId)
       break
     case 'body_plan':
@@ -127,10 +185,12 @@ function driveBody(event: LiveEvent) {
     case 'chat_done':
       // An interrupted reply has no end to gesture at — the words after the
       // cut were never heard, so neither should the cues anchored to them be.
+      resetDeskWork()
       if (event.interrupted) bodyController.cancel(turnId, 'interrupted')
       else bodyController.endTurn(turnId, typeof event.text === 'string' ? event.text : undefined)
       break
     case 'chat_error':
+      resetDeskWork()
       bodyController.cancel(turnId, 'error')
       break
     case 'prop_layout':
@@ -150,23 +210,17 @@ function driveBody(event: LiveEvent) {
       })
       break
     }
-    case 'browse_started': {
-      // Send him to the computer for as long as the fetch actually takes.
-      const watchdog = typeof event.watchdog_ms === 'number' ? event.watchdog_ms : 90_000
-      bodyController.sustain(
-        {
-          anchor: 'now',
-          station: 'desk',
-          motion: 'search',
-          gaze: 'screen',
-          hold_ms: 1000,
-        },
-        watchdog,
-      )
+    case 'browse_started':
+      // Research: dash to the desk and search for as long as the fetch takes.
+      deskSustain(event, 'search')
       break
-    }
+    case 'tool_started':
+      // Generic face tools (shell, files, memory, hard task, …).
+      deskSustain(event, 'type')
+      break
     case 'browse_finished':
-      bodyController.endSustain()
+    case 'tool_finished':
+      deskRelease()
       break
     case 'panel_shown':
       panelStore.add({
@@ -246,12 +300,25 @@ export const live = {
   isConnected(): boolean {
     return connected
   },
+  /** True while a face tool or browse is holding him at the computer. */
+  isWorking(): boolean {
+    return working
+  },
   /** Listen to every hub event. Returns an unsubscribe. */
   subscribe(fn: EventHandler): () => void {
     handlers.add(fn)
     connect()
     return () => {
       handlers.delete(fn)
+    }
+  },
+  /** Desk-work flag for the thinking bubble vs computer pose. */
+  subscribeWorking(fn: WorkingHandler): () => void {
+    workingHandlers.add(fn)
+    fn(working)
+    connect()
+    return () => {
+      workingHandlers.delete(fn)
     }
   },
   /** Listen to connection state, called immediately with the current one. */

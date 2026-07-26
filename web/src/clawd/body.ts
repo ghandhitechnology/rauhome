@@ -123,6 +123,11 @@ export type BodyCue = {
   /** How long this cue owns the body, milliseconds. */
   hold_ms: number
   /**
+   * Client-side only: walk faster to the cue's station (tool / research dashes).
+   * The server never sends this — `live.ts` sets it on desk-work sustains.
+   */
+  hurry?: boolean
+  /**
    * Client-side only: the step of a carrying errand this cue performs.
    *
    * The server never sends this. `live.ts` expands one `prop_move` into the

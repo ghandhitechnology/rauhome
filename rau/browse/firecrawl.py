@@ -48,7 +48,8 @@ class FirecrawlBrowser(BrowseProvider):
         started = time.monotonic()
         payload: Dict[str, Any] = {
             "url": target,
-            "formats": ["markdown"],
+            # `links` is a separate format — without it Firecrawl omits them.
+            "formats": ["markdown", "links"],
             # The navigation and the boilerplate are noise in a context window.
             "onlyMainContent": True,
             # Firecrawl counts in milliseconds, and should give up before we do.

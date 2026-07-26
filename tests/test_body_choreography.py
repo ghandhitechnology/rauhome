@@ -472,7 +472,7 @@ class FaceTurnStreamTests(unittest.TestCase):
         self._slot = brain.chat_for_slot
         self._prepare = brain.prepare_turn
         brain.append_diary = lambda *args, **kwargs: None
-        brain._system_prompt = lambda extra="": "soul"
+        brain._system_prompt = lambda extra="", **_kwargs: "soul"
         brain.reset_history()
 
     def tearDown(self) -> None:
@@ -955,7 +955,7 @@ class EndToEndTests(unittest.TestCase):
             "heartbeat": server.start_heartbeat,
         }
         brain.chat_for_slot = lambda _slot: (provider, {"model": "fake"})
-        brain._system_prompt = lambda extra="": "soul"
+        brain._system_prompt = lambda extra="", **_kwargs: "soul"
         brain.append_diary = lambda *args, **kwargs: None
         brain.DELTA_INTERVAL_SEC = 0.0
         # Background work is not what this is testing, and a dreamer waking up

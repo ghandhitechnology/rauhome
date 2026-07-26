@@ -26,6 +26,13 @@ import { api } from '../api'
 import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
 import { panelStore, type PanelSummary } from '../panels'
+import {
+  IDLE_FACE_STREAM,
+  bubbleSpeechFromStream,
+  reduceFaceStream,
+  streamCaughtUp,
+  type FaceStream,
+} from '../faceStream'
 import './Face.css'
 
 const MOTION_BUTTONS: { id: MotionName; label: string }[] = [
@@ -95,12 +102,22 @@ export default function Face() {
   // reads the newest one as if it just arrived and Clawd announces a stale
   // message every time the page loads.
   const seeded = useRef(false)
+  /** Stamp `lastReplyAt` once per streamed turn so celebrate does not retrigger. */
+  const streamStampRef = useRef('')
 
   const { mode } = useMode()
   const voice = useVoiceSession({ enabled: mode === 'voice' })
+  const [stream, setStream] = useState<FaceStream>(IDLE_FACE_STREAM)
+  const streamRef = useRef(stream)
+  streamRef.current = stream
 
   const onReady = useCallback((a: ClawdRoomApi) => {
     apiRef.current = a
+  }, [])
+
+  // Face bypasses the app shell — still need the shared `/ws` channel.
+  useEffect(() => {
+    live.start()
   }, [])
 
   // Desktop pet mutex: Face open hides the pet; leaving Face restores it.
@@ -111,8 +128,49 @@ export default function Face() {
     }
   }, [])
 
-  // Voice drives the character directly — polling the hub is far too coarse to
-  // animate against speech.
+  // Chat mode: `/ws` tokens paint the character bubble only (no composer panel).
+  useEffect(() => {
+    if (mode === 'voice') return
+    if (stream.phase === 'off') {
+      setSignals((s) => (s.streaming ? { ...s, streaming: false } : s))
+      return
+    }
+    if (stream.phase === 'wait') {
+      setSignals((s) => ({
+        ...s,
+        thinking: true,
+        streaming: true,
+        speech: null,
+      }))
+      return
+    }
+    const speech = bubbleSpeechFromStream(stream)
+    if (!speech) {
+      // First word still forming — keep thinking dots, not a character trickle.
+      setSignals((s) => ({
+        ...s,
+        thinking: stream.phase === 'live',
+        streaming: true,
+        speech: null,
+      }))
+      return
+    }
+    const stampKey = stream.turnId || 'pending'
+    const first = streamStampRef.current !== stampKey
+    if (first) streamStampRef.current = stampKey
+    setSignals((s) => ({
+      ...s,
+      thinking: false,
+      // Stay "streaming" through done so desk-work cannot wipe the final line
+      // before the log hand-off clears the buffer.
+      streaming: true,
+      speech,
+      lastReplyAt: first ? Date.now() : s.lastReplyAt || Date.now(),
+      sentenceTag: first ? tagOf(speech) : s.sentenceTag,
+    }))
+  }, [mode, stream])
+
+  // Voice: ear-aligned captions only — never paint model-speed chat_delta.
   useEffect(() => {
     if (mode !== 'voice') return
     // `lastReplyAt` is an event stamp, not a heartbeat. Levels tick ~15x a
@@ -136,6 +194,8 @@ export default function Face() {
       userLevel: voice.micLevel,
       rauLevel: voice.outLevel,
       thinking: voice.phase === 'thinking',
+      // Keep captions visible if a tool fires while audio is still playing.
+      streaming: speaking,
       speech: heard || null,
       lastReplyAt: fresh ? Date.now() : s.lastReplyAt,
       sentenceTag: fresh ? tagOf(heard) : s.sentenceTag,
@@ -187,6 +247,11 @@ export default function Face() {
       // User line is newest → still waiting on Rau (text or voice).
       const awaiting = entries.length > 0 && entries[entries.length - 1]?.role === 'user'
       const thinking = sendingRef.current || awaiting
+      const active = streamRef.current
+      if (streamCaughtUp(active, reply?.text)) {
+        streamStampRef.current = ''
+        setStream(IDLE_FACE_STREAM)
+      }
       setSignals((prev) => {
         const next = {
           ...prev,
@@ -194,6 +259,10 @@ export default function Face() {
           listening: !!status.listening,
           hardState: status.hard_task?.state || 'idle',
           awaitingConfirm: !!status.confirm,
+        }
+        // Mid-stream: ambient hub fields only — the stream effect owns speech.
+        if (streamRef.current.phase !== 'off') {
+          return next
         }
         if (mode === 'voice') {
           // Ambient hub state only — speech bubble stays with the voice effect.
@@ -206,6 +275,7 @@ export default function Face() {
         return {
           ...next,
           thinking,
+          streaming: false,
           // Hold the previous line out of the bubble while waiting; director
           // shows a moving "..." from the thinking flag instead.
           lastReplyAt: thinking ? prev.lastReplyAt : lastReply.current.at,
@@ -224,8 +294,27 @@ export default function Face() {
     }, 15_000)
     const off = live.subscribe((event) => {
       if (
+        event.kind === 'chat_started' ||
+        event.kind === 'chat_delta' ||
         event.kind === 'chat_done' ||
-        event.kind === 'chat_error' ||
+        event.kind === 'chat_error'
+      ) {
+        setStream((prev) => reduceFaceStream(prev, event))
+        if (event.kind === 'chat_done' || event.kind === 'chat_error') {
+          const text = typeof event.text === 'string' ? event.text : ''
+          const turnId = typeof event.turn_id === 'string' ? event.turn_id : ''
+          if (event.kind === 'chat_done' && text.trim()) {
+            lastReply.current = {
+              at: Date.now(),
+              text,
+              sig: `stream|${turnId}|${text}`,
+            }
+          }
+          void refresh()
+        }
+        return
+      }
+      if (
         event.kind === 'hard_task' ||
         event.kind === 'confirm_request' ||
         event.kind === 'confirm_result'
@@ -233,11 +322,15 @@ export default function Face() {
         void refresh()
       }
     })
+    const offWork = live.subscribeWorking((working) => {
+      setSignals((s) => (s.working === working ? s : { ...s, working }))
+    })
     return () => {
       clearInterval(id)
       off()
+      offWork()
     }
-  }, [refresh, mode])
+  }, [refresh])
 
   async function send() {
     const text = draft.trim()
@@ -247,6 +340,8 @@ export default function Face() {
     // same path and comes back as speech.
     if (mode === 'voice' && voice.connected) {
       setDraft('')
+      setStream(IDLE_FACE_STREAM)
+      streamStampRef.current = ''
       voice.sendText(text)
       return
     }
@@ -254,9 +349,12 @@ export default function Face() {
     setSending(true)
     sendingRef.current = true
     setDraft('')
+    streamStampRef.current = ''
+    setStream({ turnId: '', text: '', phase: 'wait' })
     setSignals((s) => ({
       ...s,
       thinking: true,
+      streaming: true,
       speech: null,
     }))
     try {
@@ -264,6 +362,7 @@ export default function Face() {
       await refresh()
     } catch {
       // Hub unreachable — hand the message back rather than dropping it.
+      setStream(IDLE_FACE_STREAM)
       setDraft((d) => d || text)
     } finally {
       sendingRef.current = false
@@ -411,16 +510,18 @@ export default function Face() {
             />
           </div>
           <div className="voice-read" role="status" aria-live="polite">
-            <span className={`voice-phase ${voice.phase}`}>
+            <span className={`voice-phase ${signals.working ? 'working' : voice.phase}`}>
               {!voice.connected
                 ? 'connecting…'
-                : voice.phase === 'listening'
-                  ? 'listening'
-                  : voice.phase === 'thinking'
-                    ? 'thinking'
-                    : voice.phase === 'speaking'
-                      ? 'speaking — talk to cut in'
-                      : 'ready'}
+                : signals.working
+                  ? 'at the computer'
+                  : voice.phase === 'listening'
+                    ? 'listening'
+                    : voice.phase === 'thinking'
+                      ? 'thinking'
+                      : voice.phase === 'speaking'
+                        ? 'speaking — talk to cut in'
+                        : 'ready'}
             </span>
             {/* Only Deepgram streams partials; the rest stay blank until final. */}
             {(voice.partial || voice.finalText) && (

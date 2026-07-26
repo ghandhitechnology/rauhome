@@ -124,6 +124,35 @@ def _verify_composio(key: str) -> Dict[str, Any]:
     }
 
 
+def _verify_firecrawl(key: str) -> Dict[str, Any]:
+    """Cheap credit check — proves the key without spending a scrape."""
+    body = _get_json(
+        "https://api.firecrawl.dev/v2/team/credit-usage",
+        {"Authorization": f"Bearer {key}", "Accept": "application/json"},
+    )
+    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    remaining = data.get("remainingCredits")
+    if remaining is None:
+        remaining = data.get("remaining_credits")
+    if isinstance(remaining, (int, float)):
+        detail = f"{int(remaining):,} credits left"
+    else:
+        detail = "authenticated"
+    return {"ok": True, "detail": detail, "models": []}
+
+
+def _verify_browserbase(key: str) -> Dict[str, Any]:
+    """List projects — read-only proof the key is accepted."""
+    body = _get_json(
+        "https://api.browserbase.com/v1/projects",
+        {"X-BB-API-Key": key, "Accept": "application/json"},
+    )
+    projects = body if isinstance(body, list) else body.get("projects") or body.get("data") or []
+    count = len(projects) if isinstance(projects, list) else 0
+    detail = f"{count} project{'s' if count != 1 else ''} reachable" if count else "authenticated"
+    return {"ok": True, "detail": detail, "models": []}
+
+
 def verify(slot_id: str, key: Optional[str] = None) -> Dict[str, Any]:
     """Check a credential. Uses the stored key when `key` is not supplied."""
     slot = slot_by_id(slot_id)
@@ -147,6 +176,10 @@ def verify(slot_id: str, key: Optional[str] = None) -> Dict[str, Any]:
             result = probe_key(secret)
             if not result.get("ok"):
                 return {"provider": slot_id, **result}
+        elif slot_id == "firecrawl":
+            result = _verify_firecrawl(secret)
+        elif slot_id == "browserbase":
+            result = _verify_browserbase(secret)
         elif slot_id == "composio":
             result = _verify_composio(secret)
         else:

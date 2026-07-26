@@ -16,8 +16,18 @@ import { FLOOR_Y, STATIONS, WALK_RANGE, station, type StationId } from './room'
 export type Signals = {
   emotion: string
   listening: boolean
-  /** A chat request is in flight. */
+  /** A chat request is in flight — LLM reasoning / waiting on first tokens. */
   thinking: boolean
+  /**
+   * A face tool or browse is running. Distinct from `thinking`: the bubble
+   * ellipsis is for reasoning; desk work walks him to the computer instead.
+   */
+  working: boolean
+  /**
+   * A `/ws` reply is arriving token-by-token. While true, the bubble follows
+   * `speech` even if desk-work would otherwise clear it.
+   */
+  streaming: boolean
   /** hard_task.state from the hub. */
   hardState: string
   /** Timestamp (ms) of the newest assistant message, or 0. */
@@ -46,6 +56,8 @@ export const EMPTY_SIGNALS: Signals = {
   emotion: 'idle',
   listening: false,
   thinking: false,
+  working: false,
+  streaming: false,
   hardState: 'idle',
   lastReplyAt: 0,
   speech: null,
@@ -321,11 +333,30 @@ export class Director {
     this.clock += dt
     const rig = this.rig
 
-    // Waiting on a reply: show a moving ellipsis — never the previous line.
-    if (s.thinking) {
+    // Live `/ws` text wins over thinking dots and desk-work bubble clears —
+    // otherwise tool calls mid-reply wipe the stream the user is reading.
+    if (s.streaming && s.speech) {
+      const freshReply = s.lastReplyAt > this.lastReplySeen
+      if (freshReply) {
+        this.lastReplySeen = s.lastReplyAt
+        if (!this.cue && !this.directed) {
+          this.target = this.mode === 'roam' ? this.target : 'centre'
+          this.arrived = this.mode === 'roam'
+        }
+        if (HAPPY.has(s.emotion)) this.react('celebrate')
+      }
+      if (freshReply || s.speech !== this.speech) {
+        this.speech = s.speech
+        this.speakUntil = this.clock + clamp(1.8 + s.speech.length * 0.045, 2.5, 14)
+      }
+    } else if (s.thinking && !s.working) {
+      // Reasoning wait: thinking bubble. Tool/desk work uses the computer pose
+      // instead — an ellipsis over a typing claw would say the wrong thing.
       const phase = Math.floor(this.clock * 3) % 3
       this.speech = ['.', '..', '...'][phase]
       this.speakUntil = this.clock + 0.5
+    } else if (s.working && !s.rauSpeaking) {
+      this.speech = null
     } else if (s.lastReplyAt > this.lastReplySeen) {
       // ── react to one-off events ────────────────────────────────────
       this.lastReplySeen = s.lastReplyAt
@@ -341,6 +372,11 @@ export class Director {
         this.arrived = this.mode === 'roam'
       }
       if (HAPPY.has(s.emotion)) this.react('celebrate')
+    } else if (s.speech && s.speech !== this.speech) {
+      // Progressive chat / caption growth — refresh the bubble without
+      // treating every delta as a brand-new reply (no re-celebrate).
+      this.speech = s.speech
+      this.speakUntil = this.clock + clamp(1.8 + s.speech.length * 0.045, 2.5, 11)
     } else if (this.clock > this.speakUntil) {
       this.speech = null
     }
@@ -458,7 +494,7 @@ export class Director {
 
     if (cue.station) {
       const spot = station(cue.station)
-      if (this.travelTo(this.clampX(spot.x), dt, gait)) return
+      if (this.travelTo(this.clampX(spot.x), dt, gait, !!cue.hurry)) return
       if (!this.arrived) this.markStationArrival(spot.facing)
       this.signalCueArrival()
       if (!this.cuePlayed) {
@@ -496,8 +532,14 @@ export class Director {
    */
   private converse(dt: number, s: Signals) {
     const rig = this.rig
-    const spot = station(this.directed ? this.target : 'centre')
-    if (this.travelTo(spot.x, dt)) return
+    // Tool work breaks the usual centre latch — he should be at the computer.
+    const home: StationId = s.working ? 'desk' : 'centre'
+    const spot = station(this.directed ? this.target : home)
+    if (!this.directed && this.target !== home) {
+      this.target = home
+      this.arrived = false
+    }
+    if (this.travelTo(spot.x, dt, 'walk', s.working)) return
 
     if (!this.arrived) this.markStationArrival(spot.facing)
     else rig.facing = spot.facing
@@ -536,7 +578,8 @@ export class Director {
 
   private conversationPose(s: Signals): MotionName {
     if (s.emotion === 'sleep') return 'sleep'
-    if (s.rauSpeaking || (this.speech !== null && !s.thinking)) return 'talk'
+    if (s.rauSpeaking || (this.speech !== null && !s.thinking && !s.working)) return 'talk'
+    if (s.working) return 'type'
     if (s.hardState === 'running' || s.jobs.length > 0) return 'shuffle'
     if (s.thinking) return 'think'
     if (s.userSpeaking || s.listening || s.awaitingConfirm) return 'listen'
@@ -655,6 +698,7 @@ export class Director {
       s.userSpeaking ||
       s.rauSpeaking ||
       s.thinking ||
+      s.working ||
       s.awaitingConfirm ||
       this.speech !== null
     )
@@ -701,7 +745,12 @@ export class Director {
    * tiptoeing is quicker and lighter — and the clip's own speed is what he
    * actually travels at, so the legs never slide against the floor.
    */
-  private travelTo(targetX: number, dt: number, gait: MotionName = 'walk'): boolean {
+  private travelTo(
+    targetX: number,
+    dt: number,
+    gait: MotionName = 'walk',
+    hurry = false,
+  ): boolean {
     const rig = this.rig
     const goal = this.clampX(targetX)
     const dx = goal - rig.worldX
@@ -710,11 +759,13 @@ export class Director {
 
     const clip = MOTIONS[gait]
     const cruise = clip.locomotion || WALK_SPEED
+    // Tool dashes to the desk should feel purposeful, not a stroll.
+    const boost = hurry ? 1.7 : 1
 
     this.arrived = false
     rig.facing = dx > 0 ? 1 : -1
     // Ease the last stretch so he does not stop dead.
-    const speed = cruise * clamp(dist / 6, 0.35, 1)
+    const speed = cruise * boost * clamp(dist / 6, 0.35, 1)
     const step = Math.min(dist, speed * dt)
     rig.worldX += step * rig.facing
     rig.worldX = this.clampX(rig.worldX)
@@ -745,6 +796,7 @@ export class Director {
   private isPinned(s: Signals): boolean {
     return (
       s.thinking ||
+      s.working ||
       s.hardState === 'running' ||
       s.jobs.length > 0 ||
       s.awaitingConfirm ||
@@ -756,7 +808,9 @@ export class Director {
   private desiredStation(s: Signals): StationId | null {
     if (this.mode !== 'room') return null
     if (s.awaitingConfirm) return 'centre'
-    if (s.thinking || s.hardState === 'running') return 'desk'
+    // Desk is for real computer work, not for every reasoning pause.
+    if (s.working || s.hardState === 'running') return 'desk'
+    if (s.thinking) return 'centre'
     if (this.speech) return 'centre'
     if (LOW.has(s.emotion)) return 'window'
     return null
@@ -773,10 +827,11 @@ export class Director {
   }
 
   private ambientPick(s: Signals): MotionName {
-    if (s.thinking || s.hardState === 'running' || s.jobs.length > 0) {
-      if (this.target === 'desk') return 'type'
-      return s.thinking ? 'think' : 'shuffle'
+    if (s.working || s.hardState === 'running' || s.jobs.length > 0) {
+      if (this.target === 'desk') return s.working ? 'search' : 'type'
+      return 'shuffle'
     }
+    if (s.thinking) return 'think'
     if (this.speech) return 'talk'
     if (s.awaitingConfirm) return 'wave'
     if (LOW.has(s.emotion)) return 'gaze'

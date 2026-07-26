@@ -191,6 +191,7 @@ export default function Conversation() {
   const [streaming, setStreaming] = useState<{ turnId: string; text: string } | null>(null)
   const [sendError, setSendError] = useState('')
   const [offline, setOffline] = useState(false)
+  const [deskWorking, setDeskWorking] = useState(() => live.isWorking())
   const [activityOpen, setActivityOpen] = useState(false)
   const threadRef = useRef<HTMLElement>(null)
   const composeRef = useRef<HTMLElement>(null)
@@ -237,7 +238,11 @@ export default function Conversation() {
     const id = setInterval(() => {
       if (!live.isConnected()) void refresh()
     }, 15_000)
-    return () => clearInterval(id)
+    const offWork = live.subscribeWorking(setDeskWorking)
+    return () => {
+      clearInterval(id)
+      offWork()
+    }
   }, [])
 
   useEffect(() => {
@@ -472,7 +477,8 @@ export default function Conversation() {
   const clampedSlashIndex = Math.min(slashIndex, Math.max(0, slashSuggestions.length - 1))
 
   return (
-    <div className="convo">
+    <div className={`convo${activityOpen ? ' has-activity' : ''}`}>
+      <div className="convo-main">
       <header className="convo-hero">
         <div className="convo-brand">
           <h1>Rau</h1>
@@ -497,16 +503,6 @@ export default function Conversation() {
           />
         </div>
       </header>
-
-      {activityOpen && (
-        <aside className="convo-activity-drawer" aria-label="All active Rau work">
-          <ActivityInspector
-            global
-            defaultOpen
-            onClose={() => setActivityOpen(false)}
-          />
-        </aside>
-      )}
 
       {confirm && (
         <div className="convo-confirm">
@@ -578,8 +574,15 @@ export default function Conversation() {
             )}
           </article>
         )}
-        {(sending || (mode === 'voice' && voice.phase === 'thinking')) && !liveReply && (
-          <div className="convo-typing" role="status" aria-label="Rau is replying">
+        {(sending ||
+          deskWorking ||
+          (mode === 'voice' && voice.phase === 'thinking')) &&
+          !liveReply && (
+          <div
+            className={`convo-typing${deskWorking ? ' working' : ''}`}
+            role="status"
+            aria-label={deskWorking ? 'Rau is at the computer' : 'Rau is thinking'}
+          >
             <i />
             <i />
             <i />
@@ -655,6 +658,17 @@ export default function Conversation() {
             : 'Enter sends · Shift+Enter for a new line · / for commands'}
         </p>
       </footer>
+      </div>
+
+      {activityOpen && (
+        <aside className="convo-activity-sidebar" aria-label="All active Rau work">
+          <ActivityInspector
+            global
+            variant="sidebar"
+            onClose={() => setActivityOpen(false)}
+          />
+        </aside>
+      )}
     </div>
   )
 }

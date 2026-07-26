@@ -136,7 +136,7 @@ export function classifyEndpoint(partial: string): Endpoint {
 /** Silence multipliers, applied to the VAD's base hangover. */
 export const ENDPOINT_SCALE: Record<Endpoint, number> = {
   // A finished question does not need most of half a second of proof.
-  complete: 0.62,
+  complete: 0.5,
   neutral: 1,
   // Long enough to find a word, short enough not to feel abandoned.
   continuing: 1.9,

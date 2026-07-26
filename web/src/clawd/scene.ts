@@ -221,22 +221,47 @@ export function drawBubble(
   ctx.font = font
   ctx.textBaseline = 'top'
 
-  // Wrap.
-  const words = text.split(/\s+/)
-  const lines: string[] = []
-  let line = ''
-  for (const word of words) {
-    const probe = line ? `${line} ${word}` : word
-    if (ctx.measureText(probe).width > maxWidth - pad * 2 && line) {
-      lines.push(line)
-      line = word
-    } else {
-      line = probe
+  // Word wrap (break only overlong tokens), then keep the newest lines so a
+  // word-by-word stream does not freeze on the opening sentence.
+  const maxInner = maxWidth - pad * 2
+  const wrapped: string[] = []
+  const pushWrapped = (chunk: string) => {
+    if (!chunk) return
+    if (ctx.measureText(chunk).width <= maxInner) {
+      wrapped.push(chunk)
+      return
     }
-    if (lines.length >= 4) break
+    let piece = ''
+    for (const ch of chunk) {
+      const probe = piece + ch
+      if (piece && ctx.measureText(probe).width > maxInner) {
+        wrapped.push(piece)
+        piece = ch
+      } else {
+        piece = probe
+      }
+    }
+    if (piece) wrapped.push(piece)
   }
-  if (line && lines.length < 4) lines.push(line)
-  if (lines.length === 0) {
+  for (const paragraph of text.split('\n')) {
+    const words = paragraph.split(/(\s+)/).filter((part) => part.length > 0)
+    let line = ''
+    for (const word of words) {
+      const probe = line + word
+      if (line && ctx.measureText(probe).width > maxInner) {
+        pushWrapped(line.trimEnd())
+        line = word.trimStart() === '' ? '' : word
+      } else {
+        line = probe
+      }
+    }
+    if (line) pushWrapped(line.trimEnd())
+    else if (paragraph === '' && text.includes('\n')) wrapped.push('')
+  }
+  const clipped = wrapped.length > 4
+  const lines = clipped ? wrapped.slice(-4) : wrapped
+  if (clipped && lines[0]) lines[0] = `…${lines[0]}`
+  if (lines.length === 0 || (lines.length === 1 && !lines[0])) {
     ctx.restore()
     return null
   }

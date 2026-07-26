@@ -154,14 +154,15 @@ def browse_web(args: Dict[str, Any]) -> Dict[str, Any]:
                 _, view = resolve_browse()
                 # An instant refusal is still the end of the activity: without
                 # this he stands at the desk until the watchdog notices.
-                _finish(activity, ok=False, detail="backend cannot search")
+                error = (
+                    f"{browser.label} can open a page but cannot search. "
+                    "Connect Firecrawl, or give a url instead."
+                )
+                _finish(activity, ok=False, detail=error)
                 return {
                     "ok": False,
                     "code": "unsupported",
-                    "error": (
-                        f"{browser.label} can open a page but cannot search. "
-                        "Connect Firecrawl, or give a url instead."
-                    ),
+                    "error": error,
                     "provider": provider_id,
                     "can_search": bool(view.get("can_search")),
                 }
