@@ -42,7 +42,14 @@ const BLEED = 26
 const ROOM_LEFT = -BLEED
 const ROOM_W = STAGE.w + BLEED * 2
 
-export type StationId = 'desk' | 'window' | 'shelf' | 'rug' | 'centre' | 'plant'
+export type StationId =
+  | 'desk'
+  | 'window'
+  | 'shelf'
+  | 'rug'
+  | 'centre'
+  | 'plant'
+  | 'table'
 
 export type Station = {
   id: StationId
@@ -59,6 +66,10 @@ export const STATIONS: Station[] = [
   // Far enough from centre to be a different place: the walk deadband is 1.2
   // units, so a rug at 79 and a centre at 80 were the same spot with two names.
   { id: 'rug', x: 70, facing: 1, label: 'the rug' },
+  // Where he sits to play. Far enough from centre that being sent here is a
+  // walk you can watch rather than a shuffle, and it must match
+  // `GAME_TABLE.x` — he has to end up behind the table, not beside it.
+  { id: 'table', x: 72, facing: 1, label: 'the card table' },
   { id: 'centre', x: 80, facing: 1, label: 'the middle of the room' },
   { id: 'desk', x: 108, facing: 1, label: 'the desk' },
   { id: 'shelf', x: 138, facing: 1, label: 'the shelf' },

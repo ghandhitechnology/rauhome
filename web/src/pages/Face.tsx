@@ -28,6 +28,8 @@ import PanelViewer from '../components/PanelViewer'
 import { panelStore, type PanelSummary } from '../panels'
 
 import { gameStore, useGame } from '../games/kittens/useGame'
+import { phaseStore, usePhase } from '../games/kittens/phase'
+import { gameBridge } from '../clawd/gameBridge'
 
 const GameTable = lazy(() => import('../games/kittens/GameTable'))
 import {
@@ -50,7 +52,28 @@ const MOTION_BUTTONS: { id: MotionName; label: string }[] = [
   { id: 'walk', label: 'Walk in place' },
 ]
 
-const STATION_BUTTONS = ['window', 'plant', 'rug', 'centre', 'desk', 'shelf'] as const
+/**
+ * The table verbs, kept apart because they only read right seated.
+ *
+ * Play `sit` first, or `sitTable`, and then any of these — fired from a
+ * standing pose they all look like he is falling out of a chair he was not
+ * in, which is exactly the failure they are authored to avoid.
+ */
+const TABLE_BUTTONS: { id: MotionName; label: string }[] = [
+  { id: 'sitTable', label: 'Sit at table' },
+  { id: 'dealFlick', label: 'Deal' },
+  { id: 'reachDraw', label: 'Draw' },
+  { id: 'flickPlay', label: 'Play a card' },
+  { id: 'slamNope', label: 'Nope' },
+  { id: 'kittenRecoil', label: 'Kitten!' },
+  { id: 'defuseRelief', label: 'Defused' },
+  { id: 'smugLean', label: 'Smug' },
+  { id: 'sitCheer', label: 'Win' },
+  { id: 'slumpLoss', label: 'Lose' },
+  { id: 'standUp', label: 'Stand up' },
+]
+
+const STATION_BUTTONS = ['window', 'plant', 'rug', 'table', 'centre', 'desk', 'shelf'] as const
 
 /**
  * Coarse tag for the sentence Rau is about to say, so his body reacts to what
@@ -88,12 +111,38 @@ export default function Face() {
   // Whether there is a game on the table. Held here rather than inside the
   // table itself, because the room needs to know before deciding to mount it.
   const { table: game } = useGame()
+  const tablePhase = usePhase()
+  const [composerOpen, setComposerOpen] = useState(false)
+  /** Whether the first look at the server has come back yet. */
+  const gameSeeded = useRef(false)
 
-  // A game survives a reload, and it survives you walking off to another route
-  // and coming back. Asking once on arrival is what makes that true.
+  /*
+    A game survives a reload, and it survives you walking off to another route
+    and coming back. Asking once on arrival is what makes that true — and a
+    game found on this first look has been going on the whole time you were
+    away, so he is simply already sitting there rather than walking over.
+
+    Deciding that here, inside the same continuation that sets the flag,
+    rather than in an effect watching the table: the state lands before React
+    re-renders, so an effect would always see the flag already set and give a
+    reloaded game the full walk-on.
+  */
   useEffect(() => {
-    void gameStore.refresh()
+    void gameStore.refresh().then(() => {
+      if (gameStore.get() && phaseStore.get() === 'idle') phaseStore.adopt()
+      gameSeeded.current = true
+    })
   }, [])
+
+  /*
+    A table that appears later did not come from this page. He dealt himself
+    in — `start_kittens`, on his own turn — and that deserves the walk over
+    and the camera push, the same as pressing Play.
+  */
+  useEffect(() => {
+    if (!game || tablePhase !== 'idle' || !gameSeeded.current) return
+    void phaseStore.arrive()
+  }, [game, tablePhase])
 
   // The tier is resolved once and held in the module, so a second tab changing
   // it would otherwise leave this one showing a choice it is no longer making.
@@ -107,6 +156,13 @@ export default function Face() {
     return () => window.removeEventListener('storage', onStorage)
   }, [])
   const apiRef = useRef<ClawdRoomApi | null>(null)
+  const composeRef = useRef<HTMLInputElement | null>(null)
+
+  // Expanding the chip should put the cursor in it; nobody expands a text box
+  // in order to look at it.
+  useEffect(() => {
+    if (composerOpen) composeRef.current?.focus()
+  }, [composerOpen])
   const lastReply = useRef({ at: 0, text: '', sig: '' })
   const sendingRef = useRef(false)
   /** Last sentence seen, so a repeated level tick is not read as a new line. */
@@ -349,6 +405,11 @@ export default function Face() {
     const text = draft.trim()
     if (!text || sending) return
 
+    // At the table this is what makes him glance up from his cards. Stamped
+    // whichever way the message goes out, because being spoken to is being
+    // spoken to.
+    gameBridge.userChattedAt = Date.now()
+
     // In voice mode the turn belongs to the socket, so typing goes down the
     // same path and comes back as speech.
     if (mode === 'voice' && voice.connected) {
@@ -425,6 +486,8 @@ export default function Face() {
   }, [])
 
   const isVoice = mode === 'voice'
+  /** A hand is actually on — the exit ritual gives the composer back early. */
+  const inGame = tablePhase === 'dealing' || tablePhase === 'playing'
 
   return (
     <div className={`face ${isVoice ? 'voice-mode' : ''}`}>
@@ -481,8 +544,13 @@ export default function Face() {
         unconditionally: the thirteen inline-SVG card faces are their own chunk,
         and rendering an empty table would fetch all of it on every visit to the
         room for someone who never plays.
+
+        The phase is checked as well as the game, so the deck is already in
+        place for the deal and stays put through the exit — a table that
+        vanished the instant the server forgot about it would cut the last
+        second of him standing back up.
       */}
-      {game && (
+      {(game || tablePhase !== 'idle') && (
         <Suspense fallback={null}>
           <GameTable />
         </Suspense>
@@ -543,17 +611,18 @@ export default function Face() {
             `start_kittens` — this is the shortcut for when you already know you
             want one and would rather not type a sentence about it.
 
-            Hidden while a game is up: the table covers the room and carries its
-            own Leave, so a second control here would only be a way to lose a
-            game you were in the middle of.
+            Hidden from the moment it is pressed until the room is his again:
+            the table carries its own Leave, so a second control here would
+            only be a way to lose a game you were in the middle of.
           */}
-          {!game && (
+          {tablePhase === 'idle' && !game && (
             <button
               className="face-toggle face-play"
               onClick={() => {
                 setActivityOpen(false)
                 setPanel(false)
-                void gameStore.deal().catch(() => {})
+                setComposerOpen(false)
+                void phaseStore.begin()
               }}
               title="Deal a hand of Exploding Kittens"
             >
@@ -647,6 +716,28 @@ export default function Face() {
             ))}
           </div>
 
+          <h3>At the table</h3>
+          <p className="face-hint">
+            The ritual runs with or without a game, so the walk, the sit and
+            the camera can be watched on their own. The verbs below it only
+            read right seated — start with “Sit at table”.
+          </p>
+          <div className="chip-row">
+            <button className="chip" onClick={() => void apiRef.current?.game.begin()}>
+              Enter the table
+            </button>
+            <button className="chip" onClick={() => void apiRef.current?.game.end()}>
+              Leave the table
+            </button>
+          </div>
+          <div className="chip-row">
+            {TABLE_BUTTONS.map((m) => (
+              <button key={m.id} className="chip" onClick={() => apiRef.current?.play(m.id)}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+
           <h3>Send him to</h3>
           <div className="chip-row">
             {STATION_BUTTONS.map((s) => (
@@ -716,27 +807,53 @@ export default function Face() {
         </div>
       </div>
 
-      <footer className="face-compose">
-        <div className="face-box">
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') send()
-            }}
-            placeholder="Say something to Rau…"
-            aria-label="Message Rau"
-          />
-          <PermissionMenu />
+      {/*
+        The composer, collapsed to a corner while a hand is on.
+
+        Collapsed, not disabled. His moves come back through the same face
+        turn as everything else — he narrates them in his own voice and the
+        bubble is drawn over his head — so talking to him mid-game is the best
+        part of playing him, and shutting the input off during his turn would
+        be shutting off the thing worth having. A message sent while he is
+        thinking about a move simply waits behind it, which is also what
+        happens at a real table.
+      */}
+      <footer
+        className={`face-compose ${inGame && !composerOpen ? 'is-chip' : ''}`}
+      >
+        {inGame && !composerOpen ? (
           <button
-            className="face-send"
-            disabled={!draft.trim() || sending}
-            onClick={send}
-            aria-label="Send"
+            className="face-chip"
+            onClick={() => setComposerOpen(true)}
+            title="Say something to Rau"
           >
-            {sending ? <i className="spinner" /> : '→'}
+            <span className="face-chip-dot" aria-hidden />
+            talk to Rau
           </button>
-        </div>
+        ) : (
+          <div className="face-box">
+            <input
+              ref={composeRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') send()
+                if (e.key === 'Escape' && inGame) setComposerOpen(false)
+              }}
+              placeholder="Say something to Rau…"
+              aria-label="Message Rau"
+            />
+            <PermissionMenu />
+            <button
+              className="face-send"
+              disabled={!draft.trim() || sending}
+              onClick={send}
+              aria-label="Send"
+            >
+              {sending ? <i className="spinner" /> : '→'}
+            </button>
+          </div>
+        )}
       </footer>
     </div>
   )

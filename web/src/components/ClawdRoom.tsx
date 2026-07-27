@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { bodyController } from '../clawd/body'
 import { Director, EMPTY_SIGNALS, type Signals } from '../clawd/director'
+import { GameChoreographer } from '../clawd/gameChoreographer'
+import { gameBridge, type GameResult } from '../clawd/gameBridge'
 import { ClawdRig } from '../clawd/rig'
 import { drawBubble, Scene } from '../clawd/scene'
-import { STAGE, WALK_RANGE, type RoomState } from '../clawd/room'
+import { STAGE, WALK_RANGE, type RoomState, type StationId } from '../clawd/room'
 
 /** Walk leash for the desktop pet — matches the pet scene's visible band. */
 const PET_WALK_RANGE = { min: 58, max: 102 }
@@ -47,9 +49,14 @@ type Props = {
 
 export type ClawdRoomApi = {
   play: (name: MotionName) => void
-  goTo: (station: 'desk' | 'window' | 'shelf' | 'rug' | 'centre' | 'plant') => void
+  goTo: (station: StationId) => void
   setManual: (manual: boolean) => void
   startle: () => void
+  /** The card-table ritual, exposed so it can be exercised without a game. */
+  game: {
+    begin: () => Promise<void>
+    end: (opts?: { fast?: boolean; result?: GameResult }) => Promise<void>
+  }
 }
 
 function unionRect(a: HitRect, b: HitRect): HitRect {
@@ -75,6 +82,22 @@ export default function ClawdRoom({
   const rig = useMemo(() => new ClawdRig(), [])
   const director = useMemo(() => new Director(rig, 'room'), [rig])
   const scene = useMemo(() => new Scene(), [])
+  const choreographer = useMemo(
+    () => new GameChoreographer(rig, director),
+    [rig, director],
+  )
+
+  // The table only exists in the full room; the desktop pet has no floor to
+  // put one on. Registering here rather than in the game keeps the contract
+  // one-directional: the game asks the room for choreography, never the
+  // other way round.
+  useEffect(() => {
+    if (!showRoom) return
+    gameBridge.registerChoreo(choreographer)
+    return () => {
+      gameBridge.registerChoreo(null)
+    }
+  }, [choreographer, showRoom])
 
   useEffect(() => {
     scene.roomVisual = roomVisual
@@ -119,15 +142,23 @@ export default function ClawdRoom({
   }, [director])
 
   useEffect(() => {
+    // A human reaching for the body mid-game gets it, but the table has to be
+    // put away first — otherwise he walks off to the shelf still seated, with
+    // a card table left standing in an empty room.
+    const clearTable = () => {
+      if (choreographer.busy) void choreographer.dismiss({ fast: true })
+    }
     onReady?.({
       // Anything a human asks for outranks the model's plan, and cancels the
       // rest of it — playing out the remaining cues over the top of what they
       // just asked for is not deference.
       play: (name) => {
+        clearTable()
         bodyController.humanTakeover()
         director.force(name)
       },
       goTo: (id) => {
+        clearTable()
         bodyController.humanTakeover()
         // Human station picks always win over voice conversing / ambient.
         director.manual = false
@@ -141,8 +172,12 @@ export default function ClawdRoom({
         bodyController.humanTakeover()
         director.startle()
       },
+      game: {
+        begin: () => choreographer.summon(),
+        end: (opts) => choreographer.dismiss(opts),
+      },
     })
-  }, [director, onReady])
+  }, [choreographer, director, onReady])
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
@@ -177,11 +212,16 @@ export default function ClawdRoom({
         : 0.22 + (s.rauSpeaking ? s.rauLevel * 0.5 : 0)
       room.screen += (wantScreen - room.screen) * Math.min(1, dt * 3)
 
+      // Before the director, so a ritual in progress owns the walk this tick
+      // rather than a tick behind it.
+      if (showRoom) choreographer.update(dt, scene)
+
       director.update(dt, s)
       rig.update(dt, {
         // He looks at the pointer only when it is nearby, otherwise he
-        // attends to whatever he is doing.
-        lookAt: hovering ? pointer.current : null,
+        // attends to whatever he is doing — or, at the table, to the card you
+        // are currently thinking about playing.
+        lookAt: hovering ? pointer.current : gameBridge.lookAt,
         screen: { x: hitRect.current.x + hitRect.current.w / 2, y: hitRect.current.y },
         // Real TTS amplitude, so the body moves with the voice rather than on
         // a timer. Zero when he is not the one talking.
@@ -193,18 +233,26 @@ export default function ClawdRoom({
         ctx.clearRect(0, 0, w, h)
       }
 
+      const cameraTarget = showRoom ? choreographer.cameraTarget : null
       scene.layout(w, h, 1, { showRoom, charScale })
       scene.update(dt, rig.worldX, {
         follow: cinematic && showRoom,
         parallax: showRoom ? parallax.current : { x: 0, y: 0 },
         showRoom,
         charScale,
+        cameraTarget,
       })
       scene.render(ctx, rig.params, rig.worldX, room, {
         follow: cinematic && showRoom,
         showRoom,
         charScale,
+        gameTable: showRoom ? choreographer.presence : 0,
+        gameDim: showRoom ? choreographer.dim : 0,
       })
+
+      // Publish the camera and his claws to the DOM cards. After the render,
+      // so what they are glued to is the frame that was just drawn.
+      if (showRoom) gameBridge.frame(scene, rig, w, h)
 
       let combined = scene.screenRect(rig.params, rig.worldX, charScale)
 
@@ -234,7 +282,19 @@ export default function ClawdRoom({
           }))
         : []
     },
-    [rig, director, scene, cinematic, hourOverride, lampOn, hovering, roomVisual, showRoom, charScale],
+    [
+      rig,
+      director,
+      scene,
+      choreographer,
+      cinematic,
+      hourOverride,
+      lampOn,
+      hovering,
+      roomVisual,
+      showRoom,
+      charScale,
+    ],
   )
 
   return (
@@ -258,6 +318,13 @@ export default function ClawdRoom({
             return
           }
           if (!within(hitRect.current, e.clientX, e.clientY)) return
+          // Poking him at the table startles him *in his seat*. The standing
+          // startle would eject him out of it for a second and drop the hand
+          // he is holding.
+          if (choreographer.busy) {
+            rig.play('kittenRecoil', { force: true, restart: true })
+            return
+          }
           bodyController.humanTakeover()
           director.startle()
           // Pet shell: drag the native window from the body hit area.

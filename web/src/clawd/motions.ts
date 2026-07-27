@@ -10,6 +10,7 @@
 import { WALK_SPEED } from './gait'
 import { defineMotion, type Motion } from './motion'
 import { LIFE_MOTIONS, LIFE_ONE_SHOTS } from './motionsLife'
+import { GAME_MOTIONS, GAME_ONE_SHOTS } from './motionsGame'
 
 export { WALK_SPEED }
 
@@ -1171,6 +1172,8 @@ export const MOTIONS = {
   shuffle,
   // The occupational library: search, doze, lift, carry, sip, present…
   ...LIFE_MOTIONS,
+  // The card table: the seated pose and the beats of a hand.
+  ...GAME_MOTIONS,
 } satisfies Record<string, Motion>
 
 export type MotionName = keyof typeof MOTIONS
@@ -1187,4 +1190,5 @@ export const ONE_SHOTS: MotionName[] = [
   'shrug',
   'stretch',
   ...LIFE_ONE_SHOTS,
+  ...GAME_ONE_SHOTS,
 ]
