@@ -63,8 +63,8 @@
   animation: breathe 1.8s ease-in-out infinite;
 }
 
-.activity-state.done { background: #72b88b; }
-.activity-state.failed { background: #e16d6d; }
+.activity-state.done { background: var(--ok); }
+.activity-state.failed { background: var(--danger); }
 .activity-summary-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -274,7 +274,7 @@
 }
 .status-running .activity-icon,
 .status-awaiting_confirm .activity-icon { color: var(--accent); }
-.status-failed .activity-icon { color: #e16d6d; }
+.status-failed .activity-icon { color: var(--danger); }
 .activity-line {
   display: flex;
   justify-content: space-between;
@@ -282,6 +282,12 @@
 }
 .activity-line strong { font-weight: 600; color: var(--ink-2); }
 .activity-line span, .activity-correlation { color: var(--faint); }
+/* The elapsed reading re-renders on every revision of a running span. Tabular
+   digits keep it a fixed width so a live timeline does not shiver. */
+.activity-line span {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .activity-copy p {
   margin: 0.18rem 0;
   color: var(--muted);

@@ -14,6 +14,7 @@ import ActivityInspector, {
 import ClawdAvatar from '../components/ClawdAvatar'
 import PermissionMenu from '../components/PermissionMenu'
 import SlashMenu from '../components/SlashMenu'
+import { ThreadSkeleton } from '../components/PageSkeleton'
 import { api } from '../api'
 import { live } from '../live'
 import { useMode } from '../mode'
@@ -170,6 +171,8 @@ export default function Conversation() {
   const { mode } = useMode()
   const voice = useVoiceSession({ enabled: mode === 'voice' })
   const [log, setLog] = useState<any[]>([])
+  /** Until the first fetch settles, an empty `log` means "unknown", not "none". */
+  const [logLoaded, setLogLoaded] = useState(false)
   const [emotion, setEmotion] = useState('idle')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -230,6 +233,9 @@ export default function Conversation() {
       if (failsRef.current >= 2) setOffline(true)
     } finally {
       refreshingRef.current = false
+      // Settled either way: a failed load still has to release the thread, or
+      // the offline notice would sit above a permanent shimmer.
+      setLogLoaded(true)
     }
   }
 
@@ -528,7 +534,12 @@ export default function Conversation() {
         aria-live="polite"
         aria-label="Conversation with Rau"
       >
-        {displayLog.length === 0 && <div className="convo-empty">Say something — voice or text.</div>}
+        {displayLog.length === 0 &&
+          (logLoaded ? (
+            <div className="convo-empty">Say something — voice or text.</div>
+          ) : (
+            <ThreadSkeleton />
+          ))}
         {displayLog.map((m, i) => {
           const used =
             m.role === 'user' ? matchSlash(String(m.text || ''), commands) : null

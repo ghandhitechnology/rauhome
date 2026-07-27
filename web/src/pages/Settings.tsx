@@ -9,7 +9,8 @@ import {
   type VoicePreset,
   type VoiceStatus,
 } from '../api'
-import '../components/AuthCard.css'
+import PageSkeleton from '../components/PageSkeleton'
+import AuthCard, { VerifyLine } from '../components/AuthCard'
 import './Settings.css'
 
 /** Chat slots — the three that share a provider/model picker. */
@@ -81,28 +82,20 @@ export default function Settings() {
   }
 
   if (!models || !catalog) {
+    if (!loadError) return <PageSkeleton pathname="/settings" />
     return (
       <div className="settings grid-2">
-        {loadError ? (
-          <section className="panel">
-            <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 400 }}>Settings failed to load</h2>
-            <p className="muted">{loadError}</p>
-            <p className="muted">
-              Usually the hub is on an old process. Restart with{' '}
-              <span className="mono">bash launch.sh --hub</span>, then retry.
-            </p>
-            <button className="btn primary" onClick={() => reload().catch((e) => setLoadError(e.message || String(e)))}>
-              Retry
-            </button>
-          </section>
-        ) : (
-          [0, 1].map((i) => (
-            <section key={i} className="panel">
-              <div className="skeleton skeleton-line" style={{ width: '35%', height: '1.6rem' }} />
-              <div className="skeleton" style={{ height: '12rem', marginTop: '1.2rem' }} />
-            </section>
-          ))
-        )}
+        <section className="panel">
+          <h2>Settings failed to load</h2>
+          <p className="muted">{loadError}</p>
+          <p className="muted">
+            Usually the hub is on an old process. Restart with{' '}
+            <span className="mono">bash launch.sh --hub</span>, then retry.
+          </p>
+          <button className="btn primary" onClick={() => reload().catch((e) => setLoadError(e.message || String(e)))}>
+            Retry
+          </button>
+        </section>
       </div>
     )
   }
@@ -713,24 +706,16 @@ export default function Settings() {
           {auth.map((p, i) => {
             const c = checks[p.id] || { status: 'idle' as const }
             return (
-              <article
+              <AuthCard
                 id={`connection-${p.id}`}
                 key={p.id}
-                className={`auth-card ${p.configured ? 'ok' : ''} ${c.status === 'bad' ? 'bad' : ''}`}
-                style={{ '--i': i } as React.CSSProperties}
+                label={p.label}
+                help={p.help}
+                configured={p.configured}
+                masked={p.masked}
+                bad={c.status === 'bad'}
+                index={i}
               >
-                <div className="auth-head static">
-                  <span className="auth-title">
-                    <span className="auth-name">{p.label}</span>
-                    <span className="auth-help">{p.help}</span>
-                  </span>
-                  <span className={`pill ${p.configured ? 'on' : 'off'}`}>
-                    <i className="pill-dot" />
-                    {p.configured ? p.masked || 'connected' : 'not connected'}
-                  </span>
-                </div>
-
-                <div className="auth-body-inner">
                   <div className="field">
                     <label>{p.env}</label>
                     <input
@@ -746,14 +731,7 @@ export default function Settings() {
                     />
                   </div>
 
-                  {c.status !== 'idle' && (
-                    <p className={`verify-line ${c.status}`}>
-                      {c.status === 'checking' && <i className="spinner" />}
-                      {c.status === 'ok' && <i className="tick" />}
-                      {c.status === 'bad' && <i className="cross" />}
-                      {c.detail}
-                    </p>
-                  )}
+                  <VerifyLine status={c.status} detail={c.detail} />
 
                   <div className="row">
                     <button
@@ -796,8 +774,7 @@ export default function Settings() {
                       </button>
                     )}
                   </div>
-                </div>
-              </article>
+              </AuthCard>
             )
           })}
         </div>

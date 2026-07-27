@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -22,6 +23,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from rau.control.store import control_store  # noqa: E402
 from rau.events import BUS  # noqa: E402
 from rau.face import choreography, panels, pipeline, web  # noqa: E402
 
@@ -179,10 +181,21 @@ class RecordSpeechTests(unittest.TestCase):
 
 class ListPanelsTests(unittest.TestCase):
     def setUp(self) -> None:
-        panels.clear_panels()
+        # The wall is rows in control.db now, not a module dict, so a test that
+        # clears it would clear the user's real wall. Redirect the singleton at
+        # a throwaway database first — see PanelStoreIsolation in
+        # tests/test_room_life.py, which does the same for the panel suite.
+        self._tmp = tempfile.TemporaryDirectory(prefix="rau-panels-")
+        self._real_path = control_store.path
+        self._real_ready = control_store._ready  # noqa: SLF001
+        control_store.path = Path(self._tmp.name) / "control.db"
+        control_store._ready = False  # noqa: SLF001 — forces re-initialize
+        control_store.initialize()
 
     def tearDown(self) -> None:
-        panels.clear_panels()
+        control_store.path = self._real_path
+        control_store._ready = self._real_ready  # noqa: SLF001
+        self._tmp.cleanup()
 
     def test_a_zero_limit_lists_nothing_not_everything(self) -> None:
         panels.show_panel({"title": "one", "html": "<p>1</p>"})

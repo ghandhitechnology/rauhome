@@ -1,6 +1,17 @@
+/* Like Operations, this page had no motion of its own and inherited only the
+   route-level entrance. Everything below reuses index.css keyframes. */
+
 .identity h2 {
   font-size: 1.7rem;
   margin: 0;
+}
+
+.identity > .panel {
+  animation: rise var(--dur-3) var(--ease) both;
+}
+
+.identity > .panel:nth-child(2) {
+  animation-delay: 70ms;
 }
 
 .identity .field textarea {
@@ -20,6 +31,12 @@
 
 .soul-view {
   max-height: min(62vh, 640px);
+}
+
+/* Save/forge feedback appears in place after an action, so it needs to be
+   noticed without a toast — the entrance is what does that work. */
+.msg-line {
+  animation: pop-in var(--dur-3) var(--spring) both;
 }
 
 .msg-line.bad {

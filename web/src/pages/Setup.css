@@ -69,73 +69,14 @@
 
 /* shared marks */
 
-.tick,
-.cross,
+/* `.tick` and `.cross` moved to AuthCard.css. They are drawn by `VerifyLine`,
+   which Settings renders too — and Settings does not import this stylesheet,
+   so both glyphs were invisible there (an `<i>` with no content and no rules
+   is a blank gap). They now live beside the one component that draws them. */
+
 .dot {
   display: inline-block;
   flex-shrink: 0;
-}
-
-.tick {
-  width: 0.95em;
-  height: 0.95em;
-  position: relative;
-}
-
-.tick::after {
-  content: "";
-  position: absolute;
-  left: 30%;
-  top: 8%;
-  width: 30%;
-  height: 62%;
-  border: solid currentColor;
-  border-width: 0 1.8px 1.8px 0;
-  transform: rotate(42deg);
-  transform-origin: center;
-  animation: tick-draw var(--dur-3) var(--ease) both;
-}
-
-@keyframes tick-draw {
-  from {
-    opacity: 0;
-    transform: rotate(42deg) scale(0.5);
-  }
-  to {
-    opacity: 1;
-    transform: rotate(42deg) scale(1);
-  }
-}
-
-.rail-step.done .tick {
-  color: var(--accent);
-}
-
-.cross {
-  width: 0.9em;
-  height: 0.9em;
-  position: relative;
-}
-
-.cross::before,
-.cross::after {
-  content: "";
-  position: absolute;
-  inset: 45% 5%;
-  height: 1.8px;
-  background: currentColor;
-  border-radius: 2px;
-}
-
-.cross::before {
-  transform: rotate(45deg);
-}
-
-.cross::after {
-  transform: rotate(-45deg);
-}
-
-.dot {
   width: 0.42em;
   height: 0.42em;
   border-radius: 999px;
@@ -226,7 +167,7 @@
   font-size: clamp(4.5rem, 15vw, 8.5rem);
   line-height: 0.86;
   margin: 0.5rem 0 0;
-  background: linear-gradient(180deg, var(--ink), #9a9ba6);
+  background: linear-gradient(180deg, var(--ink), var(--ink-fade));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

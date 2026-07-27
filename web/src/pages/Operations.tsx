@@ -7,6 +7,7 @@ import {
   type ScheduleRun,
 } from '../api'
 import { live } from '../live'
+import PageSkeleton from '../components/PageSkeleton'
 import './Operations.css'
 
 function when(timestamp?: number | null) {
@@ -24,6 +25,10 @@ export default function Operations() {
   const [runs, setRuns] = useState<Record<string, ScheduleRun[]>>({})
   const [confirmations, setConfirmations] = useState<any[]>([])
   const [computer, setComputer] = useState<any[]>([])
+  // Without this the page renders fully-formed-but-empty on first paint — five
+  // empty arrays look exactly like "you have no jobs" — and then pops full a
+  // moment later. `loaded` distinguishes "nothing yet" from "nothing at all".
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [name, setName] = useState('')
   const [goal, setGoal] = useState('')
@@ -56,6 +61,10 @@ export default function Operations() {
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not load operations')
+    } finally {
+      // Even a failed load has to leave the skeleton, or the error banner it
+      // just set would never be reachable.
+      setLoaded(true)
     }
   }, [])
 
@@ -105,6 +114,10 @@ export default function Operations() {
     ['active', 'acting', 'verifying', 'awaiting_review'].includes(session.state),
   )
   const roots = useMemo(() => jobs.filter((job) => !job.parent_id), [jobs])
+
+  if (!loaded) {
+    return <PageSkeleton pathname="/operations" />
+  }
 
   return (
     <div className="operations">

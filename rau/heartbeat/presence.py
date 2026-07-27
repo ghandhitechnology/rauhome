@@ -590,12 +590,52 @@ def can_initiate() -> bool:
     return True
 
 
+#: How often an initiate becomes an invitation to play instead of a hello. Kept
+#: low on purpose: a companion who suggests cards every time you go quiet is a
+#: companion you mute.
+GAME_INVITE_CHANCE = 0.2
+
+
+def _game_invite() -> Optional[str]:
+    """
+    An offer to play, sometimes, when there is no game already on the table.
+
+    He offers; he never deals. Dealing unasked would put a card table over the
+    room of someone who walked away from their desk.
+    """
+    try:
+        from rau.games.kittens import session as kittens
+    except Exception:
+        return None
+    if kittens.active():
+        return None
+    if random.random() > GAME_INVITE_CHANCE:
+        return None
+    record = kittens.tally()
+    wins, losses = int(record.get("wins", 0)), int(record.get("losses", 0))
+    if not (wins or losses):
+        return "Hey — I found a deck of Exploding Kittens. Want to play a hand?"
+    if losses > wins:
+        return (
+            f"I'm still down {losses}–{wins} on Exploding Kittens and it's bothering me. "
+            "Rematch?"
+        )
+    return f"I'm up {wins}–{losses} on Exploding Kittens. Want to do something about that?"
+
+
 def maybe_nudge() -> None:
     from rau.permissions import heartbeat_nudge_allowed
 
     if not heartbeat_nudge_allowed():
         return
     if not can_initiate():
+        return
+    invite = _game_invite()
+    if invite:
+        state.update_presence(last_initiate_ts=time.time())
+        append_heartbeat_event("nudge", invite)
+        BUS.emit("presence_nudge", text=invite)
+        state.push_control({"action": "speak", "text": invite})
         return
     ctx = recent_context(2000)
     if "task" not in ctx.lower() and "friend" not in ctx.lower() and len(ctx) < 40:

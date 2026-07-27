@@ -398,6 +398,21 @@ export const api = {
   dream: () => req<any>('/api/dream/run', { method: 'POST', body: '{}' }),
   panels: () => req<{ panels: PanelSummary[] }>('/api/panels'),
   clearPanels: () => req<{ ok: boolean }>('/api/panels', { method: 'DELETE' }),
+  closePanel: (panelId: string) =>
+    req<{ ok: boolean }>(`/api/panels/${encodeURIComponent(panelId)}`, {
+      method: 'DELETE',
+    }),
+  // Exploding Kittens. The state that comes back is already redacted to this
+  // seat by rau/games/kittens/view.py — there is no unredacted form to ask for.
+  kittens: () => req<{ ok: boolean; state: unknown; record: unknown }>('/api/game/kittens'),
+  dealKittens: () =>
+    req<{ ok: boolean; state: unknown }>('/api/game/kittens', { method: 'POST', body: '{}' }),
+  endKittens: () => req<{ ok: boolean }>('/api/game/kittens', { method: 'DELETE' }),
+  kittensMove: (move: unknown) =>
+    req<{ ok: boolean; state: unknown }>('/api/game/kittens/move', {
+      method: 'POST',
+      body: JSON.stringify(move),
+    }),
   roomProps: () => req<{ layout: Record<string, string> }>('/api/room/props'),
   resetRoomProps: () =>
     req<{ ok: boolean; layout: Record<string, string> }>('/api/room/props/reset', {

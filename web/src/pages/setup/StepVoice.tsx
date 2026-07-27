@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type ElevenVoice, type VoicePreset } from '../../api'
+import AuthCard, { VerifyLine } from '../../components/AuthCard'
 import type { StepProps } from './types'
 
 export default function StepVoice({
@@ -85,18 +86,13 @@ export default function StepVoice({
   function authCard(id: 'elevenlabs' | 'deepgram', label: string, provider: any, help: string) {
     const check = verify[id] || { status: 'idle' as const }
     return (
-      <article className={`auth-card wide ${provider?.configured ? 'ok' : ''}`}>
-        <div className="auth-head static">
-          <span className="auth-title">
-            <span className="auth-name">{label}</span>
-            <span className="auth-help">{help}</span>
-          </span>
-          <span className={`pill ${provider?.configured ? 'on' : 'off'}`}>
-            <i className="pill-dot" />
-            {provider?.configured ? provider.masked || 'connected' : 'not connected'}
-          </span>
-        </div>
-        <div className="auth-body-inner">
+      <AuthCard
+        wide
+        label={label}
+        help={help}
+        configured={provider?.configured}
+        masked={provider?.masked}
+      >
           <div className="field">
             <label>{provider?.env || `${id.toUpperCase()}_API_KEY`}</label>
             <input
@@ -114,14 +110,7 @@ export default function StepVoice({
               }}
             />
           </div>
-          {check.status !== 'idle' && (
-            <p className={`verify-line ${check.status}`}>
-              {check.status === 'checking' && <i className="spinner" />}
-              {check.status === 'ok' && <i className="tick" />}
-              {check.status === 'bad' && <i className="cross" />}
-              {check.detail}
-            </p>
-          )}
+          <VerifyLine status={check.status} detail={check.detail} />
           <div className="row">
             <button
               className="btn primary sm"
@@ -138,8 +127,7 @@ export default function StepVoice({
               Get a key ↗
             </button>
           </div>
-        </div>
-      </article>
+      </AuthCard>
     )
   }
 

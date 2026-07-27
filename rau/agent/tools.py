@@ -487,6 +487,61 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "show_panel",
+            "description": (
+                "Put a finished thing on Rau's wall for the user to look at: a "
+                "report, a poster, or a small interactive dashboard. Write a "
+                "self-contained HTML fragment for the <body> — inline <style> "
+                "and <script> only, charts as inline SVG or canvas. Nothing "
+                "external loads, so never link stylesheets, scripts, images or "
+                "fonts. This is how work that produced numbers becomes "
+                "something the user can actually see. Call use_skill('dashboard') "
+                "first for the house style."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["report", "poster", "dashboard", "note"],
+                    },
+                    "html": {"type": "string"},
+                },
+                "required": ["title", "html"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_panel",
+            "description": (
+                "Change a panel already on the wall. Prefer a patch: `old` is "
+                "an exact run of markup from the panel that occurs exactly "
+                "once, `new` replaces it. Use `html` only to replace the whole "
+                "body. A failed patch tells you the nearest real text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "panel_id": {"type": "string"},
+                    "old": {"type": "string"},
+                    "new": {"type": "string"},
+                    "html": {"type": "string"},
+                    "title": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["report", "poster", "dashboard", "note"],
+                    },
+                },
+                "required": ["panel_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "spawn_subagent",
             "description": (
                 "Split this goal into independent sub-goals and run them as "
@@ -821,6 +876,17 @@ def run_tool(
             "summary": completion["summary"],
             "completion": completion,
         }
+
+    if name in ("show_panel", "update_panel"):
+        # The wall is shared: a worker hangs a panel exactly the way the face
+        # does, and the same sandbox/CSP barriers apply because it is the same
+        # store. `job_id` is stamped so the orchestrator can mention what this
+        # job put up when it weaves the result.
+        from rau.face import panels
+
+        if name == "show_panel":
+            return panels.show_panel(args, job_id=job_id, source="subagent")
+        return panels.update_panel(args, job_id=job_id)
 
     if name == "use_skill":
         from rau.skills.runtime import use_skill_tool

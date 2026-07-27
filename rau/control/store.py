@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from rau.paths import CONTROL_DB, ensure_dirs
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 ACTIVE_STATES = (
     "queued",
     "planning",
@@ -263,6 +263,30 @@ class ControlStore:
                         ON activity_spans(job_id, seq);
                     CREATE INDEX IF NOT EXISTS activity_active_idx
                         ON activity_spans(status, updated);
+
+                    -- Panels Rau has made and hung on the wall. `body` is the
+                    -- model's raw fragment, never the wrapped document: the
+                    -- fragment is what it wrote, so the fragment is what its
+                    -- edit anchors will match. The document is rendered on
+                    -- read (see rau/face/panels.py).
+                    CREATE TABLE IF NOT EXISTS panels (
+                        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                        panel_id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        body TEXT NOT NULL,
+                        bytes INTEGER NOT NULL DEFAULT 0,
+                        revision INTEGER NOT NULL DEFAULT 1,
+                        turn_id TEXT,
+                        job_id TEXT,
+                        source TEXT NOT NULL DEFAULT 'face',
+                        created REAL NOT NULL,
+                        updated REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS panels_created_idx
+                        ON panels(created);
+                    CREATE INDEX IF NOT EXISTS panels_job_idx
+                        ON panels(job_id);
                     """
                 )
                 # Migrations are additive and safe to re-run. SQLite cannot
@@ -504,6 +528,132 @@ class ControlStore:
                 (float(before),),
             )
             return int(cursor.rowcount)
+
+    # ── panels ────────────────────────────────────────────────────────────
+    #
+    # The wall used to be an in-process OrderedDict, which meant a hub restart
+    # silently emptied it and Rau would talk about a dashboard the browser
+    # could no longer fetch. These rows are the wall.
+
+    def create_panel(self, panel: Dict[str, Any]) -> Dict[str, Any]:
+        self._ensure()
+        now = time.time()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO panels(
+                    panel_id, title, kind, body, bytes, revision,
+                    turn_id, job_id, source, created, updated
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(panel["panel_id"]),
+                    str(panel.get("title") or ""),
+                    str(panel.get("kind") or "report"),
+                    str(panel.get("body") or ""),
+                    int(panel.get("bytes") or 0),
+                    int(panel.get("revision") or 1),
+                    panel.get("turn_id") or None,
+                    panel.get("job_id") or None,
+                    str(panel.get("source") or "face"),
+                    float(panel.get("created") or now),
+                    float(panel.get("updated") or now),
+                ),
+            )
+            row = db.execute(
+                "SELECT * FROM panels WHERE panel_id=?", (str(panel["panel_id"]),)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def get_panel(self, panel_id: str) -> Optional[Dict[str, Any]]:
+        self._ensure()
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM panels WHERE panel_id=?", (str(panel_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_panels(
+        self, *, limit: int = 12, job_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Newest first. Bodies come along; callers strip what they don't want."""
+        self._ensure()
+        clauses = ["1=1"]
+        values: List[Any] = []
+        if job_id:
+            clauses.append("job_id=?")
+            values.append(job_id)
+        values.append(max(0, min(1000, int(limit))))
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT * FROM panels
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created DESC, seq DESC LIMIT ?
+                """,
+                tuple(values),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_panel(
+        self, panel_id: str, changes: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        self._ensure()
+        allowed = {"title", "kind", "body", "bytes"}
+        assignments: List[str] = []
+        values: List[Any] = []
+        for key, value in changes.items():
+            if key not in allowed:
+                continue
+            assignments.append(f"{key}=?")
+            values.append(value)
+        if not assignments:
+            return self.get_panel(panel_id)
+        # An edit bumps the revision, which is how the open viewer knows to
+        # reload the iframe rather than keep showing stale markup.
+        assignments.extend(("revision=revision+1", "updated=?"))
+        values.append(float(changes.get("updated") or time.time()))
+        values.append(str(panel_id))
+        with self._lock, self._connect() as db:
+            db.execute(
+                f"UPDATE panels SET {', '.join(assignments)} WHERE panel_id=?",
+                tuple(values),
+            )
+            row = db.execute(
+                "SELECT * FROM panels WHERE panel_id=?", (str(panel_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_panel(self, panel_id: str) -> bool:
+        self._ensure()
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                "DELETE FROM panels WHERE panel_id=?", (str(panel_id),)
+            )
+            return int(cursor.rowcount) > 0
+
+    def delete_all_panels(self) -> int:
+        self._ensure()
+        with self._lock, self._connect() as db:
+            return int(db.execute("DELETE FROM panels").rowcount)
+
+    def trim_panels(self, keep: int) -> List[str]:
+        """Drop the oldest panels beyond `keep`. Returns the ids removed."""
+        self._ensure()
+        keep = max(0, int(keep))
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT panel_id FROM panels
+                ORDER BY created DESC, seq DESC LIMIT -1 OFFSET ?
+                """,
+                (keep,),
+            ).fetchall()
+            dropped = [str(row["panel_id"]) for row in rows]
+            for panel_id in dropped:
+                db.execute("DELETE FROM panels WHERE panel_id=?", (panel_id,))
+        return dropped
 
     def claim_idempotency(
         self, key: str, scope: str, request: Any

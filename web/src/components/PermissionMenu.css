@@ -50,13 +50,13 @@
 }
 
 .perm-trigger.mode-bypass {
-  border-color: rgba(232, 168, 74, 0.35);
-  color: #ffd9a0;
+  border-color: var(--accent-a40);
+  color: var(--accent-soft);
 }
 
 .perm-trigger.mode-readonly {
-  border-color: rgba(140, 160, 190, 0.35);
-  color: #c5d0e0;
+  border-color: var(--info-a35);
+  color: var(--ink-2);
 }
 
 .perm-chevron {

@@ -1,10 +1,24 @@
+/* This page used to have no animations and no transitions at all, which is why
+   it read as a different product from Talk and Setup. Everything below reuses
+   the vocabulary already defined in index.css — no new keyframes. */
+
 .operations {
   display: grid;
-  gap: 1rem;
+  gap: var(--s-5);
   max-width: 1180px;
   margin: 0 auto;
-  padding: 1.25rem;
+  padding: var(--s-5);
 }
+
+/* Panels arrive in reading order rather than all at once. */
+.operations > .panel,
+.operations > .ops-grid > .panel {
+  animation: rise var(--dur-3) var(--ease) both;
+}
+
+.operations > .panel:nth-of-type(1) { animation-delay: 40ms; }
+.operations > .ops-grid > .panel:nth-child(1) { animation-delay: 90ms; }
+.operations > .ops-grid > .panel:nth-child(2) { animation-delay: 130ms; }
 
 .ops-head,
 .ops-card-head,
@@ -42,16 +56,35 @@
   margin-top: 0.8rem;
 }
 
+/* Jobs, confirmations and sessions stream in over the live socket, so cards
+   appear mid-session rather than only on load — they arrive rather than
+   teleport. `both` holds the start frame so nothing flickers at full opacity
+   for a frame before animating. */
 .ops-card {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--sunken);
-  padding: 0.8rem;
+  padding: var(--s-4);
+  animation: pop-in var(--dur-2) var(--ease) both;
+  transition:
+    border-color var(--dur-2) var(--ease),
+    background var(--dur-2) var(--ease);
+}
+
+.ops-card:hover {
+  border-color: var(--line-2);
+  background: rgba(0, 0, 0, 0.34);
 }
 
 .ops-card.warning {
   border-color: var(--accent-a40);
   background: var(--accent-a12);
+}
+
+/* An approval is the one thing on this page that should ask for the eye. */
+.ops-card.warning:hover {
+  border-color: var(--accent);
+  background: rgba(240, 168, 60, 0.16);
 }
 
 .ops-card small {
@@ -67,10 +100,18 @@
 .step-row {
   display: grid;
   grid-template-columns: 1.7rem 1fr;
-  gap: 0.5rem;
-  margin-top: 0.55rem;
-  padding: 0.55rem;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  padding: var(--s-3);
   border-left: 2px solid var(--accent-a40);
+  /* Steps land one after another as a plan expands, matching the way the
+     activity timeline reveals a job's work in Talk. */
+  animation: slide-from-left var(--dur-2) var(--ease) both;
+  transition: border-color var(--dur-2) var(--ease);
+}
+
+.step-row:hover {
+  border-left-color: var(--accent);
 }
 
 .step-row > span {
@@ -88,18 +129,31 @@
 }
 
 .run-strip span {
-  padding: 0.35rem 0.5rem;
+  padding: 0.35rem var(--s-2);
   background: rgba(0, 0, 0, 0.18);
   border-radius: var(--r-sm);
   color: var(--muted);
   font-size: 0.75rem;
+  /* Run histories are columns of timestamps; proportional digits make each row
+     a slightly different length and the strip looks ragged. */
+  font-variant-numeric: tabular-nums;
+  transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+}
+
+.run-strip span:hover {
+  color: var(--ink-2);
+  background: rgba(0, 0, 0, 0.3);
 }
 
 .takeover,
 .ops-error {
   display: block;
   color: var(--danger);
-  margin-top: 0.55rem;
+  margin-top: var(--s-3);
+}
+
+.ops-error {
+  animation: pop-in var(--dur-3) var(--spring) both;
 }
 
 @media (max-width: 760px) {

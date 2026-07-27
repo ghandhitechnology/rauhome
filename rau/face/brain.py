@@ -14,6 +14,8 @@ from rau.agent.danger import classify_tool
 from rau.events import BUS
 from rau.activity import ACTIVITY
 from rau.face import choreography, panels, props, web
+from rau.games.kittens import session as kittens
+from rau.games.kittens import tools as kittens_tools
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, recent_context
 from rau.providers.base import (
@@ -202,7 +204,13 @@ FACE_TOOLS = [
     choreography.BODY_CHOREOGRAPHY_TOOL,
     props.MOVE_OBJECT_TOOL,
     panels.SHOW_PANEL_TOOL,
+    panels.LIST_PANELS_TOOL,
+    panels.UPDATE_PANEL_TOOL,
+    panels.CLOSE_PANEL_TOOL,
+    panels.PRESENT_PANEL_TOOL,
+    panels.COMMISSION_PANEL_TOOL,
     web.BROWSE_WEB_TOOL,
+    *kittens_tools.TOOLS,
 ]
 
 #: The face model is chosen for latency, so its window is held far below what
@@ -224,13 +232,25 @@ VOICE_SLIM_TOOL_NAMES = frozenset(
         "memory_read",
         "body_choreography",
         "move_object",
+        # The whole panel surface stays on round 0: "make me a dashboard of
+        # this" and "change that number" are ordinary spoken requests, and
+        # making them wait for round 2 is what made them feel unreachable.
         "show_panel",
+        "list_panels",
+        "update_panel",
+        "close_panel",
+        "present_panel",
+        "commission_panel",
         "browse_web",
         "use_skill",
         "list_skills",
         "set_goal",
         "clear_goal",
         "goal_note",
+        # "let's play" and every move after it are ordinary spoken turns. A game
+        # you could not deal until round 2 would be a game you had to ask for
+        # twice.
+        *kittens_tools.TOOL_NAMES,
     }
 )
 _DEEP_WORK_MARKERS = (
@@ -251,6 +271,13 @@ _DEEP_WORK_MARKERS = (
     "shell",
     "run ",
     "file",
+    # A visual request is usually a deep-work request wearing a friendly hat —
+    # the numbers have to be found before anything can be drawn.
+    "dashboard",
+    "chart",
+    "graph",
+    "plot",
+    "visuali",
 )
 VOICE_TOOL_OPENER = (
     "## Voice turn\n"
@@ -274,6 +301,9 @@ DESK_WORK_TOOLS = frozenset(
         "start_hard_task",
         "cancel_hard_task",
         "redirect_hard_task",
+        # Commissioning is deep work under a friendlier name, so he walks over
+        # and sets it going. The other wall tools stay excluded with show_panel.
+        "commission_panel",
         "set_goal",
         "clear_goal",
         "goal_note",
@@ -291,6 +321,7 @@ DESK_WORK_MOTION: Dict[str, str] = {
     "start_hard_task": "type",
     "cancel_hard_task": "type",
     "redirect_hard_task": "type",
+    "commission_panel": "type",
 }
 DESK_WORK_WATCHDOG_MS = 90_000
 
@@ -577,6 +608,11 @@ def _system_prompt(extra: str = "", *, voice: bool = False) -> str:
             "\n" + web.prompt_fragment(),
         ]
     )
+    # Only while a game is on the table. Between games it costs nothing, and
+    # during one it is the difference between an opponent and a card shuffler.
+    game = kittens.prompt_fragment()
+    if game:
+        parts.append("\n" + game)
     if voice:
         parts.append("\n" + VOICE_TOOL_OPENER)
     if extra:
@@ -613,6 +649,10 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if name == "move_object":
         # Rearranging his own room: visual, local, and undoable by asking.
         return props.move_object(args)
+    if name in kittens_tools.TOOL_NAMES:
+        # A game of cards moves cards. Nothing here touches the filesystem, the
+        # network, or anything a confirmation would be protecting.
+        return kittens_tools.run_tool(name, args)
     if name == "browse_web":
         # Reads the open web, so it is gated like the other outward-facing
         # tools rather than treated as a local visual like the room ones.
@@ -622,8 +662,30 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return web.browse_web(args)
     if name == "show_panel":
         # The markup never runs anywhere it could reach this app — see
-        # rau/face/panels.py for the two barriers that make that true.
+        # rau/face/panels.py for the two barriers that make that true. The rest
+        # of the wall tools inherit that reasoning: they only ever move panels
+        # around, and none of them reach the filesystem or the network.
         return panels.show_panel(args)
+    if name == "list_panels":
+        return {"ok": True, "panels": panels.list_panels()}
+    if name == "update_panel":
+        return panels.update_panel(args)
+    if name == "close_panel":
+        if room_mode == "readonly":
+            # Unlike the others this one destroys something, permanently.
+            return deny_result(name, reason="room is in read-only mode")
+        return panels.close_panel(str(args.get("panel_id") or ""))
+    if name == "present_panel":
+        return panels.present_panel(str(args.get("panel_id") or ""))
+    if name == "commission_panel":
+        if room_mode == "readonly":
+            return deny_result(
+                name, reason="room is in read-only mode — cannot start deep work"
+            )
+        return panels.commission(
+            str(args.get("goal") or ""),
+            origin_turn_id=choreography.current_turn_id() or None,
+        )
     if name in ("set_goal", "clear_goal", "goal_note"):
         if room_mode == "readonly":
             return deny_result(name, reason="room is in read-only mode")
@@ -737,6 +799,15 @@ def _record_tool_round(
             "browse_web": "Browsing the web",
             "start_hard_task": "Starting deep work",
             "body_choreography": "Planning movement",
+            "start_kittens": "Dealing a game",
+            "play_kittens_card": "Making a move",
+            "end_kittens": "Clearing the table",
+            "show_panel": "Making something to look at",
+            "list_panels": "Looking at the wall",
+            "update_panel": "Changing a panel",
+            "close_panel": "Taking a panel down",
+            "present_panel": "Putting a panel up on screen",
+            "commission_panel": "Sending someone to build a panel",
         }.get(tc.name, f"Using {tc.name.replace('_', ' ')}")
         public_span = ACTIVITY.start(
             "tool",

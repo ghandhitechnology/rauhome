@@ -5,14 +5,17 @@ Run: python -m unittest tests.test_room_life -v
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from rau.control.store import control_store  # noqa: E402
 from rau.events import BUS  # noqa: E402
 from rau.face import choreography, panels, props  # noqa: E402
 
@@ -136,13 +139,31 @@ class MoveObjectTests(unittest.TestCase):
             self.assertIn(f"{spot}:", spots, f"{spot} has no coordinates")
 
 
-class ShowPanelTests(unittest.TestCase):
+class PanelStoreIsolation(unittest.TestCase):
+    """
+    Point the wall at a throwaway database for the duration of a test.
+
+    Panels used to live in a module-level dict, so `clear_panels()` in a test
+    cost nothing. They are rows now, and the store is a process-wide singleton
+    — without this, running the suite would delete whatever the user actually
+    has on their wall.
+    """
+
     def setUp(self) -> None:
-        panels.clear_panels()
+        self._tmp = tempfile.TemporaryDirectory(prefix="rau-panels-")
+        self._real_path = control_store.path
+        self._real_ready = control_store._ready  # noqa: SLF001
+        control_store.path = Path(self._tmp.name) / "control.db"
+        control_store._ready = False  # noqa: SLF001 — forces re-initialize
+        control_store.initialize()
 
     def tearDown(self) -> None:
-        panels.clear_panels()
+        control_store.path = self._real_path
+        control_store._ready = self._real_ready  # noqa: SLF001
+        self._tmp.cleanup()
 
+
+class ShowPanelTests(PanelStoreIsolation):
     def test_a_panel_is_stored_wrapped_and_announced(self) -> None:
         recorder = Recorder("panel_shown")
         try:
@@ -205,6 +226,37 @@ class ShowPanelTests(unittest.TestCase):
             "unknown_field",
         )
 
+    def test_raw_tool_json_is_recovered_into_a_panel(self) -> None:
+        """Providers put broken streamed args in `_raw`; dashboards still go up."""
+        payload = {
+            "title": "Incheon weather",
+            "kind": "dashboard",
+            "html": "<div class=\"card\"><h1>12°</h1><style>.card{color:red}</style></div>",
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        # Truncated mid-string the way a streamed tool call often arrives.
+        truncated = raw[:-8]
+        with choreography.turn_scope("turn_raw"):
+            result = panels.show_panel({"_raw": truncated})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["kind"], "dashboard")
+        panel = panels.get_panel(result["panel_id"])
+        self.assertIsNotNone(panel)
+        assert panel is not None
+        self.assertIn("Incheon weather", panel["document"])
+        self.assertIn("12°", panel["document"])
+
+    def test_raw_fence_and_extra_noise_still_recover(self) -> None:
+        payload = json.dumps(
+            {"title": "Note", "html": "<p>hi</p>"},
+            ensure_ascii=False,
+        )
+        fenced = f"```json\n{payload}\n```"
+        with choreography.turn_scope("turn_fence"):
+            result = panels.show_panel({"_raw": fenced})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["title"], "Note")
+
     def test_the_wall_does_not_grow_without_bound(self) -> None:
         with choreography.turn_scope("t"):
             for i in range(panels.MAX_PANELS + 5):
@@ -220,6 +272,178 @@ class ShowPanelTests(unittest.TestCase):
             panels.show_panel({"title": "t", "html": "<p>secret</p>"})
         for entry in panels.list_panels():
             self.assertNotIn("document", entry)
+            self.assertNotIn("body", entry)
+
+
+class PanelPersistenceTests(PanelStoreIsolation):
+    """The wall lives in control.db, so it has to outlive the process."""
+
+    def test_a_panel_is_readable_from_the_store_not_a_module_dict(self) -> None:
+        made = panels.show_panel({"title": "Kept", "html": "<p>still here</p>"})
+        row = control_store.get_panel(made["panel_id"])
+        self.assertIsNotNone(row)
+        # The raw fragment is what is stored — the document is rendered on read,
+        # which is what makes anchor-based editing possible at all.
+        self.assertEqual(row["body"], "<p>still here</p>")
+        self.assertNotIn("<!doctype html>", row["body"])
+        self.assertIn("<!doctype html>", panels.get_panel(made["panel_id"])["document"])
+
+    def test_headings_give_the_model_an_outline_without_the_body(self) -> None:
+        panels.show_panel(
+            {
+                "title": "Weather",
+                "html": "<h1>Incheon</h1><p>12</p><h2>Wind &amp; rain</h2>",
+            }
+        )
+        entry = panels.list_panels()[0]
+        self.assertEqual(entry["headings"], ["Incheon", "Wind & rain"])
+
+
+class PanelEditingTests(PanelStoreIsolation):
+    def setUp(self) -> None:
+        super().setUp()
+        self.panel_id = panels.show_panel(
+            {
+                "title": "Incheon weather",
+                "kind": "dashboard",
+                "html": "<h1>Incheon</h1><p id='now'>12°</p><p>steady</p>",
+            }
+        )["panel_id"]
+
+    def test_a_patch_swaps_one_run_and_bumps_the_revision(self) -> None:
+        result = panels.update_panel(
+            {"panel_id": self.panel_id, "old": "12°", "new": "19°"}
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["mode"], "patch")
+        self.assertEqual(result["revision"], 2)
+        self.assertIn("19°", panels.get_panel(self.panel_id)["body"])
+        self.assertNotIn("12°", panels.get_panel(self.panel_id)["body"])
+
+    def test_an_anchor_that_matches_twice_is_refused_rather_than_guessed(self) -> None:
+        panels.update_panel({"panel_id": self.panel_id, "html": "<p>a</p><p>a</p>"})
+        result = panels.update_panel(
+            {"panel_id": self.panel_id, "old": "<p>a</p>", "new": "<p>b</p>"}
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "ambiguous_match")
+
+    def test_a_missed_anchor_hands_back_the_nearest_real_text(self) -> None:
+        # The excerpt is what stands in for a read-the-panel-back tool: the
+        # model cannot afford to reread 96kB, so a failed patch has to teach it.
+        result = panels.update_panel(
+            {"panel_id": self.panel_id, "old": "<p id='now'>99°</p>", "new": "x"}
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "no_match")
+        self.assertIn("12°", result["closest"])
+
+    def test_a_replace_keeps_the_id_so_the_frame_does_not_jump(self) -> None:
+        result = panels.update_panel(
+            {"panel_id": self.panel_id, "html": "<h1>Rewritten</h1>", "title": "New"}
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["panel_id"], self.panel_id)
+        self.assertEqual(result["mode"], "replace")
+        self.assertEqual(panels.list_panels()[0]["title"], "New")
+        self.assertEqual(panels.get_panel(self.panel_id)["body"], "<h1>Rewritten</h1>")
+
+    def test_patch_and_replace_together_are_refused(self) -> None:
+        result = panels.update_panel(
+            {"panel_id": self.panel_id, "old": "a", "new": "b", "html": "<p>c</p>"}
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "conflicting_input")
+
+    def test_editing_a_panel_that_is_not_there(self) -> None:
+        result = panels.update_panel({"panel_id": "panel_nope", "html": "<p>x</p>"})
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "unknown_panel")
+
+    def test_closing_is_permanent_and_announced(self) -> None:
+        recorder = Recorder("panel_closed")
+        try:
+            result = panels.close_panel(self.panel_id)
+        finally:
+            recorder.stop()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([e["panel_id"] for e in recorder.events], [self.panel_id])
+        self.assertIsNone(panels.get_panel(self.panel_id))
+        self.assertEqual(panels.list_panels(), [])
+        # And there is no archive to bring it back from.
+        self.assertFalse(panels.close_panel(self.panel_id)["ok"])
+
+    def test_presenting_announces_but_does_not_change_the_wall(self) -> None:
+        recorder = Recorder("panel_presented")
+        try:
+            result = panels.present_panel(self.panel_id)
+        finally:
+            recorder.stop()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([e["panel_id"] for e in recorder.events], [self.panel_id])
+        self.assertEqual(len(panels.list_panels()), 1)
+
+    def test_presenting_something_that_is_gone_is_an_error_not_an_event(self) -> None:
+        recorder = Recorder("panel_presented")
+        try:
+            result = panels.present_panel("panel_nope")
+        finally:
+            recorder.stop()
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(recorder.events, [])
+
+
+class SubagentPanelTests(PanelStoreIsolation):
+    """A worker has to be able to hang what it built, or the work is invisible."""
+
+    def test_the_schema_is_registered_so_arguments_validate(self) -> None:
+        from rau.agent.tool_registry import descriptor, validate_arguments
+
+        self.assertIsNotNone(descriptor("show_panel"))
+        self.assertEqual(
+            validate_arguments("show_panel", {"title": "t", "html": "<p>x</p>"}),
+            {"title": "t", "html": "<p>x</p>"},
+        )
+
+    def test_a_panel_never_stops_a_worker_to_ask_permission(self) -> None:
+        from rau.agent.tool_registry import descriptor
+
+        # A sandboxed frame that cannot reach the network is not worth an
+        # approval prompt, and pausing for one would strand a commissioned
+        # dashboard halfway.
+        self.assertEqual(descriptor("show_panel").approval_policy, "never")
+
+    def test_panel_tools_reach_a_visual_goal_only(self) -> None:
+        from rau.agent.executors import tools_for_goal
+
+        visual = {t["function"]["name"] for t in tools_for_goal("Build a dashboard panel: x")}
+        other = {t["function"]["name"] for t in tools_for_goal("reply to that email")}
+        self.assertIn("show_panel", visual)
+        self.assertNotIn("show_panel", other)
+
+    def test_a_worker_hangs_a_panel_stamped_with_its_job(self) -> None:
+        from rau.agent.tools import run_tool
+
+        result = run_tool(
+            "show_panel",
+            {"title": "From a worker", "html": "<p>done</p>", "kind": "report"},
+            job_id="job_123",
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(panels.panels_for_job("job_123")[0]["title"], "From a worker")
+        self.assertEqual(panels.list_panels()[0]["source"], "subagent")
+
+    def test_the_finished_job_summary_names_what_went_up(self) -> None:
+        from rau.agent.orchestrator import _with_panels_note
+        from rau.agent.tools import run_tool
+
+        run_tool("show_panel", {"title": "Sales", "html": "<p>1</p>"}, job_id="job_9")
+        woven = _with_panels_note("job_9", "Counted everything.")
+        # Without this the user would find a panel on the wall with no idea
+        # where it came from — the worker never speaks for itself.
+        self.assertIn("Counted everything.", woven)
+        self.assertIn("Sales", woven)
+        self.assertEqual(_with_panels_note("job_none", "Nothing made."), "Nothing made.")
 
 
 class ToolRegistrationTests(unittest.TestCase):
@@ -229,6 +453,22 @@ class ToolRegistrationTests(unittest.TestCase):
         names = {t["function"]["name"] for t in brain.FACE_TOOLS}
         self.assertIn("move_object", names)
         self.assertIn("show_panel", names)
+
+    def test_the_face_can_tend_the_wall_not_only_add_to_it(self) -> None:
+        from rau.face import brain
+
+        names = {t["function"]["name"] for t in brain.FACE_TOOLS}
+        for tool in (
+            "list_panels",
+            "update_panel",
+            "close_panel",
+            "present_panel",
+            "commission_panel",
+        ):
+            self.assertIn(tool, names)
+            # Spoken requests reach these on the first round; waiting for round
+            # two is what made them feel unreachable by voice.
+            self.assertIn(tool, brain.VOICE_SLIM_TOOL_NAMES)
 
     def test_the_prompt_tells_the_model_what_is_in_the_room(self) -> None:
         from rau.face import brain

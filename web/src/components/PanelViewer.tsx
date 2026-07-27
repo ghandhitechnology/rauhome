@@ -58,7 +58,11 @@ export default function PanelViewer() {
           </button>
         </header>
         <iframe
-          key={open}
+          // Keyed on the revision too, not just the id: editing a panel while
+          // it is open has to remount the frame, or the viewer keeps showing
+          // the markup from before the patch. The document is served
+          // `Cache-Control: no-store`, so a remount really does refetch.
+          key={`${open}:${panel?.revision ?? 1}`}
           className="panel-viewer-doc"
           title={panel?.title || 'Panel'}
           src={panelUrl(open)}

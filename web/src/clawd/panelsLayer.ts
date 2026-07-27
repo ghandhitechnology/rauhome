@@ -85,21 +85,40 @@ function drawContents(
   }
 }
 
+export type PlacedPanel = {
+  panel: PanelSummary
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 /**
- * Draw the wall. Returns the stage-unit rects it used, newest first, so the
- * host can turn them into something clickable.
+ * Where the panels hang, in stage units — without drawing anything.
+ *
+ * Layout is a pure function of the panel list, which is why hit-testing reads
+ * it from here rather than from `drawWallPanels`' return value: the wall is
+ * painted into the baked backdrop, so that draw may not have run this frame,
+ * or this second.
+ */
+export function wallPanelRects(): PlacedPanel[] {
+  return panelStore
+    .list()
+    .slice(0, SLOTS.length)
+    .map((panel, i) => ({ panel, ...SLOTS[i] }))
+}
+
+/**
+ * Draw the wall. Returns the stage-unit rects it used, newest first.
  */
 export function drawWallPanels(
   ctx: Ctx,
   u: number,
-): { panel: PanelSummary; x: number; y: number; w: number; h: number }[] {
-  const panels = panelStore.list()
-  if (!panels.length) return []
+): PlacedPanel[] {
+  const placed = wallPanelRects()
+  if (!placed.length) return []
 
-  const placed: { panel: PanelSummary; x: number; y: number; w: number; h: number }[] = []
-  panels.slice(0, SLOTS.length).forEach((panel, i) => {
-    const slot = SLOTS[i]
-    const { x, y, w, h } = slot
+  placed.forEach(({ panel, x, y, w, h }) => {
 
     // Drop shadow, so it hangs off the wall rather than being painted on it.
     ctx.save()
@@ -146,8 +165,6 @@ export function drawWallPanels(
     ctx.closePath()
     ctx.fill()
     ctx.restore()
-
-    placed.push({ panel, x, y, w, h })
   })
   return placed
 }

@@ -2,7 +2,7 @@
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background: #0a0a0c;
+  background: var(--bg-0);
   animation: fade-in var(--dur-4) var(--ease) both;
 }
 
@@ -407,8 +407,8 @@
 }
 
 .voice-orb.speaking .voice-orb-fill {
-  background: #7fd4a8;
-  box-shadow: 0 0 14px rgba(127, 212, 168, 0.5);
+  background: var(--ok);
+  box-shadow: 0 0 14px var(--ok-a35);
 }
 
 .voice-orb.thinking .voice-orb-fill {
@@ -417,7 +417,7 @@
 }
 
 .voice-orb.working .voice-orb-fill {
-  background: #8ec5ff;
+  background: var(--info);
   animation: breathe 0.75s var(--ease-in-out) infinite;
 }
 
@@ -434,7 +434,7 @@
 }
 
 .voice-phase.speaking {
-  color: #7fd4a8;
+  color: var(--ok);
 }
 
 .voice-phase.listening {
@@ -446,7 +446,7 @@
 }
 
 .voice-phase.working {
-  color: #8ec5ff;
+  color: var(--info);
 }
 
 .voice-transcript {
@@ -512,27 +512,56 @@
   max-width: 15rem;
 }
 
-.face-wall-chip {
+/* One panel: the chip opens it, the ✕ takes it down. They share a border so
+   the pair still reads as a single object on the wall. */
+.face-wall-row {
   display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  padding: 0.5rem 0.7rem;
-  text-align: left;
+  align-items: stretch;
   border: 1px solid var(--line-2);
   border-radius: var(--r-md);
   background: rgba(12, 9, 8, 0.72);
   backdrop-filter: blur(8px);
-  color: var(--ink);
-  cursor: pointer;
+  overflow: hidden;
   animation: pop-in var(--dur-3) var(--spring) both;
   transition:
     border-color var(--dur-2) var(--ease),
     transform var(--dur-2) var(--ease);
 }
 
-.face-wall-chip:hover {
+.face-wall-row:hover {
   border-color: var(--accent-a40);
   transform: translateX(2px);
+}
+
+.face-wall-chip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.face-wall-close {
+  flex-shrink: 0;
+  width: 1.9rem;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--faint);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+}
+
+.face-wall-close:hover {
+  color: var(--danger);
+  background: var(--danger-a12);
 }
 
 .face-wall-kind {
@@ -540,6 +569,20 @@
   letter-spacing: 0.13em;
   text-transform: uppercase;
   color: var(--accent);
+}
+
+/* Kind was already in the markup as `kind-*` but had no rules, so all four
+   looked identical. The eyebrow is the cheapest place to carry the difference. */
+.face-wall-row.kind-dashboard .face-wall-kind {
+  color: var(--info);
+}
+
+.face-wall-row.kind-poster .face-wall-kind {
+  color: var(--ok);
+}
+
+.face-wall-row.kind-note .face-wall-kind {
+  color: var(--muted);
 }
 
 .face-wall-title {

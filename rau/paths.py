@@ -12,6 +12,8 @@ DAILY_DIR = MEMORIES_DIR / "daily"
 GOALS_DIR = MEMORIES_DIR / "goals"
 ACTIVE_GOAL = GOALS_DIR / "active.json"
 PRESENCE_FILE = MEMORIES_DIR / "presence.json"
+#: Running record of games played, so beating him once means something later.
+GAMES_FILE = MEMORIES_DIR / "games.json"
 CONTROL_DB = MEMORIES_DIR / "control.db"
 CONFIG_DIR = ROOT / "config"
 SKILLS_DIR = ROOT / "skills"

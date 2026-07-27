@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from '../router'
 import ClawdAvatar from '../components/ClawdAvatar'
+import PageSkeleton from '../components/PageSkeleton'
 import { api, type Job } from '../api'
 import { live as liveChannel } from '../live'
 import './Dashboard.css'
@@ -163,16 +164,7 @@ export default function Dashboard() {
   ]
 
   if (!status) {
-    return (
-      <div className="dash grid-2">
-        {[0, 1].map((i) => (
-          <section key={i} className="panel">
-            <div className="skeleton skeleton-line" style={{ width: '40%', height: '1.6rem' }} />
-            <div className="skeleton" style={{ height: '9rem', marginTop: '1rem' }} />
-          </section>
-        ))}
-      </div>
-    )
+    return <PageSkeleton pathname="/dashboard" />
   }
 
   return (

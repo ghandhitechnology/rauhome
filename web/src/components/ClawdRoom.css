@@ -2,7 +2,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: #0a0a0c;
+  background: var(--bg-0);
 }
 
 .clawd-room.pet-mode {
@@ -15,6 +15,7 @@
   height: 100%;
 }
 
-.clawd-room.over-clawd canvas {
+.clawd-room.over-clawd canvas,
+.clawd-room.over-panel canvas {
   cursor: pointer;
 }

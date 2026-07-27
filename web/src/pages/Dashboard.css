@@ -3,6 +3,15 @@
   margin: 0;
 }
 
+/* Panels arrive in reading order, matching Operations and Identity. */
+.dash > .panel {
+  animation: rise var(--dur-3) var(--ease) both;
+}
+
+.dash > .panel:nth-child(2) {
+  animation-delay: 70ms;
+}
+
 .dash h3 {
   font-size: 1.2rem;
   margin: 0 0 0.5rem;
@@ -129,6 +138,9 @@
 .status-grid b {
   font-weight: 500;
   color: var(--ink);
+  /* These values re-poll and change under the cursor ("Diary today: 9" → "10").
+     Proportional digits would nudge the label beside them every time. */
+  font-variant-numeric: tabular-nums;
 }
 
 .status-grid div.on b {
@@ -228,15 +240,22 @@
   margin-top: 0.8rem;
 }
 
+/* Jobs push in over the live socket while the page is open. */
 .job-row {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.7rem;
+  gap: var(--s-3);
+  padding: var(--s-2) 0.7rem;
   border-radius: var(--r-sm);
   border: 1px solid var(--accent-a25);
   background: var(--accent-a12);
   font-size: 0.85rem;
+  animation: pop-in var(--dur-2) var(--ease) both;
+  transition: border-color var(--dur-2) var(--ease);
+}
+
+.job-row:hover {
+  border-color: var(--accent-a40);
 }
 
 .job-goal {

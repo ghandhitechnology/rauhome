@@ -8,9 +8,15 @@
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0a0a0c" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet" />
+    <!--
+      Fonts are served from /fonts (see web/public/fonts/LICENSE.md), not from
+      fonts.googleapis.com. Rau runs on localhost and has to look the same with
+      the network off. Preloaded because the @font-face rules live inside the
+      bundled CSS, which the browser only discovers a round-trip later — without
+      these two hints the wordmark still flashes its fallback on a cold load.
+    -->
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/instrument-serif-latin.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/dm-sans-latin.woff2" crossorigin />
   </head>
   <body>
     <div id="root"></div>
