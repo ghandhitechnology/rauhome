@@ -55,6 +55,19 @@
   background: rgba(30, 24, 22, 0.7);
 }
 
+/* Deal a hand. Warmer than the controls beside it — this one starts something
+   rather than toggling something, and it should not read as a third switch. */
+.face-play {
+  border-color: var(--accent-a25);
+  color: var(--accent-soft);
+}
+
+.face-play:hover {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .room-style-seg {
   display: inline-grid;
   grid-template-columns: 1fr 1fr;

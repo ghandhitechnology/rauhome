@@ -27,6 +27,8 @@ import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
 import { panelStore, type PanelSummary } from '../panels'
 
+import { gameStore, useGame } from '../games/kittens/useGame'
+
 const GameTable = lazy(() => import('../games/kittens/GameTable'))
 import {
   IDLE_FACE_STREAM,
@@ -83,6 +85,15 @@ export default function Face() {
   const [roomVisual, setRoomVisual] = useState<RoomVisual>(() => loadRoomVisual())
   const [tier, setTierState] = useState<QualityTier>(() => currentTier())
   const [tierAuto, setTierAuto] = useState(() => tierIsAutomatic())
+  // Whether there is a game on the table. Held here rather than inside the
+  // table itself, because the room needs to know before deciding to mount it.
+  const { table: game } = useGame()
+
+  // A game survives a reload, and it survives you walking off to another route
+  // and coming back. Asking once on arrival is what makes that true.
+  useEffect(() => {
+    void gameStore.refresh()
+  }, [])
 
   // The tier is resolved once and held in the module, so a second tab changing
   // it would otherwise leave this one showing a choice it is no longer making.
@@ -466,13 +477,16 @@ export default function Face() {
       <PanelViewer />
 
       {/*
-        The table, when there is one. It renders nothing at all between games,
-        and it is lazy so the thirteen inline-SVG card faces are not part of the
-        bundle every visitor pays for just to look at the room.
+        The table, only when there is one. Mounted on the state rather than
+        unconditionally: the thirteen inline-SVG card faces are their own chunk,
+        and rendering an empty table would fetch all of it on every visit to the
+        room for someone who never plays.
       */}
-      <Suspense fallback={null}>
-        <GameTable />
-      </Suspense>
+      {game && (
+        <Suspense fallback={null}>
+          <GameTable />
+        </Suspense>
+      )}
 
       <header className="face-top">
         <div className="face-top-left">
@@ -524,6 +538,28 @@ export default function Face() {
             {isVoice ? 'voice' : 'chat'}
             <em>⇧␣</em>
           </span>
+          {/*
+            Dealing without asking him. He can still start a game himself with
+            `start_kittens` — this is the shortcut for when you already know you
+            want one and would rather not type a sentence about it.
+
+            Hidden while a game is up: the table covers the room and carries its
+            own Leave, so a second control here would only be a way to lose a
+            game you were in the middle of.
+          */}
+          {!game && (
+            <button
+              className="face-toggle face-play"
+              onClick={() => {
+                setActivityOpen(false)
+                setPanel(false)
+                void gameStore.deal().catch(() => {})
+              }}
+              title="Deal a hand of Exploding Kittens"
+            >
+              Play
+            </button>
+          )}
           <button
             className={`face-toggle ${panel ? 'on' : ''}`}
             onClick={() => {
