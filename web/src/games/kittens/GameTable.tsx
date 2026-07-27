@@ -1,23 +1,61 @@
 /**
- * The table.
+ * The table, in the room.
  *
- * Mounted over the room while a game is live, the way `PanelViewer` mounts over
- * it while a panel is open. There is no local game logic in here at all: the
- * component renders the seat view it is given and posts moves back. If it looks
- * like it is deciding something — which cards can combo, whether Nope is
- * available — it is only reading a flag the server already set.
+ * Two layers, and which one a thing belongs to is the only structural
+ * decision in here:
  *
- * The one thing computed locally is the Nope countdown, from the deadline in the
- * payload. A bar driven by server ticks would stutter whenever the socket was
- * quiet, and stutter in a five-second window reads as the game being broken.
+ *   `.ek-world`   camera-locked. The deck, the discard, the cards in his
+ *                 claws. Authored in *stage units* — the same coordinates the
+ *                 canvas draws the room in — and carried onto the screen by a
+ *                 single CSS matrix that `gameBridge` rewrites once a frame.
+ *                 These things are in the room.
+ *
+ *   `.ek-screen`  screen-locked. The hand you are holding, the card you have
+ *                 raised to read, the countdown. These are in your hands, and
+ *                 your hands do not move when the camera does.
+ *
+ * There is still no game logic here. The server decides what is legal; the
+ * raised card only reads back flags it was handed, and the one thing computed
+ * locally is the Nope countdown, from the deadline in the payload.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
+import { gameBridge, type Pt } from '../../clawd/gameBridge'
+import { GAME_CARD, GAME_TABLE, KNOWN_TOP_SPOT } from '../../clawd/gameTableLayer'
 import { CARD_ART, CardBack, CardDefs, CardFrame, type CardId } from './art'
+import { diffBeats } from './beats'
+import {
+  diffFlights,
+  reducedMotion,
+  runFlight,
+  DEAL_STAGGER_MS,
+  type FlightSpot,
+} from './flights'
+import {
+  handLocked,
+  handReducer,
+  IDLE_HAND,
+  raisedIndices,
+  type HandEvent,
+  type Picker,
+} from './handMachine'
 import { CARD_META, cardTitle } from './meta'
-import { gameStore, useCountdown, useGame, type TableState } from './useGame'
+import { phaseStore, usePhase } from './phase'
+import { gameStore, useCountdown, useGame, type Move, type TableState } from './useGame'
 import './Kittens.css'
 
 const NEVER_PLAYABLE_ALONE = new Set<CardId>(['exploding_kitten', 'defuse', 'nope'])
+
+/** The full width of the Nope window, in ms. Matches the server. */
+const NOPE_MS = 5000
 
 function Card({ id }: { id: CardId }) {
   const meta = CARD_META[id]
@@ -29,253 +67,258 @@ function Card({ id }: { id: CardId }) {
   )
 }
 
-/** A card in a hand or a pile, with the click target and the hover lift. */
-function CardButton({
-  id,
-  selected,
-  disabled,
-  onClick,
-  index,
-  count = 1,
+/**
+ * Place something in the world layer.
+ *
+ * The numbers are stage units and the property is `px`, which looks wrong
+ * until you remember the layer is scaled by the camera matrix: one "pixel"
+ * here is one unit of the room.
+ */
+function worldStyle(
+  x: number,
+  y: number,
+  w = GAME_CARD.w,
+  h = GAME_CARD.h,
+): CSSProperties {
+  return { left: `${x - w / 2}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` }
+}
+
+type Action = {
+  label: string
+  hint: string
+  /** Null when the card needs a choice made before there is a move at all. */
+  move: Move | null
+  picker?: Picker
+}
+
+/**
+ * What the chosen cards would do.
+ *
+ * Every branch here is a restatement of a rule the server enforces anyway —
+ * it exists so the button can be labelled, not so the client can decide.
+ */
+function actionFor(table: TableState, chosen: CardId[]): Action | null {
+  if (chosen.length === 0) return null
+  const allSame = chosen.every((c) => c === chosen[0])
+  const first = chosen[0]
+
+  if (chosen.length === 1 && !NEVER_PLAYABLE_ALONE.has(first) && CARD_META[first].kind !== 'cat') {
+    return {
+      label: `Play ${CARD_META[first].title}`,
+      hint: CARD_META[first].effect,
+      move: { move: 'play', card: first },
+    }
+  }
+  if (chosen.length === 2 && allSame) {
+    return {
+      label: 'Steal one at random',
+      hint: 'Two of a kind. You do not get to choose which.',
+      move: { move: 'combo', cards: chosen },
+    }
+  }
+  if (chosen.length === 3 && allSame) {
+    return {
+      label: 'Demand a card',
+      hint: 'Three of a kind. Name it and take it, if he has it.',
+      move: null,
+      picker: 'demand',
+    }
+  }
+  if (chosen.length === 5 && new Set(chosen).size === 5 && table.discard.length > 0) {
+    return {
+      label: 'Raid the discard pile',
+      hint: 'Five different cards. Take anything off the pile.',
+      move: { move: 'combo', cards: chosen },
+    }
+  }
+  return null
+}
+
+/* ───────────────────────────────────────────────────────── the world */
+
+function DeckPile({
+  table,
+  onDraw,
+  live,
 }: {
-  id: CardId
-  selected?: boolean
-  disabled?: boolean
-  onClick?: () => void
-  index: number
-  /** Hand size, so the fan can splay symmetrically around the middle card. */
-  count?: number
+  table: TableState
+  onDraw: () => void
+  live: boolean
 }) {
-  const meta = CARD_META[id]
+  const style = worldStyle(GAME_TABLE.deckX, GAME_TABLE.cardY)
+  const label = live ? 'Draw a card and end your turn' : `${table.deck_count} cards left`
   return (
-    <button
-      type="button"
-      className={`ek-card ${selected ? 'is-selected' : ''}`}
-      style={{ '--i': index, '--n': count } as React.CSSProperties}
-      disabled={disabled}
-      onClick={onClick}
-      title={`${meta.title} — ${meta.effect}`}
-      aria-pressed={selected}
-      aria-label={meta.title}
-    >
-      <Card id={id} />
-    </button>
+    <div className="ek-pile-slot" style={style}>
+      <div className="ek-stack" aria-hidden />
+      <button
+        type="button"
+        className={`ek-pile-face ek-deck ${live ? 'is-live' : ''}`}
+        disabled={!live}
+        onClick={onDraw}
+        title={label}
+        aria-label={label}
+      >
+        <CardBack />
+      </button>
+    </div>
   )
 }
 
-/** Rau's hand: backs only, and there is nothing else here to show. */
-function OpponentHand({ count, thinking }: { count: number; thinking: boolean }) {
+function DiscardPile({
+  table,
+  glowing,
+  dropTarget,
+}: {
+  table: TableState
+  glowing: boolean
+  dropTarget: boolean
+}) {
+  const top = table.discard[table.discard.length - 1]
+  const style = worldStyle(GAME_TABLE.discardX, GAME_TABLE.cardY)
   return (
-    <div className={`ek-hand ek-hand-opponent ${thinking ? 'is-thinking' : ''}`}>
+    <div
+      className={`ek-pile-slot ek-discard ${glowing ? 'is-pending' : ''} ${
+        dropTarget ? 'is-drop' : ''
+      }`}
+      style={style}
+    >
+      {top ? (
+        <div className="ek-pile-face ek-flip-in" key={`${top}-${table.discard.length}`}>
+          <Card id={top} />
+        </div>
+      ) : (
+        <div className="ek-pile-empty" aria-hidden />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The two labels, in screen space.
+ *
+ * Told where to be by the bridge rather than living with the cards: text in
+ * the world layer is laid out at a fraction of a pixel and magnified by the
+ * camera, and arrives blurred.
+ */
+function PileTags({
+  table,
+  live,
+  attach,
+}: {
+  table: TableState
+  live: boolean
+  attach: (el: HTMLDivElement | null) => void
+}) {
+  const top = table.discard[table.discard.length - 1]
+  return (
+    <div className="ek-tags" ref={attach} aria-hidden>
+      <span className="ek-tag ek-tag-deck">
+        {table.deck_count} left
+        {live && <em>click to draw &amp; end your turn</em>}
+      </span>
+      <span className="ek-tag ek-tag-discard">
+        {table.discard.length > 0 ? cardTitle(top) : 'discard'}
+      </span>
+    </div>
+  )
+}
+
+/** His hand. Backs only, and there is nothing else here to show. */
+function RauHand({
+  count,
+  thinking,
+  attach,
+}: {
+  count: number
+  thinking: boolean
+  attach: (el: HTMLDivElement | null) => void
+}) {
+  return (
+    <div
+      className={`ek-rau-hand ${thinking ? 'is-thinking' : ''}`}
+      ref={attach}
+      aria-label={`Rau is holding ${count} cards`}
+    >
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="ek-card ek-card-back" style={{ '--i': i } as React.CSSProperties}>
+        <div
+          key={i}
+          className="ek-rau-card"
+          style={{ '--i': i, '--n': count } as CSSProperties}
+        >
           <CardBack />
         </div>
       ))}
-      {count === 0 && <p className="ek-empty">No cards.</p>}
     </div>
   )
 }
 
-function Pile({ table }: { table: TableState }) {
-  const top = table.discard[table.discard.length - 1]
-  return (
-    <div className="ek-piles">
-      <div className="ek-pile">
-        <div className="ek-pile-stack" data-count={Math.min(table.deck_count, 6)}>
-          <div className="ek-card ek-card-static">
-            <CardBack />
-          </div>
-        </div>
-        <span className="ek-pile-label">
-          {table.deck_count} left
-          <em>one of them is the kitten</em>
-        </span>
-      </div>
-      <div className="ek-pile">
-        <div className="ek-pile-stack">
-          {top ? (
-            <div className="ek-card ek-card-static ek-flip-in" key={`${top}-${table.discard.length}`}>
-              <Card id={top} />
-            </div>
-          ) : (
-            <div className="ek-pile-empty" aria-hidden />
-          )}
-        </div>
-        <span className="ek-pile-label">
-          discard
-          <em>{table.discard.length} cards</em>
-        </span>
-      </div>
-    </div>
-  )
-}
+/* ──────────────────────────────────────────────────────── the screen */
 
-/** The five seconds that make Nope worth holding. */
-function NopeWindow({ table }: { table: TableState }) {
+/**
+ * The five seconds that make Nope worth holding.
+ *
+ * No dialog: his card sits glowing on the pile with the clock running, and if
+ * you are holding a Nope it lifts itself out of your hand at the edge of the
+ * fan with the countdown drawn around it. Slam it or watch it happen.
+ */
+function NopeRing({ table, onNope, onPass }: {
+  table: TableState
+  onNope: () => void
+  onPass: () => void
+}) {
   const pending = table.pending
   const left = useCountdown(pending?.deadline ?? null)
   if (!pending) return null
 
-  const total = 5000
-  const pct = Math.max(0, Math.min(100, (left / total) * 100))
-  const mine = pending.actor === 'user'
-  const waitingOnYou = pending.waiting_on === 'user'
+  const frac = Math.max(0, Math.min(1, left / NOPE_MS))
+  const yours = pending.waiting_on === 'user'
   const played = pending.cards.map(cardTitle).join(' + ')
+  const deep =
+    pending.nopes > 0
+      ? ` · ${pending.nopes} Nope${pending.nopes > 1 ? 's' : ''} deep, so it ${
+          pending.nopes % 2 ? 'will not' : 'will'
+        } happen`
+      : ''
 
   return (
-    <div className={`ek-nope-window ${waitingOnYou ? 'is-yours' : ''}`} role="status">
-      <div className="ek-nope-bar" style={{ width: `${pct}%` }} aria-hidden />
-      <div className="ek-nope-body">
-        <p>
-          <strong>{mine ? 'You' : 'Rau'}</strong> played {played}
-          {pending.nopes > 0 && (
-            <span className="ek-nope-count">
-              {' '}
-              · {pending.nopes} Nope{pending.nopes > 1 ? 's' : ''} deep, so it{' '}
-              {pending.nopes % 2 ? 'will not' : 'will'} happen
-            </span>
-          )}
-        </p>
-        {waitingOnYou ? (
-          <div className="ek-nope-actions">
-            <button
-              type="button"
-              className="ek-btn ek-btn-nope"
-              disabled={!table.can_nope}
-              onClick={() => gameStore.play({ move: 'nope' })}
-            >
-              {table.can_nope ? 'NOPE' : 'No Nope in hand'}
-            </button>
-            <button
-              type="button"
-              className="ek-btn ek-btn-quiet"
-              onClick={() => gameStore.play({ move: 'pass_nope' })}
-            >
-              Let it happen
-            </button>
-          </div>
-        ) : (
-          <p className="ek-nope-waiting">Waiting on Rau…</p>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/** Where the defused kitten goes back. The only genuinely secret choice you make. */
-function DefusePrompt({ table }: { table: TableState }) {
-  const max = table.insert_max ?? table.deck_count
-  const [index, setIndex] = useState(0)
-  useEffect(() => setIndex(0), [table.game_id, max])
-  return (
-    <div className="ek-prompt ek-prompt-defuse">
-      <h3>Defused. Now hide it.</h3>
-      <p>
-        Slide it back into the {max}-card deck. He does not get to see where it went —
-        and neither will you, in a few turns.
+    <div className="ek-nope" role="status">
+      <p className="ek-nope-line">
+        <strong>{pending.actor === 'user' ? 'You' : 'Rau'}</strong> played {played}
+        <span className="ek-nope-deep">{deep}</span>
       </p>
-      <div className="ek-slider-row">
-        <span>top</span>
-        <input
-          type="range"
-          min={0}
-          max={max}
-          value={index}
-          onChange={(e) => setIndex(Number(e.target.value))}
-          aria-label="How deep to hide the Exploding Kitten"
-        />
-        <span>bottom</span>
-      </div>
-      <p className="ek-slider-value">
-        {index === 0
-          ? 'Right on top. He draws next.'
-          : index >= max
-            ? 'All the way at the bottom.'
-            : `${index} card${index === 1 ? '' : 's'} down.`}
-      </p>
-      <button
-        type="button"
-        className="ek-btn ek-btn-primary"
-        onClick={() => gameStore.play({ move: 'insert_kitten', index })}
-      >
-        Put it back
-      </button>
-    </div>
-  )
-}
-
-function FavorPrompt({ table }: { table: TableState }) {
-  return (
-    <div className="ek-prompt">
-      <h3>He asked for a favor.</h3>
-      <p>Pick the one you can live without.</p>
-      <div className="ek-prompt-cards">
-        {table.hand.map((id, i) => (
-          <CardButton
-            key={`${id}-${i}`}
-            id={id}
-            index={i}
-            onClick={() => gameStore.play({ move: 'give_favor', card: id })}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function SalvagePrompt({ table }: { table: TableState }) {
-  const options = [...new Set(table.discard)].filter((c) => c !== 'exploding_kitten')
-  return (
-    <div className="ek-prompt">
-      <h3>Five different cards. Take anything.</h3>
-      <div className="ek-prompt-cards">
-        {options.map((id, i) => (
-          <CardButton
-            key={id}
-            id={id}
-            index={i}
-            onClick={() => gameStore.play({ move: 'take_from_discard', card: id })}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-/** Naming a card for a three-of-a-kind. You are guessing; that is the game. */
-function DemandPicker({
-  cards,
-  onCancel,
-}: {
-  cards: CardId[]
-  onCancel: () => void
-}) {
-  const choices = Object.keys(CARD_META).filter((c) => c !== 'exploding_kitten') as CardId[]
-  return (
-    <div className="ek-prompt ek-prompt-demand">
-      <h3>Name the card you want.</h3>
-      <p>If he is holding one, it is yours. If not, you wasted three cards.</p>
-      <div className="ek-demand-grid">
-        {choices.map((id) => (
+      {yours && table.can_nope ? (
+        <div className="ek-nope-slot">
           <button
-            key={id}
             type="button"
-            className="ek-demand-chip"
-            onClick={() => gameStore.play({ move: 'combo', cards, named_card: id })}
+            className="ek-nope-card"
+            style={{ '--left': frac } as CSSProperties}
+            onClick={onNope}
+            aria-label="Play Nope"
+            title="NOPE"
           >
-            {CARD_META[id].title}
+            <span className="ek-nope-ring" aria-hidden />
+            <span className="ek-nope-face">
+              <Card id="nope" />
+            </span>
           </button>
-        ))}
-      </div>
-      <button type="button" className="ek-btn ek-btn-quiet" onClick={onCancel}>
-        Back
-      </button>
+          <button type="button" className="ek-quiet" onClick={onPass}>
+            let it happen
+          </button>
+        </div>
+      ) : (
+        <p className="ek-nope-wait">
+          {yours ? 'No Nope in hand.' : 'Waiting on Rau…'}
+        </p>
+      )}
     </div>
   )
 }
 
-function GameOver({ table }: { table: TableState }) {
+function GameOverScene({ table, onAgain, onLeave }: {
+  table: TableState
+  onAgain: () => void
+  onLeave: () => void
+}) {
   const won = table.winner === 'user'
   return (
     <div className={`ek-over ${won ? 'is-win' : 'is-loss'}`} role="alertdialog" aria-label="Game over">
@@ -291,10 +334,10 @@ function GameOver({ table }: { table: TableState }) {
           </p>
         )}
         <div className="ek-over-actions">
-          <button type="button" className="ek-btn ek-btn-primary" onClick={() => void gameStore.deal().catch(() => {})}>
+          <button type="button" className="ek-btn ek-btn-primary" onClick={onAgain}>
             Deal again
           </button>
-          <button type="button" className="ek-btn ek-btn-quiet" onClick={() => void gameStore.leave()}>
+          <button type="button" className="ek-btn ek-btn-quiet" onClick={onLeave}>
             Leave the table
           </button>
         </div>
@@ -303,107 +346,392 @@ function GameOver({ table }: { table: TableState }) {
   )
 }
 
+/* ───────────────────────────────────────────────────────────── table */
+
 export default function GameTable() {
   const { table, busy, error } = useGame()
-  const [selected, setSelected] = useState<number[]>([])
-  const [demanding, setDemanding] = useState<CardId[] | null>(null)
+  const phase = usePhase()
+  const [hand, rawDispatch] = useReducer(handReducer, IDLE_HAND)
+  /*
+    The gesture cannot be read out of the render closure.
 
-  useEffect(() => {
-    void gameStore.refresh()
+    A pointerdown and the pointerup that follows it can land in the same task,
+    and then the handler for the second one is still looking at the state from
+    before the first — so the click that should have raised a card sees an
+    idle hand and does nothing at all. The reducer is pure, so stepping a ref
+    alongside React costs nothing and makes the gesture independent of when a
+    render happens to occur.
+  */
+  const handRef = useRef(hand)
+  const dispatch = useCallback((event: HandEvent) => {
+    handRef.current = handReducer(handRef.current, event)
+    rawDispatch(event)
   }, [])
+  /** How many of your cards have landed. Infinity except during a deal. */
+  const [dealtCount, setDealtCount] = useState(Infinity)
+  const [named, setNamed] = useState<CardId | null>(null)
+  const [insertAt, setInsertAt] = useState(0)
+  const [hint, setHint] = useState('')
+
+  const screenRef = useRef<HTMLDivElement | null>(null)
+  const templateRef = useRef<HTMLDivElement | null>(null)
+  const fanRef = useRef<HTMLDivElement | null>(null)
+  const cardEls = useRef(new Map<number, HTMLElement>())
+  const prevTable = useRef<TableState | null>(null)
+  /** Home centre of the card being dragged, so the offset is from where it was. */
+  const dragHome = useRef<Pt>({ x: 0, y: 0 })
+  /** Tears down the window listeners for the gesture in progress, if any. */
+  const endGesture = useRef<(() => void) | null>(null)
+
+  const attachWorld = useCallback((el: HTMLDivElement | null) => {
+    gameBridge.attachWorld(el)
+  }, [])
+  const attachRau = useCallback((el: HTMLDivElement | null) => {
+    gameBridge.attachRauHand(el)
+  }, [])
+  const attachTags = useCallback((el: HTMLDivElement | null) => {
+    gameBridge.attachTags(el)
+  }, [])
+
+  // Leaving the room must not leave him staring at a card that is gone.
+  useEffect(
+    () => () => {
+      gameBridge.hoverPoint = null
+      endGesture.current?.()
+      gameBridge.attachWorld(null)
+      gameBridge.attachRauHand(null)
+      gameBridge.attachTags(null)
+    },
+    [],
+  )
+
+  /* ── selection bookkeeping ──────────────────────────────────────── */
 
   // A hand that changed under a selection makes the selection meaningless.
   useEffect(() => {
-    setSelected([])
-    setDemanding(null)
-  }, [table?.hand.join(','), table?.phase])
+    dispatch({ type: 'reset' })
+    setNamed(null)
+    setHint('')
+  }, [table?.hand.join(','), table?.phase, dispatch])
 
-  const toggle = useCallback((index: number) => {
-    setSelected((prev) =>
-      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index],
-    )
+  // The server asking for something raises the card itself: being told to
+  // defuse and then having to find the Defuse in your own fan is a puzzle
+  // nobody wanted.
+  useEffect(() => {
+    if (!table || !table.awaiting_you) return
+    if (table.phase === 'awaiting_defuse') {
+      const i = table.hand.indexOf('defuse')
+      dispatch({ type: 'raise', indices: i >= 0 ? [i] : [], picker: 'defuse' })
+      setInsertAt(0)
+    }
+    // The hand signature is in here as well as in the reset above, and has to
+    // be: the reset fires on any change to the hand, so without re-raising
+    // afterwards a Defuse prompt would quietly disappear the moment anything
+    // else about your cards moved.
+  }, [table?.phase, table?.awaiting_you, table?.game_id, table?.hand.join(','), dispatch])
+
+  /* ── where things are, in screen pixels ─────────────────────────── */
+
+  const pointOf = useCallback((spot: FlightSpot): Pt => {
+    const snap = gameBridge.current
+    if (spot === 'deck') return gameBridge.spot('deck')
+    if (spot === 'discard') return gameBridge.spot('discard')
+    if (spot === 'rauHand') return snap?.rauHand ?? { x: 0, y: 0 }
+    const fan = fanRef.current?.getBoundingClientRect()
+    if (fan) return { x: fan.x + fan.width / 2, y: fan.y + fan.height / 2 }
+    return { x: (snap?.w ?? 0) / 2, y: (snap?.h ?? 0) - 90 }
   }, [])
 
-  const chosen = useMemo(
-    () => (table ? selected.map((i) => table.hand[i]).filter(Boolean) : []),
-    [table, selected],
-  )
+  const overDiscard = useCallback((x: number, y: number) => {
+    const r = gameBridge.current?.discard
+    if (!r) return false
+    // Generous: dropping *near* the pile is dropping on it.
+    const pad = 28
+    return x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad
+  }, [])
 
-  const actions = useMemo(() => {
-    if (!table || !table.your_turn || chosen.length === 0) return []
-    const out: { label: string; hint: string; run: () => void }[] = []
-    const allSame = chosen.every((c) => c === chosen[0])
-    if (chosen.length === 1 && !NEVER_PLAYABLE_ALONE.has(chosen[0]) && CARD_META[chosen[0]].kind !== 'cat') {
-      out.push({
-        label: `Play ${CARD_META[chosen[0]].title}`,
-        hint: CARD_META[chosen[0]].effect,
-        run: () => void gameStore.play({ move: 'play', card: chosen[0] }),
-      })
+  /* ── the deal ───────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    if (phase !== 'dealing' || !table) return
+    let cancelled = false
+    setDealtCount(0)
+
+    // Alternating, the way anyone deals: one to you, one to him, round again.
+    const order: ('you' | 'him')[] = []
+    for (let i = 0; i < Math.max(table.hand.length, table.hand_counts.rau); i++) {
+      if (i < table.hand.length) order.push('you')
+      if (i < table.hand_counts.rau) order.push('him')
     }
-    if (chosen.length === 2 && allSame) {
-      out.push({
-        label: 'Steal one at random',
-        hint: 'Two of a kind. You do not get to choose which.',
-        run: () => void gameStore.play({ move: 'combo', cards: chosen }),
-      })
+    const flicks = gameBridge.choreography?.startDeal(order.length) ?? []
+
+    const finish = () => {
+      if (cancelled) return
+      setDealtCount(Infinity)
+      phaseStore.dealt()
     }
-    if (chosen.length === 3 && allSame) {
-      out.push({
-        label: 'Demand a card',
-        hint: 'Three of a kind. Name it and take it, if he has it.',
-        run: () => setDemanding(chosen),
-      })
+
+    const layer = screenRef.current
+    const template = templateRef.current
+    if (!layer || !template || reducedMotion() || order.length === 0) {
+      const t = setTimeout(finish, reducedMotion() ? 0 : 260)
+      return () => {
+        cancelled = true
+        clearTimeout(t)
+      }
     }
-    if (chosen.length === 5 && new Set(chosen).size === 5 && table.discard.length > 0) {
-      out.push({
-        label: 'Raid the discard pile',
-        hint: 'Five different cards. Take anything off the pile.',
-        run: () => void gameStore.play({ move: 'combo', cards: chosen }),
+
+    // One frame late, so the fan has laid out and can be measured.
+    const raf = requestAnimationFrame(() => {
+      if (cancelled) return
+      const deck = pointOf('deck')
+      const his = pointOf('rauHand')
+      let slot = 0
+      const jobs = order.map((who, i) => {
+        const delay = flicks[i] ?? i * DEAL_STAGGER_MS
+        let to = his
+        let landing = -1
+        if (who === 'you') {
+          landing = slot++
+          const el = cardEls.current.get(landing)
+          if (el) {
+            const r = el.getBoundingClientRect()
+            to = { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+          } else {
+            to = pointOf('playerHand')
+          }
+        }
+        return runFlight(layer, template, deck, to, {
+          delay,
+          spin: who === 'you' ? 16 : -12,
+        }).then(() => {
+          if (!cancelled && landing >= 0) {
+            setDealtCount((n) => Math.max(n, landing + 1))
+          }
+        })
       })
+      void Promise.all(jobs).then(finish)
+    })
+
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf)
     }
-    return out
-  }, [table, chosen])
+  }, [phase, table?.game_id, pointOf])
+
+  /* ── everything else that moves ─────────────────────────────────── */
+
+  useEffect(() => {
+    if (!table) return
+    const prev = prevTable.current
+    prevTable.current = table
+    if (phase !== 'playing' || !prev || prev.game_id !== table.game_id) return
+
+    const beats = diffBeats(prev, table)
+    if (beats.length > 0) gameBridge.choreography?.observe(beats)
+
+    const layer = screenRef.current
+    const template = templateRef.current
+    if (!layer || !template) return
+    diffFlights(prev, table).forEach((req, i) => {
+      void runFlight(layer, template, pointOf(req.from), pointOf(req.to), {
+        delay: i * 80,
+        spin: req.to === 'discard' ? 18 : -10,
+      })
+    })
+  }, [table, phase, pointOf])
+
+  /* ── moves ──────────────────────────────────────────────────────── */
+
+  const commit = useCallback(async (move: Move) => {
+    const ok = await gameStore.play(move)
+    dispatch({ type: 'resolved', ok })
+  }, [dispatch])
+
+  const chosen = useMemo(() => {
+    if (!table) return []
+    return raisedIndices(hand)
+      .map((i) => table.hand[i])
+      .filter(Boolean)
+  }, [table, hand])
+
+  const action = useMemo(
+    () => (table ? actionFor(table, chosen) : null),
+    [table, chosen],
+  )
 
   if (!table) return null
 
-  const phase = table.phase
-  const showHandActions = table.your_turn && phase === 'playing'
+  const raised = raisedIndices(hand)
+  const locked = handLocked(hand) || busy
+  const yourMove = table.your_turn && table.phase === 'playing' && phase === 'playing'
+  const giving = table.phase === 'awaiting_favor' && table.awaiting_you
+  const salvaging = table.phase === 'awaiting_discard_pick' && table.awaiting_you
+  const defusing = table.phase === 'awaiting_defuse' && table.awaiting_you
+  const interactive = (yourMove || giving) && !locked
+
+  const insertMax = table.insert_max ?? table.deck_count
+
+  /* ── pointer handling on the fan ────────────────────────────────── */
+
+  /*
+    One gesture, tracked on the window.
+
+    Not on the card, and not through `setPointerCapture`: a card being dragged
+    to the pile is out from under the pointer almost immediately, and a
+    gesture that only hears about moves landing on its own element loses the
+    drag the moment it starts working. The window hears all of them.
+  */
+  const beginGesture = (index: number, at: Pt, home: DOMRect) => {
+    endGesture.current?.()
+    dragHome.current = { x: home.x + home.width / 2, y: home.y + home.height / 2 }
+    dispatch({ type: 'press', index, at })
+
+    const stop = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      endGesture.current = null
+    }
+    const onMove = (ev: PointerEvent) => {
+      dispatch({
+        type: 'move',
+        at: { x: ev.clientX, y: ev.clientY },
+        overDiscard: overDiscard(ev.clientX, ev.clientY),
+      })
+    }
+    const onCancel = () => {
+      stop()
+      dispatch({ type: 'cancel' })
+    }
+    const onUp = (ev: PointerEvent) => {
+      stop()
+      finishGesture(ev.clientX, ev.clientY)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+    endGesture.current = stop
+  }
+
+  const finishGesture = (x: number, y: number) => {
+    const current = handRef.current
+    if (current.mode === 'pressed') {
+      // Never travelled: the whole gesture was a click, so up it comes.
+      if (giving) {
+        dispatch({ type: 'release', overDiscard: false })
+        dispatch({ type: 'raise', indices: [current.index], picker: 'favor' })
+        return
+      }
+      dispatch({ type: 'release', overDiscard: false })
+      return
+    }
+    if (current.mode !== 'dragging') return
+
+    const over = overDiscard(x, y)
+    const card = table.hand[current.index]
+    if (!over || !card) {
+      dispatch({ type: 'release', overDiscard: false })
+      return
+    }
+    if (giving) {
+      dispatch({ type: 'release', overDiscard: true })
+      void commit({ move: 'give_favor', card })
+      return
+    }
+    const dropped = actionFor(table, [card])
+    if (!dropped) {
+      dispatch({ type: 'release', overDiscard: false })
+      setHint(
+        CARD_META[card].kind === 'cat'
+          ? 'That one does nothing on its own. Match it with another.'
+          : `${CARD_META[card].title} cannot be played by itself.`,
+      )
+      return
+    }
+    if (dropped.move) {
+      dispatch({ type: 'release', overDiscard: true })
+      void commit(dropped.move)
+      return
+    }
+    // Dropped, but the card wants to know something first: the choice opens
+    // over the pile rather than the card being thrown back.
+    dispatch({ type: 'release', overDiscard: true, needsPicker: dropped.picker ?? 'none' })
+  }
+
+  const onCardDown = (index: number) => (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!interactive) return
+    const current = handRef.current
+    // Adding to an existing selection is a click, not the start of a drag:
+    // building a pair by dragging both cards at once is not a gesture.
+    if (current.mode === 'raised' && !current.indices.includes(index)) {
+      dispatch({ type: 'raiseAdd', index })
+      return
+    }
+    e.preventDefault()
+    beginGesture(index, { x: e.clientX, y: e.clientY }, e.currentTarget.getBoundingClientRect())
+  }
+
+  const onCardEnter = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    gameBridge.hoverPoint = { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  }
+  const onCardLeave = () => {
+    gameBridge.hoverPoint = null
+  }
+
+  const confirmRaised = () => {
+    if (!action) return
+    if (action.move) {
+      dispatch({ type: 'confirm' })
+      void commit(action.move)
+      return
+    }
+    dispatch({ type: 'picker', picker: action.picker ?? 'none' })
+  }
+
+  const dragOffset =
+    hand.mode === 'dragging'
+      ? { x: hand.at.x - dragHome.current.x, y: hand.at.y - dragHome.current.y }
+      : null
+
+  const thinking = !table.your_turn && table.phase !== 'over'
+  const lastLine = table.log[table.log.length - 1]
 
   return (
-    <div className="ek-table" role="region" aria-label="Exploding Kittens">
+    <div className="ek-room" role="region" aria-label="Exploding Kittens">
       <CardDefs />
 
-      <header className="ek-head">
-        <div className="ek-turn">
-          {phase === 'over' ? (
-            <strong>Game over</strong>
-          ) : table.your_turn ? (
-            <strong>Your turn</strong>
-          ) : (
-            <strong className="ek-turn-his">Rau is thinking…</strong>
-          )}
-          {table.turns_to_take > 1 && phase !== 'over' && (
-            <span className="ek-owed">{table.turns_to_take} turns owed</span>
-          )}
-        </div>
-        <button
-          type="button"
-          className="ek-btn ek-btn-quiet ek-leave"
-          onClick={() => void gameStore.leave()}
-        >
-          Leave
-        </button>
-      </header>
+      {/* ── in the room ─────────────────────────────────────────── */}
+      <div className="ek-world" ref={attachWorld} aria-hidden={false}>
+        <DeckPile
+          table={table}
+          live={yourMove && !locked}
+          onDraw={() => {
+            dispatch({ type: 'reset' })
+            void gameStore.play({ move: 'draw' })
+          }}
+        />
+        <DiscardPile
+          table={table}
+          glowing={table.phase === 'nope_window'}
+          dropTarget={hand.mode === 'dragging' && hand.overDiscard}
+        />
+        <RauHand count={table.hand_counts.rau} thinking={thinking} attach={attachRau} />
 
-      <OpponentHand count={table.hand_counts.rau} thinking={!table.your_turn && phase !== 'over'} />
-
-      <div className="ek-middle">
-        <Pile table={table} />
         {table.known_top.length > 0 && (
-          <div className="ek-future" aria-label="What you saw on top of the deck">
-            <span className="ek-future-label">You saw:</span>
+          <div
+            className="ek-known"
+            style={worldStyle(
+              KNOWN_TOP_SPOT.x,
+              KNOWN_TOP_SPOT.y,
+              GAME_CARD.w * table.known_top.length * 0.78,
+              GAME_CARD.h * 0.62,
+            )}
+            aria-label="What you saw on top of the deck"
+          >
             {table.known_top.map((id, i) => (
-              <div className="ek-card ek-card-mini" key={`${id}-${i}`}>
+              <div className="ek-known-card" key={`${id}-${i}`}>
                 <Card id={id} />
               </div>
             ))}
@@ -411,73 +739,265 @@ export default function GameTable() {
         )}
       </div>
 
-      <div className="ek-feed" aria-live="polite">
-        {table.log.slice(-3).map((entry, i) => (
-          <p key={`${entry.at}-${i}`} className={`ek-feed-line seat-${entry.seat}`}>
-            {entry.text}
-          </p>
-        ))}
-      </div>
+      {/* ── in your hands ───────────────────────────────────────── */}
+      <div className="ek-screen" ref={screenRef}>
+        {/* Cloned for every card in flight, so what flies is what lands. */}
+        <div className="ek-flight-template" ref={templateRef} aria-hidden>
+          <CardBack />
+        </div>
 
-      {phase === 'nope_window' && <NopeWindow table={table} />}
-      {phase === 'awaiting_defuse' && table.awaiting_you && <DefusePrompt table={table} />}
-      {phase === 'awaiting_favor' && table.awaiting_you && <FavorPrompt table={table} />}
-      {phase === 'awaiting_discard_pick' && table.awaiting_you && <SalvagePrompt table={table} />}
-      {demanding && <DemandPicker cards={demanding} onCancel={() => setDemanding(null)} />}
+        <PileTags table={table} live={yourMove && !locked} attach={attachTags} />
 
-      {error && (
-        <p className="ek-error" role="alert" onClick={() => gameStore.clearError()}>
-          {error}
-        </p>
-      )}
+        <div className="ek-strip">
+          <span className={`ek-turn ${thinking ? 'is-his' : ''}`}>
+            {table.phase === 'over'
+              ? 'Game over'
+              : table.your_turn
+                ? 'Your turn'
+                : 'Rau is thinking…'}
+          </span>
+          {table.turns_to_take > 1 && table.phase !== 'over' && (
+            <span className="ek-owed">{table.turns_to_take} turns owed</span>
+          )}
+          {lastLine && <span className="ek-log">{lastLine.text}</span>}
+          <button
+            type="button"
+            className="ek-quiet ek-leave"
+            onClick={() => void phaseStore.leave()}
+          >
+            Leave
+          </button>
+        </div>
 
-      <div className="ek-hand ek-hand-mine" role="group" aria-label="Your hand">
-        {table.hand.map((id, i) => (
-          <CardButton
-            key={`${id}-${i}`}
-            id={id}
-            index={i}
-            count={table.hand.length}
-            selected={selected.includes(i)}
-            disabled={busy || !showHandActions}
-            onClick={() => toggle(i)}
+        {table.phase === 'nope_window' && (
+          <NopeRing
+            table={table}
+            onNope={() => void gameStore.play({ move: 'nope' })}
+            onPass={() => void gameStore.play({ move: 'pass_nope' })}
           />
-        ))}
-      </div>
+        )}
 
-      <footer className="ek-actions">
-        {showHandActions && actions.length === 0 && selected.length > 0 && (
-          <p className="ek-hint">
-            {selected.length === 1
-              ? 'That card does nothing on its own. Match it with another.'
-              : 'Not a set. Two or three matching, or five all different.'}
+        {salvaging && (
+          <div className="ek-salvage" role="group" aria-label="Take anything off the pile">
+            <p>Five different cards. Take anything.</p>
+            <div className="ek-salvage-fan">
+              {[...new Set(table.discard)]
+                .filter((c) => c !== 'exploding_kitten')
+                .map((id, i, all) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className="ek-card"
+                    style={{ '--i': i, '--n': all.length } as CSSProperties}
+                    disabled={locked}
+                    onClick={() => void gameStore.play({ move: 'take_from_discard', card: id })}
+                    aria-label={CARD_META[id].title}
+                  >
+                    <Card id={id} />
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {(error || hint) && (
+          <p
+            className="ek-error"
+            role="alert"
+            onClick={() => {
+              gameStore.clearError()
+              setHint('')
+            }}
+          >
+            {error || hint}
           </p>
         )}
-        {actions.map((action) => (
-          <button
-            key={action.label}
-            type="button"
-            className="ek-btn ek-btn-primary"
-            disabled={busy}
-            onClick={action.run}
-            title={action.hint}
-          >
-            {action.label}
-          </button>
-        ))}
-        {showHandActions && (
-          <button
-            type="button"
-            className="ek-btn ek-btn-draw"
-            disabled={busy}
-            onClick={() => void gameStore.play({ move: 'draw' })}
-          >
-            Draw &amp; end turn
-          </button>
-        )}
-      </footer>
 
-      {phase === 'over' && <GameOver table={table} />}
+        {/* ── the raised card ──────────────────────────────────── */}
+        {raised.length > 0 && chosen.length > 0 && (
+          <div className="ek-raised" role="group" aria-label="The card you are holding up">
+            <div className="ek-raised-cards">
+              {chosen.map((id, i) => (
+                <div className="ek-raised-card" key={`${id}-${i}`} style={{ '--i': i } as CSSProperties}>
+                  <Card id={id} />
+                </div>
+              ))}
+            </div>
+
+            {hand.mode === 'raised' && hand.picker === 'demand' ? (
+              <div className="ek-picker">
+                <h3>Name the card you want.</h3>
+                <p>If he is holding one it is yours. If not, you wasted three cards.</p>
+                <div className="ek-picker-grid">
+                  {(Object.keys(CARD_META) as CardId[])
+                    .filter((c) => c !== 'exploding_kitten')
+                    .map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        className={`ek-chip ${named === id ? 'is-on' : ''}`}
+                        onClick={() => setNamed(id)}
+                      >
+                        {CARD_META[id].title}
+                      </button>
+                    ))}
+                </div>
+                <div className="ek-raised-actions">
+                  <button
+                    type="button"
+                    className="ek-btn ek-btn-primary"
+                    disabled={!named || locked}
+                    onClick={() => {
+                      if (!named) return
+                      dispatch({ type: 'confirm' })
+                      void commit({ move: 'combo', cards: chosen, named_card: named })
+                    }}
+                  >
+                    {named ? `Demand ${CARD_META[named].title}` : 'Pick one'}
+                  </button>
+                  <button type="button" className="ek-quiet" onClick={() => dispatch({ type: 'cancel' })}>
+                    Back
+                  </button>
+                </div>
+              </div>
+            ) : hand.mode === 'raised' && hand.picker === 'defuse' ? (
+              <div className="ek-picker">
+                <h3>Defused. Now hide it.</h3>
+                <p>
+                  Slide it back into the {insertMax}-card deck. He does not get to see
+                  where it went — and neither will you, in a few turns.
+                </p>
+                <div className="ek-slider">
+                  <span>top</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={insertMax}
+                    value={insertAt}
+                    onChange={(e) => setInsertAt(Number(e.target.value))}
+                    aria-label="How deep to hide the Exploding Kitten"
+                  />
+                  <span>bottom</span>
+                </div>
+                <p className="ek-slider-read">
+                  {insertAt === 0
+                    ? 'Right on top. He draws next.'
+                    : insertAt >= insertMax
+                      ? 'All the way at the bottom.'
+                      : `${insertAt} card${insertAt === 1 ? '' : 's'} down.`}
+                </p>
+                <div className="ek-raised-actions">
+                  <button
+                    type="button"
+                    className="ek-btn ek-btn-primary"
+                    disabled={locked}
+                    onClick={() => {
+                      dispatch({ type: 'confirm' })
+                      void commit({ move: 'insert_kitten', index: insertAt })
+                    }}
+                  >
+                    Put it back
+                  </button>
+                </div>
+              </div>
+            ) : hand.mode === 'raised' && hand.picker === 'favor' ? (
+              <div className="ek-raised-actions">
+                <p className="ek-raised-hint">He asked for a favor. This is the one you can live without?</p>
+                <button
+                  type="button"
+                  className="ek-btn ek-btn-primary"
+                  disabled={locked}
+                  onClick={() => {
+                    dispatch({ type: 'confirm' })
+                    void commit({ move: 'give_favor', card: chosen[0] })
+                  }}
+                >
+                  Give {CARD_META[chosen[0]].title}
+                </button>
+                <button type="button" className="ek-quiet" onClick={() => dispatch({ type: 'cancel' })}>
+                  Back
+                </button>
+              </div>
+            ) : (
+              <div className="ek-raised-actions">
+                <p className="ek-raised-hint">
+                  {action
+                    ? action.hint
+                    : chosen.length === 1
+                      ? CARD_META[chosen[0]].effect
+                      : 'Not a set. Two or three matching, or five all different.'}
+                </p>
+                <button
+                  type="button"
+                  className="ek-btn ek-btn-primary"
+                  disabled={!action || locked}
+                  onClick={confirmRaised}
+                >
+                  {action ? action.label : 'Nothing to play'}
+                </button>
+                <button type="button" className="ek-quiet" onClick={() => dispatch({ type: 'cancel' })}>
+                  Back
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── the fan you are holding ──────────────────────────── */}
+        <div
+          className={`ek-fan ${locked ? 'is-locked' : ''} ${giving ? 'is-giving' : ''} ${
+            defusing ? 'is-defusing' : ''
+          }`}
+          ref={fanRef}
+          role="group"
+          aria-label="Your hand"
+        >
+          {table.hand.map((id, i) => {
+            const isDragging = hand.mode === 'dragging' && hand.index === i
+            const isRaised = raised.includes(i)
+            const landed = i < dealtCount
+            const style: CSSProperties = {
+              '--i': i,
+              '--n': table.hand.length,
+            } as CSSProperties
+            if (isDragging && dragOffset) {
+              style.transform = `translate(${dragOffset.x}px, ${dragOffset.y}px) rotate(3deg) scale(1.06)`
+              style.zIndex = 30
+            }
+            return (
+              <button
+                key={`${id}-${i}`}
+                type="button"
+                ref={(el) => {
+                  if (el) cardEls.current.set(i, el)
+                  else cardEls.current.delete(i)
+                }}
+                className={`ek-card ${isRaised ? 'is-raised' : ''} ${
+                  isDragging ? 'is-dragging' : ''
+                } ${landed ? '' : 'is-undealt'}`}
+                style={style}
+                disabled={!interactive}
+                onPointerDown={onCardDown(i)}
+                onPointerEnter={onCardEnter}
+                onPointerLeave={onCardLeave}
+                title={`${CARD_META[id].title} — ${CARD_META[id].effect}`}
+                aria-label={CARD_META[id].title}
+                aria-pressed={isRaised}
+              >
+                <Card id={id} />
+              </button>
+            )
+          })}
+        </div>
+
+        {table.phase === 'over' && (
+          <GameOverScene
+            table={table}
+            onAgain={() => void phaseStore.redeal()}
+            onLeave={() => void phaseStore.leave(table.winner === 'user' ? 'win' : 'loss')}
+          />
+        )}
+      </div>
     </div>
   )
 }

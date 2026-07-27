@@ -26,6 +26,7 @@ import {
   lightingAt as lightingClassic,
 } from './roomClassic'
 import type { RoomVisual } from './roomVisual'
+import { drawGameTable, GAME_TABLE } from './gameTableLayer'
 import { clawdBounds, drawClawd } from './sprite'
 
 export type Camera = {
@@ -44,6 +45,18 @@ export type SceneOptions = {
   showRoom?: boolean
   /** Character scale multiplier. */
   charScale?: number
+  /**
+   * Somewhere specific to point the camera, overriding the follow shot.
+   *
+   * Set while the card table is up: an over-the-shoulder shot has to hold
+   * still, because the cards are DOM elements glued to it and a camera that
+   * swam with the pointer would unglue them from the table.
+   */
+  cameraTarget?: { x: number; y: number; zoom: number; lambda?: number } | null
+  /** 0..1 presence of the card table prop. */
+  gameTable?: number
+  /** 0..1 darkness outside the light over the table. */
+  gameDim?: number
 }
 
 export class Scene {
@@ -84,10 +97,20 @@ export class Scene {
 
   update(dt: number, worldX: number, opts: SceneOptions) {
     const par = opts.parallax || { x: 0, y: 0 }
-    const followX = opts.follow ? clamp((worldX - STAGE.w / 2) * 0.22, -18, 18) : 0
-    this.camera.x = damp(this.camera.x, followX + par.x * 2.2, 2.4, dt)
-    this.camera.y = damp(this.camera.y, par.y * 1.4, 2.4, dt)
-    this.camera.zoom = damp(this.camera.zoom, opts.follow ? 1.14 : 1, 2, dt)
+    const aim = opts.cameraTarget
+    if (aim) {
+      // Parallax is kept, at about a third of its usual travel: enough that
+      // the shot is not dead, little enough that the cards stay put.
+      const lambda = aim.lambda ?? 2.4
+      this.camera.x = damp(this.camera.x, aim.x + par.x * 0.7, lambda, dt)
+      this.camera.y = damp(this.camera.y, aim.y + par.y * 0.45, lambda, dt)
+      this.camera.zoom = damp(this.camera.zoom, aim.zoom, lambda, dt)
+    } else {
+      const followX = opts.follow ? clamp((worldX - STAGE.w / 2) * 0.22, -18, 18) : 0
+      this.camera.x = damp(this.camera.x, followX + par.x * 2.2, 2.4, dt)
+      this.camera.y = damp(this.camera.y, par.y * 1.4, 2.4, dt)
+      this.camera.zoom = damp(this.camera.zoom, opts.follow ? 1.14 : 1, 2, dt)
+    }
     this.grainSeed = (this.grainSeed + dt * 24) % 1000
   }
 
@@ -146,6 +169,12 @@ export class Scene {
     // rather than as something moving alongside him.
     if (showRoom) drawCarriedProp(ctx, u, room.time, { x: worldX, y: FLOOR_Y })
 
+    // The card table comes after him: he sits behind it, and the top edge
+    // taking his lap is what puts him *at* the table rather than next to it.
+    if (showRoom && (opts.gameTable ?? 0) > 0.002) {
+      drawGameTable(ctx, u, opts.gameTable as number, room.time)
+    }
+
     if (showRoom) {
       if (classic) {
         drawClassicFore(ctx, u)
@@ -158,52 +187,99 @@ export class Scene {
 
     ctx.restore()
 
+    // Painted here rather than as a DOM overlay so it lands *under* the speech
+    // bubble, which is drawn after this: he keeps trash-talking at full
+    // brightness while the rest of the room goes quiet around the table.
+    if (showRoom && (opts.gameDim ?? 0) > 0.002) {
+      this.drawTableDim(ctx, opts.gameDim as number)
+    }
+
     if (showRoom) this.drawGrain(ctx)
   }
 
-  /** Where the sprite lands on screen, for speech bubbles and hit testing. */
-  screenRect(params: ParamSet, worldX: number, charScale = 1) {
+  /**
+   * Project a point in canvas-stage pixels onto the screen, in CSS pixels.
+   *
+   * The one place the camera maths lives. Everything that needs to know where
+   * something in the room lands on screen goes through here.
+   */
+  project(px: number, py: number) {
     const u = this.unit
     const cz = this.camera.zoom
     const cx = STAGE.w * u * 0.5
     const cy = STAGE.h * u * 0.5
-
-    const project = (px: number, py: number) => ({
+    return {
       x: this.offsetX + cx + (px - cx - this.camera.x * u) * cz,
       y: this.offsetY + cy + (py - cy - this.camera.y * u) * cz,
-    })
+    }
+  }
 
+  /** Project a point authored in stage units. */
+  stagePoint(x: number, y: number) {
+    return this.project(x * this.unit, y * this.unit)
+  }
+
+  /**
+   * The same projection as one uniform transform: `screen = stage * k + t`.
+   *
+   * There is no rotation and one shared scale, which is what lets a whole
+   * layer of DOM cards ride the camera on a single CSS matrix instead of a
+   * per-element write every frame.
+   */
+  viewTransform(): { k: number; tx: number; ty: number } {
+    const u = this.unit
+    const cz = this.camera.zoom
+    const k = u * cz
+    return {
+      k,
+      tx: this.offsetX + STAGE.w * u * 0.5 * (1 - cz) - this.camera.x * k,
+      ty: this.offsetY + STAGE.h * u * 0.5 * (1 - cz) - this.camera.y * k,
+    }
+  }
+
+  /** Where the sprite lands on screen, for speech bubbles and hit testing. */
+  screenRect(params: ParamSet, worldX: number, charScale = 1) {
     const b = clawdBounds(params, {
-      unit: u * 1.25 * charScale,
-      x: worldX * u,
-      y: FLOOR_Y * u,
+      unit: this.unit * 1.25 * charScale,
+      x: worldX * this.unit,
+      y: FLOOR_Y * this.unit,
     })
-    const tl = project(b.x, b.y)
-    const br = project(b.x + b.w, b.y + b.h)
+    const tl = this.project(b.x, b.y)
+    const br = this.project(b.x + b.w, b.y + b.h)
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y }
   }
 
   /**
    * Project a rect authored in stage units onto the screen.
    *
-   * Same camera maths as `screenRect`, for things whose position is known in
-   * the room's own coordinates rather than derived from the rig — the framed
-   * panels on the back wall being the reason this exists.
+   * For things whose position is known in the room's own coordinates rather
+   * than derived from the rig — the framed panels on the back wall being the
+   * reason this exists.
    */
   stageRect(x: number, y: number, w: number, h: number) {
-    const u = this.unit
-    const cz = this.camera.zoom
-    const cx = STAGE.w * u * 0.5
-    const cy = STAGE.h * u * 0.5
-
-    const project = (px: number, py: number) => ({
-      x: this.offsetX + cx + (px - cx - this.camera.x * u) * cz,
-      y: this.offsetY + cy + (py - cy - this.camera.y * u) * cz,
-    })
-
-    const tl = project(x * u, y * u)
-    const br = project((x + w) * u, (y + h) * u)
+    const tl = this.stagePoint(x, y)
+    const br = this.stagePoint(x + w, y + h)
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y }
+  }
+
+  /** Everything outside the light over the table falls away. */
+  private drawTableDim(ctx: CanvasRenderingContext2D, amount: number) {
+    const dpr = ctx.getTransform().a || 1
+    const w = ctx.canvas.width / dpr
+    const h = ctx.canvas.height / dpr
+    const c = this.stagePoint(GAME_TABLE.x, GAME_TABLE.topY - 5)
+    // Tight, and most of the falloff spent early: the point is a lamp over a
+    // table with a room going quiet around it, not an even wash over the shot.
+    const r = Math.max(w, h) * 0.62
+    const g = ctx.createRadialGradient(c.x, c.y, r * 0.16, c.x, c.y, r)
+    const a = clamp01(amount)
+    g.addColorStop(0, 'rgba(6, 5, 8, 0)')
+    g.addColorStop(0.55, `rgba(6, 5, 8, ${a * 0.45})`)
+    g.addColorStop(1, `rgba(6, 5, 8, ${a})`)
+    ctx.save()
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, w, h)
+    ctx.restore()
   }
 
   /** Subtle film grain, redrawn as sparse dots rather than per-pixel noise. */
@@ -300,7 +376,10 @@ export function drawBubble(
   const dpr = ctx.getTransform().a || 1
   const viewW = ctx.canvas.width / dpr
   const x = clamp(anchorX - w / 2, 12, viewW - w - 12)
-  const y = anchorY - h - 14 * scale
+  // Zoomed in at the card table his head sits high in the frame, and a bubble
+  // placed above it would sit off the top of the window. Overlapping him is
+  // the lesser evil: an unreadable line is the same as no line.
+  const y = Math.max(8, anchorY - h - 14 * scale)
   const step = Math.max(2, Math.round(3 * scale))
 
   // Blocky border: a stepped rectangle instead of rounded corners.

@@ -244,9 +244,61 @@
   left: 50%;
   bottom: 1.6rem;
   transform: translateX(-50%);
-  /* Above voice-hud so the permissions popover is never buried under it. */
-  z-index: 20;
+  /* Above voice-hud so the permissions popover is never buried under it, and
+     above the card table so the chat is never buried under a fan of cards. */
+  z-index: 35;
   width: min(560px, calc(100vw - 2.5rem));
+  transition:
+    left var(--dur-2) var(--ease),
+    bottom var(--dur-2) var(--ease),
+    width var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease);
+}
+
+/*
+ * Collapsed while a hand is on.
+ *
+ * The middle of the bottom edge is where your own cards are, so the composer
+ * gets out of the way rather than sitting on top of them — but it stays one
+ * click from open, and never stops accepting a message.
+ */
+.face-compose.is-chip {
+  left: 1.2rem;
+  bottom: 1.2rem;
+  width: auto;
+  transform: none;
+}
+
+.face-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(12, 10, 10, 0.62);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow-3);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-2) var(--ease),
+    color var(--dur-2) var(--ease);
+}
+
+.face-chip:hover {
+  border-color: var(--accent-a40);
+  color: var(--ink);
+}
+
+.face-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
 }
 
 .face-box {

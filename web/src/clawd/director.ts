@@ -82,6 +82,9 @@ const AMBIENT: Record<StationId, MotionName[]> = {
   plant: ['water', 'tidy', 'idle', 'stretch'],
   rug: ['sit', 'idle', 'stretch', 'groove'],
   centre: ['idle', 'loiter', 'ponder', 'stretch', 'yawn', 'wave'],
+  // The table is only ever reached deliberately, and the choreographer owns
+  // what he does once he is there. This exists to satisfy the map.
+  table: ['sitTable', 'idle'],
 }
 
 const HAPPY = new Set(['happy', 'excited', 'love', 'amazed'])
@@ -141,6 +144,14 @@ export class Director {
   manual = false
 
   /**
+   * Set while something else owns the eyes — the card table, where he watches
+   * the pile, the card you are hovering, and you when you talk over his turn.
+   * Conversation mode would otherwise pull his gaze back to the camera every
+   * time he opened his mouth, and he talks the whole way through a game.
+   */
+  gazeHeld = false
+
+  /**
    * Pin conversation mode on — for a caller that knows a voice session is live
    * even while the signals are momentarily quiet. `currentMode` still reports
    * what he is actually doing.
@@ -156,6 +167,8 @@ export class Director {
   private directed = false
   /** Clock time when directed may expire after arrival; 0 until he arrives. */
   private directedUntil = 0
+  /** Whether the current directed walk is one someone is waiting on. */
+  private directedHurry = false
   private nextDecisionAt = 0
   private clock = 0
   private lastReplySeen = 0
@@ -248,12 +261,36 @@ export class Director {
     // conversation always runs through one path.
   }
 
-  /** Send Clawd somewhere deliberately (Direct panel / human override). */
-  goTo(id: StationId) {
+  /** True once he has reached wherever he was last sent. */
+  get isArrived(): boolean {
+    return this.arrived
+  }
+
+  /**
+   * Take the eyes, or give them back.
+   *
+   * Giving them back clears the remembered aim as well, so the next tick
+   * genuinely re-applies one instead of deciding nothing has changed and
+   * leaving him staring wherever the last owner left him.
+   */
+  holdGaze(held: boolean) {
+    this.gazeHeld = held
+    if (!held) this.gazeIntent = null
+  }
+
+  /**
+   * Send Clawd somewhere deliberately (Direct panel / human override).
+   *
+   * `hurry` is for walks the user is waiting on the end of — the card-table
+   * ritual most of all, where a stroll in from the shelf would be four
+   * seconds of nothing happening.
+   */
+  goTo(id: StationId, opts: { hurry?: boolean } = {}) {
     this.target = id
     this.arrived = false
     this.directed = true
     this.directedUntil = 0
+    this.directedHurry = !!opts.hurry
     // Outrank a leftover one-shot or poke so the walk starts on the next tick.
     this.startleUntil = 0
   }
@@ -294,6 +331,9 @@ export class Director {
       this.arrived = false
       this.directed = true
       this.directedUntil = 0
+      // The cue carries its own pace; a leftover hurry from a game ritual
+      // must not make him sprint to the window.
+      this.directedHurry = false
     }
     if (!cue.station && cue.motion) this.playCueMotion()
   }
@@ -400,8 +440,9 @@ export class Director {
     // or voice session leaves "Send him to" stuck on centre forever.
     if (this.directed && !this.arrived) {
       const spot = station(this.target)
-      if (this.travelTo(this.clampX(spot.x), dt)) return
+      if (this.travelTo(this.clampX(spot.x), dt, 'walk', this.directedHurry)) return
       this.markStationArrival(spot.facing)
+      this.directedHurry = false
     }
 
     // A deliberate one-shot owns the character until it finishes.
@@ -454,6 +495,9 @@ export class Director {
         const options = STATIONS.filter(
           (st) =>
             st.id !== this.target &&
+            // The card table is not somewhere he wanders to. Sitting down at
+            // it with no game on would be him miming a hand of cards.
+            st.id !== 'table' &&
             st.x >= this.walkRange.min &&
             st.x <= this.walkRange.max,
         )
@@ -616,6 +660,8 @@ export class Director {
     this.rig.talkLevel = s.rauSpeaking ? s.rauLevel : 0
 
     this.rig.breathRate = damp(this.rig.breathRate, this.breathRateFor(s), 1.6, dt)
+
+    if (this.gazeHeld) return
 
     // A cue that named somewhere to look owns the eyes for its whole hold —
     // including through the walk, so he looks where he is going.

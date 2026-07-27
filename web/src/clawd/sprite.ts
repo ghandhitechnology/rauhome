@@ -202,6 +202,124 @@ export function drawClawd(ctx: CanvasRenderingContext2D, p: ParamSet, o: DrawOpt
   ctx.restore()
 }
 
+/* ── anchors ──────────────────────────────────────────────────────────
+ *
+ * Where things he is *holding* have to be, in the same canvas space the
+ * sprite is drawn in. Everything below re-walks `drawClawd`'s transform
+ * chain rather than approximating it: the cards in his claws have to sit
+ * exactly where the claws are, through squash, lean, breath and facing, or
+ * they read as floating next to him instead of held by him.
+ *
+ * The maths is done longhand rather than with DOMMatrix so it also runs
+ * under the node test environment.
+ */
+
+type Affine = { a: number; b: number; c: number; d: number; e: number; f: number }
+
+const IDENTITY: Affine = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
+
+/** `m` then `n`, matching how canvas transforms post-multiply. */
+function compose(m: Affine, n: Affine): Affine {
+  return {
+    a: m.a * n.a + m.c * n.b,
+    b: m.b * n.a + m.d * n.b,
+    c: m.a * n.c + m.c * n.d,
+    d: m.b * n.c + m.d * n.d,
+    e: m.a * n.e + m.c * n.f + m.e,
+    f: m.b * n.e + m.d * n.f + m.f,
+  }
+}
+
+const translated = (m: Affine, x: number, y: number) =>
+  compose(m, { a: 1, b: 0, c: 0, d: 1, e: x, f: y })
+
+const scaled = (m: Affine, x: number, y: number) =>
+  compose(m, { a: x, b: 0, c: 0, d: y, e: 0, f: 0 })
+
+function rotated(m: Affine, deg: number): Affine {
+  const r = (deg * Math.PI) / 180
+  const cos = Math.cos(r)
+  const sin = Math.sin(r)
+  return compose(m, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 })
+}
+
+const at = (m: Affine, x: number, y: number) => ({
+  x: m.a * x + m.c * y + m.e,
+  y: m.b * x + m.d * y + m.f,
+})
+
+export type Anchors = {
+  /** Outer tip of each claw. */
+  pawL: { x: number; y: number }
+  pawR: { x: number; y: number }
+  /** Where a held fan of cards sits — between the claws, a shade below them. */
+  fan: { x: number; y: number }
+  head: { x: number; y: number }
+  chest: { x: number; y: number }
+  /** Body tilt in degrees, so held things lean with him. */
+  angle: number
+  /** Vertical squash, so held things move with a flinch. */
+  squash: number
+}
+
+/**
+ * Points on the drawn sprite, in the same canvas pixels `clawdBounds` returns.
+ *
+ * Breathing is inside the chain, so anything anchored here rises and falls
+ * with him without a line of code spent on it.
+ */
+export function clawdAnchors(
+  p: ParamSet,
+  o: Pick<DrawOpts, 'unit' | 'x' | 'y'>,
+): Anchors {
+  const u = o.unit
+  const facing = p.facing < 0 ? -1 : 1
+
+  let m = translated(IDENTITY, o.x, o.y)
+  m = translated(m, p.posX * u, p.posY * u)
+  m = rotated(m, p.angle)
+  m = scaled(m, p.scaleX * facing, p.scaleY)
+  const breath = p.breath * 0.16
+  m = translated(m, 0, -breath * u * 0.5)
+  m = translated(m, -ANCHOR.x * u, -ANCHOR.y * u)
+
+  // Same pivot and sign convention as `drawClaw`, so the tip lands on the
+  // block the renderer actually paints.
+  const clawTip = (side: -1 | 1, angleDeg: number) => {
+    const pivotX = side < 0 ? SHELL.x : SHELL.x + SHELL.w
+    let c = translated(m, pivotX * u, (CLAW.y + CLAW.h / 2) * u)
+    c = rotated(c, angleDeg * side * -1)
+    return at(c, side < 0 ? -CLAW.w * u : CLAW.w * u, 0)
+  }
+
+  const pawL = clawTip(-1, p.clawL)
+  const pawR = clawTip(1, p.clawR)
+  const midX = SHELL.x + SHELL.w / 2
+
+  // A fan of cards is held against the lower body, not up at eye level — and
+  // it has to be, because the whole point of him holding cards is that you
+  // can still see his face over the top of them. So the anchor sits low on
+  // the shell and is only pulled part way toward the claws: enough that
+  // dealing visibly jostles the hand, not so much that a raised pincer lifts
+  // the cards over his eyes.
+  const hold = at(m, midX * u, (SHELL.y + 5) * u)
+  const pawMidX = (pawL.x + pawR.x) / 2
+  const pawMidY = (pawL.y + pawR.y) / 2
+
+  return {
+    pawL,
+    pawR,
+    fan: {
+      x: hold.x * 0.55 + pawMidX * 0.45,
+      y: hold.y * 0.75 + pawMidY * 0.25,
+    },
+    head: at(m, midX * u, (SHELL.y + EYE.y) * u),
+    chest: at(m, midX * u, (SHELL.y + 4) * u),
+    angle: p.angle,
+    squash: p.scaleY,
+  }
+}
+
 /** Bounding box of the drawn sprite in canvas pixels, for hit testing. */
 export function clawdBounds(p: ParamSet, o: Pick<DrawOpts, 'unit' | 'x' | 'y'>) {
   const u = o.unit
