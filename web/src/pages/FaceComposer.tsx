@@ -47,6 +47,14 @@ export default function FaceComposer({
     }
   }
 
+  /*
+    Collapsing belongs to the table and nowhere else. Off the table the
+    composer is the only way to say anything at all, so it is never a chip,
+    never hidden behind a click, and the hide control is not drawn — a room
+    with nothing over it has nothing for the composer to get out of the way
+    of. A stale `open: false` left over from a finished hand is ignored here
+    rather than repaired upstream, so there is one place that decides this.
+  */
   const showChip = inGame && !open
 
   return (

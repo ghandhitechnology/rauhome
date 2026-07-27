@@ -4,6 +4,7 @@ import { ModeProvider, useMode } from './mode'
 import { useGlobalHotkey } from './hooks/useGlobalHotkey'
 import { Link, Navigate, useLocation } from './router'
 import { live } from './live'
+import { publishTier } from './clawd/quality'
 import PageSkeleton from './components/PageSkeleton'
 import {
   Conversation,
@@ -57,6 +58,8 @@ function Shell() {
   }, [loc.pathname])
 
   useEffect(() => {
+    // The tier is a startup fact for CSS as much as for the canvas.
+    publishTier()
     api.resourceProfile().then((profile) => {
       document.documentElement.dataset.resourceProfile = profile.name || 'balanced'
     }).catch(() => {

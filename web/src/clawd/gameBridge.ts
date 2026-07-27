@@ -86,8 +86,25 @@ type Snapshot = {
 const EPSILON = 0.01
 
 class GameBridge {
+  private isActive = false
+
   /** True from the moment Play is pressed until the room is his again. */
-  active = false
+  get active(): boolean {
+    return this.isActive
+  }
+
+  /**
+   * Setting this also publishes it to the document, because the render loop
+   * is upstream of the game and must not import it: the canvas hook reads a
+   * dataset flag to know it should be running at the display's rate rather
+   * than the room's idle rate. One flag, written where the fact changes.
+   */
+  set active(on: boolean) {
+    this.isActive = on
+    if (typeof document === 'undefined') return
+    if (on) document.documentElement.dataset.rauTable = 'true'
+    else delete document.documentElement.dataset.rauTable
+  }
 
   /** A card the player is considering, in screen pixels. He looks at it. */
   hoverPoint: Pt | null = null

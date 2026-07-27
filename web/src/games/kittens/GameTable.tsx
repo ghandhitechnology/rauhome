@@ -19,6 +19,7 @@
  * locally is the Nope countdown, from the deadline in the payload.
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -26,6 +27,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type RefObject,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { gameBridge, type Pt } from '../../clawd/gameBridge'
@@ -33,6 +35,7 @@ import { GAME_CARD, GAME_TABLE, KNOWN_TOP_SPOT } from '../../clawd/gameTableLaye
 import { CARD_ART, CardBack, CardDefs, CardFrame, type CardId } from './art'
 import { diffBeats } from './beats'
 import {
+  arrivedSlots,
   diffFlights,
   reducedMotion,
   runFlight,
@@ -49,7 +52,7 @@ import {
 } from './handMachine'
 import { CARD_META, cardTitle } from './meta'
 import { phaseStore, usePhase } from './phase'
-import { gameStore, useCountdown, useGame, type Move, type TableState } from './useGame'
+import { gameStore, useCountdownVar, useGame, type Move, type TableState } from './useGame'
 import './Kittens.css'
 
 const NEVER_PLAYABLE_ALONE = new Set<CardId>(['exploding_kitten', 'defuse', 'nope'])
@@ -57,7 +60,7 @@ const NEVER_PLAYABLE_ALONE = new Set<CardId>(['exploding_kitten', 'defuse', 'nop
 /** The full width of the Nope window, in ms. Matches the server. */
 const NOPE_MS = 5000
 
-function Card({ id }: { id: CardId }) {
+const Card = memo(function Card({ id }: { id: CardId }) {
   const meta = CARD_META[id]
   const Face = CARD_ART[id]
   return (
@@ -65,7 +68,7 @@ function Card({ id }: { id: CardId }) {
       <Face />
     </CardFrame>
   )
-}
+})
 
 /**
  * Place something in the world layer.
@@ -133,6 +136,9 @@ function actionFor(table: TableState, chosen: CardId[]): Action | null {
   }
   return null
 }
+
+/** How long the fan takes to open a gap. Matches `ek-make-room` in the CSS. */
+const GAP_MS = 200
 
 /* ───────────────────────────────────────────────────────── the world */
 
@@ -226,10 +232,14 @@ function PileTags({
 /** His hand. Backs only, and there is nothing else here to show. */
 function RauHand({
   count,
+  held,
   thinking,
   attach,
 }: {
+  /** Backs to draw — fewer than `held` while the cards are still arriving. */
   count: number
+  /** What he is actually holding, which is what a screen reader should hear. */
+  held: number
   thinking: boolean
   attach: (el: HTMLDivElement | null) => void
 }) {
@@ -237,7 +247,7 @@ function RauHand({
     <div
       className={`ek-rau-hand ${thinking ? 'is-thinking' : ''}`}
       ref={attach}
-      aria-label={`Rau is holding ${count} cards`}
+      aria-label={`Rau is holding ${held} cards`}
     >
       {Array.from({ length: count }, (_, i) => (
         <div
@@ -267,10 +277,11 @@ function NopeRing({ table, onNope, onPass }: {
   onPass: () => void
 }) {
   const pending = table.pending
-  const left = useCountdown(pending?.deadline ?? null)
+  // The ring is written straight to the node, one property per frame, rather
+  // than re-rendering this component sixty times a second for five seconds.
+  const ring = useCountdownVar(pending?.deadline ?? null, NOPE_MS)
   if (!pending) return null
 
-  const frac = Math.max(0, Math.min(1, left / NOPE_MS))
   const yours = pending.waiting_on === 'user'
   const played = pending.cards.map(cardTitle).join(' + ')
   const deep =
@@ -291,7 +302,7 @@ function NopeRing({ table, onNope, onPass }: {
           <button
             type="button"
             className="ek-nope-card"
-            style={{ '--left': frac } as CSSProperties}
+            ref={ring as RefObject<HTMLButtonElement | null>}
             onClick={onNope}
             aria-label="Play Nope"
             title="NOPE"
@@ -348,7 +359,7 @@ function GameOverScene({ table, onAgain, onLeave }: {
 
 /* ───────────────────────────────────────────────────────────── table */
 
-export default function GameTable() {
+export default memo(function GameTable() {
   const { table, busy, error } = useGame()
   const phase = usePhase()
   const [hand, rawDispatch] = useReducer(handReducer, IDLE_HAND)
@@ -367,8 +378,30 @@ export default function GameTable() {
     handRef.current = handReducer(handRef.current, event)
     rawDispatch(event)
   }, [])
-  /** How many of your cards have landed. Infinity except during a deal. */
-  const [dealtCount, setDealtCount] = useState(Infinity)
+  /*
+    How many cards have landed on each side. `Infinity` means "all of them",
+    which is the answer for every phase except a deal in progress.
+
+    The initial value has to be read from the phase rather than assumed,
+    because this component mounts the moment the server confirms the deal —
+    while he is still walking to the table, a good three seconds before the
+    cards are dealt. Starting at `Infinity` meant the whole hand appeared at
+    once during the walk-on and was then swept away and re-dealt properly,
+    which is the deal happening twice, badly, the first time.
+  */
+  const dealPending = phase === 'summoning' || phase === 'dealing'
+  const [dealtCount, setDealtCount] = useState(() => (dealPending ? 0 : Infinity))
+  const [dealtRau, setDealtRau] = useState(() => (dealPending ? 0 : Infinity))
+  /*
+    Slots in your hand that a card is on its way to.
+
+    A card you draw used to appear in the fan at full size the instant the
+    server said you had it, and *then* a copy of it flew over to where it
+    already was. Holding the slot empty until the flight lands — and opening
+    the gap for it first — is what makes the card look like it goes in rather
+    than like it was already there.
+  */
+  const [arriving, setArriving] = useState<number[]>([])
   const [named, setNamed] = useState<CardId | null>(null)
   const [insertAt, setInsertAt] = useState(0)
   const [hint, setHint] = useState('')
@@ -386,7 +419,10 @@ export default function GameTable() {
   const attachWorld = useCallback((el: HTMLDivElement | null) => {
     gameBridge.attachWorld(el)
   }, [])
+  /** His fan, kept as a ref too: flight sizing measures a card off it. */
+  const rauHandRef = useRef<HTMLDivElement | null>(null)
   const attachRau = useCallback((el: HTMLDivElement | null) => {
+    rauHandRef.current = el
     gameBridge.attachRauHand(el)
   }, [])
   const attachTags = useCallback((el: HTMLDivElement | null) => {
@@ -442,6 +478,35 @@ export default function GameTable() {
     return { x: (snap?.w ?? 0) / 2, y: (snap?.h ?? 0) - 90 }
   }, [])
 
+  /**
+   * How big a card is at a given spot, relative to the card in flight.
+   *
+   * Measured rather than declared: the piles and his fan live under the
+   * camera matrix, so their on-screen size depends on how far the camera has
+   * pushed in, and yours is a `clamp()` against the viewport. Both are things
+   * only the browser knows. Every fallback is deliberately a shrink — a card
+   * that arrives slightly small settles into place, one that arrives large
+   * pops.
+   */
+  const scaleOf = useCallback((spot: FlightSpot): number => {
+    const flightW = templateRef.current?.getBoundingClientRect().width ?? 0
+    if (flightW <= 0) return 1
+    const snap = gameBridge.current
+    if (spot === 'deck' || spot === 'discard') {
+      const r = spot === 'deck' ? snap?.deck : snap?.discard
+      return r && r.w > 0 ? r.w / flightW : 0.7
+    }
+    if (spot === 'rauHand') {
+      const his = rauHandRef.current?.querySelector('.ek-rau-card')
+      const w = his?.getBoundingClientRect().width ?? 0
+      if (w > 0) return w / flightW
+      // He is between hands. His backs are a little smaller than the pile.
+      const deck = snap?.deck
+      return deck && deck.w > 0 ? (deck.w * 0.8) / flightW : 0.6
+    }
+    return 1
+  }, [])
+
   const overDiscard = useCallback((x: number, y: number) => {
     const r = gameBridge.current?.discard
     if (!r) return false
@@ -456,6 +521,7 @@ export default function GameTable() {
     if (phase !== 'dealing' || !table) return
     let cancelled = false
     setDealtCount(0)
+    setDealtRau(0)
 
     // Alternating, the way anyone deals: one to you, one to him, round again.
     const order: ('you' | 'him')[] = []
@@ -468,6 +534,7 @@ export default function GameTable() {
     const finish = () => {
       if (cancelled) return
       setDealtCount(Infinity)
+      setDealtRau(Infinity)
       phaseStore.dealt()
     }
 
@@ -487,12 +554,15 @@ export default function GameTable() {
       const deck = pointOf('deck')
       const his = pointOf('rauHand')
       let slot = 0
+      let hisSlot = 0
       const jobs = order.map((who, i) => {
         const delay = flicks[i] ?? i * DEAL_STAGGER_MS
+        const mine = who === 'you'
         let to = his
-        let landing = -1
-        if (who === 'you') {
-          landing = slot++
+        // Which card in that side's hand this one is, so it can be revealed
+        // when — and only when — the card flying to it arrives.
+        const landing = mine ? slot++ : hisSlot++
+        if (mine) {
           const el = cardEls.current.get(landing)
           if (el) {
             const r = el.getBoundingClientRect()
@@ -503,11 +573,13 @@ export default function GameTable() {
         }
         return runFlight(layer, template, deck, to, {
           delay,
-          spin: who === 'you' ? 16 : -12,
+          spin: mine ? 16 : -12,
+          fromScale: scaleOf('deck'),
+          toScale: scaleOf(mine ? 'playerHand' : 'rauHand'),
         }).then(() => {
-          if (!cancelled && landing >= 0) {
-            setDealtCount((n) => Math.max(n, landing + 1))
-          }
+          if (cancelled) return
+          const bump = mine ? setDealtCount : setDealtRau
+          bump((n) => Math.max(n, landing + 1))
         })
       })
       void Promise.all(jobs).then(finish)
@@ -517,7 +589,7 @@ export default function GameTable() {
       cancelled = true
       cancelAnimationFrame(raf)
     }
-  }, [phase, table?.game_id, pointOf])
+  }, [phase, table?.game_id, pointOf, scaleOf])
 
   /* ── everything else that moves ─────────────────────────────────── */
 
@@ -533,13 +605,70 @@ export default function GameTable() {
     const layer = screenRef.current
     const template = templateRef.current
     if (!layer || !template) return
-    diffFlights(prev, table).forEach((req, i) => {
+
+    const requests = diffFlights(prev, table)
+    const slots = arrivedSlots(prev.hand, table.hand)
+    // Cards coming to you are flown into a specific slot; everything else —
+    // his hand, the discard pile — is a place, not a position in a fan.
+    const yours = requests.filter((r) => r.to === 'playerHand')
+    const elsewhere = requests.filter((r) => r.to !== 'playerHand')
+
+    elsewhere.forEach((req, i) => {
       void runFlight(layer, template, pointOf(req.from), pointOf(req.to), {
         delay: i * 80,
         spin: req.to === 'discard' ? 18 : -10,
+        fromScale: scaleOf(req.from),
+        toScale: scaleOf(req.to),
       })
     })
-  }, [table, phase, pointOf])
+
+    if (yours.length === 0) return
+    if (slots.length === 0 || reducedMotion()) {
+      yours.forEach((req, i) => {
+        void runFlight(layer, template, pointOf(req.from), pointOf('playerHand'), {
+          delay: i * 80,
+          spin: -10,
+          fromScale: scaleOf(req.from),
+          toScale: 1,
+        })
+      })
+      return
+    }
+
+    let cancelled = false
+    setArriving(slots)
+    // The gap opens first and the card is thrown into it, rather than both at
+    // once: a card cannot slide into a space that is still being made, and
+    // the slot cannot be measured until it is roughly the size it will end up.
+    const timer = setTimeout(() => {
+      if (cancelled) return
+      const jobs = yours.map((req, i) => {
+        const slot = slots[i] ?? slots[slots.length - 1]
+        const el = cardEls.current.get(slot)
+        const rect = el?.getBoundingClientRect()
+        const to = rect
+          ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+          : pointOf('playerHand')
+        return runFlight(layer, template, pointOf(req.from), to, {
+          delay: i * 80,
+          spin: -10,
+          fromScale: scaleOf(req.from),
+          toScale: 1,
+        })
+      })
+      void Promise.all(jobs).then(() => {
+        if (!cancelled) setArriving([])
+      })
+    }, GAP_MS)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      // Whatever was in the air belongs to a hand that no longer exists. The
+      // slots are indices into it, so they cannot outlive it.
+      setArriving([])
+    }
+  }, [table, phase, pointOf, scaleOf])
 
   /* ── moves ──────────────────────────────────────────────────────── */
 
@@ -717,7 +846,12 @@ export default function GameTable() {
           glowing={table.phase === 'nope_window'}
           dropTarget={hand.mode === 'dragging' && hand.overDiscard}
         />
-        <RauHand count={table.hand_counts.rau} thinking={thinking} attach={attachRau} />
+        <RauHand
+          count={Math.min(table.hand_counts.rau, dealtRau)}
+          held={table.hand_counts.rau}
+          thinking={thinking}
+          attach={attachRau}
+        />
 
         {table.known_top.length > 0 && (
           <div
@@ -955,7 +1089,8 @@ export default function GameTable() {
           {table.hand.map((id, i) => {
             const isDragging = hand.mode === 'dragging' && hand.index === i
             const isRaised = raised.includes(i)
-            const landed = i < dealtCount
+            const coming = arriving.includes(i)
+            const landed = i < dealtCount && !coming
             const style: CSSProperties = {
               '--i': i,
               '--n': table.hand.length,
@@ -974,7 +1109,7 @@ export default function GameTable() {
                 }}
                 className={`ek-card ${isRaised ? 'is-raised' : ''} ${
                   isDragging ? 'is-dragging' : ''
-                } ${landed ? '' : 'is-undealt'}`}
+                } ${landed ? '' : 'is-undealt'} ${coming ? 'is-arriving' : ''}`}
                 style={style}
                 disabled={!interactive}
                 onPointerDown={onCardDown(i)}
@@ -1000,4 +1135,4 @@ export default function GameTable() {
       </div>
     </div>
   )
-}
+})

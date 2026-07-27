@@ -22,6 +22,19 @@
 .ek-room {
   position: absolute;
   inset: 0;
+  /* One number for every screen-space card: the fan you hold, the card in
+     flight, and the template it is cloned from. They are the same object at
+     three moments, so a card must not change size on landing. */
+  --ek-card-w: clamp(98px, 11.5vw, 152px);
+  /* Two curves, used everywhere, so the whole table moves with one hand.
+     `--ek-out` leaves immediately and coasts in — what a control does when
+     it answers you. `--ek-settle` carries a little past and comes back —
+     what an object does when it lands. */
+  --ek-out: cubic-bezier(0.16, 0.84, 0.28, 1);
+  /* Kept in step with `GAP_MS` in GameTable: the flight is timed to land in
+     a gap this animation has already opened. */
+  --ek-gap: 200ms;
+  --ek-settle: cubic-bezier(0.22, 1.1, 0.36, 1);
   /* The room shows through. Clicks that are not on a card fall past to the
      canvas, so he can still be poked and the wall panels still open. */
   pointer-events: none;
@@ -38,7 +51,15 @@
   height: 0;
   z-index: 25;
   transform-origin: 0 0;
-  will-change: transform;
+  /* No `will-change: transform` here, however tempting it looks on a layer
+     that is written every frame. The camera matrix magnifies this layer about
+     twentyfold, and a promoted layer rasterises its contents once, at the
+     scale it first saw — which, on the opening push-in, is the scale *before*
+     the camera arrives. Everything in the world would then stay a blurry
+     enlargement of that first bake for the rest of the game. Left
+     unpromoted, the card art is re-rasterised from the vectors at the real
+     on-screen size every paint. The layer holds a handful of small SVGs, so
+     that costs far less than the blur it avoids. */
   contain: layout style;
   pointer-events: none;
   animation: ek-world-in 420ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
@@ -80,7 +101,10 @@
   border: 0;
   background: none;
   border-radius: 0.5px;
-  filter: drop-shadow(0 0.3px 0.5px rgba(0, 0, 0, 0.65));
+  /* Box-shadows throughout the world layer, for the reason the layer is not
+     promoted: it repaints every frame the camera moves, and a filter would
+     re-rasterise each card from its alpha on every one of those frames. */
+  box-shadow: 0 0.3px 0.5px rgba(0, 0, 0, 0.65);
 }
 
 .ek-pile-face svg,
@@ -112,7 +136,7 @@
 
 button.ek-deck {
   cursor: default;
-  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.3, 1), filter 180ms ease;
+  transition: transform 150ms var(--ek-out), box-shadow 150ms ease;
 }
 
 button.ek-deck.is-live {
@@ -122,8 +146,9 @@ button.ek-deck.is-live {
 button.ek-deck.is-live:hover,
 button.ek-deck.is-live:focus-visible {
   transform: translateY(-0.5px) scale(1.03);
-  filter: drop-shadow(0 0.8px 1px rgba(0, 0, 0, 0.7))
-    drop-shadow(0 0 0.4px var(--accent-a40));
+  box-shadow:
+    0 0.8px 1px rgba(0, 0, 0, 0.7),
+    0 0 0.5px 0.1px var(--accent-a40);
 }
 
 .ek-discard.is-pending .ek-pile-face {
@@ -132,8 +157,9 @@ button.ek-deck.is-live:focus-visible {
 
 @keyframes ek-pending {
   to {
-    filter: drop-shadow(0 0.3px 0.5px rgba(0, 0, 0, 0.65))
-      drop-shadow(0 0 0.9px rgba(255, 111, 94, 0.95));
+    box-shadow:
+      0 0.3px 0.5px rgba(0, 0, 0, 0.65),
+      0 0 1px 0.2px rgba(255, 111, 94, 0.95);
   }
 }
 
@@ -201,7 +227,7 @@ button.ek-deck.is-live:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 0.3px;
-  animation: ek-known-in 300ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  animation: ek-known-in 260ms var(--ek-settle) both;
 }
 
 @keyframes ek-known-in {
@@ -213,7 +239,8 @@ button.ek-deck.is-live:focus-visible {
 
 .ek-known-card {
   width: 3.1px;
-  filter: drop-shadow(0 0.3px 0.6px rgba(0, 0, 0, 0.7));
+  border-radius: 0.2px;
+  box-shadow: 0 0.3px 0.6px rgba(0, 0, 0, 0.7);
 }
 
 .ek-known-card svg {
@@ -236,7 +263,9 @@ button.ek-deck.is-live:focus-visible {
   width: 0;
   height: 0;
   transform-origin: 50% 100%;
-  will-change: transform;
+  /* Unpromoted for the same reason as `.ek-world`: these cards ride under the
+     camera matrix, and a layer of their own would bake them at the opening
+     zoom and then blow that bake up next to his head. */
 }
 
 .ek-rau-card {
@@ -252,7 +281,8 @@ button.ek-deck.is-live:focus-visible {
   transform: translate(-50%, -50%)
     rotate(calc((var(--i) - (var(--n) - 1) / 2) * 7deg));
   transform-origin: 50% 130%;
-  filter: drop-shadow(0 0.2px 0.4px rgba(0, 0, 0, 0.7));
+  border-radius: 0.22px;
+  box-shadow: 0 0.2px 0.4px rgba(0, 0, 0, 0.7);
 }
 
 /* One card creeps out while he decides. It is the only tell he has. */
@@ -279,7 +309,10 @@ button.ek-deck.is-live:focus-visible {
      straight before lifting it. */
   --rot: calc((var(--i) - (var(--n) - 1) / 2) * 3.4deg);
   position: relative;
-  width: clamp(76px, 9vw, 118px);
+  /* Big enough to read the art without hovering. His side of the table is
+     small and far away on purpose; yours is the hand you are actually
+     playing, so it is the one thing in the frame drawn at reading size. */
+  width: var(--ek-card-w);
   aspect-ratio: 240 / 336;
   padding: 0;
   border: 0;
@@ -287,12 +320,17 @@ button.ek-deck.is-live:focus-visible {
   border-radius: 9px;
   transform: rotate(var(--rot));
   transform-origin: bottom center;
-  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.55));
+  /* A box-shadow, not a `drop-shadow()` filter. The card is a rounded
+     rectangle of exactly this radius, so the two are indistinguishable at
+     rest — but a filter is re-rasterised from the card's alpha on every
+     frame it moves, and there are ten of these moving at once during a deal.
+     Shadows are the cheapest thing here to get wrong and the most expensive
+     thing here to animate. */
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.55);
   transition:
-    transform 180ms cubic-bezier(0.2, 0.8, 0.3, 1),
-    filter 180ms ease,
-    opacity 180ms ease;
-  will-change: transform;
+    transform 150ms var(--ek-out),
+    box-shadow 150ms ease,
+    opacity 150ms ease;
   touch-action: none;
 }
 
@@ -302,16 +340,21 @@ button.ek-card:not(:disabled) {
 
 button.ek-card:disabled {
   cursor: default;
-  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5)) saturate(0.6) brightness(0.78);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+  filter: saturate(0.6) brightness(0.78);
 }
 
 /* Hover-lift. The card you are considering comes up out of the fan — and he
    looks at it, which is handled where the pointer is read, not here. */
 button.ek-card:not(:disabled):hover,
 button.ek-card:not(:disabled):focus-visible {
-  transform: rotate(var(--rot)) translateY(-26px) scale(1.05);
-  filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.62));
+  transform: rotate(var(--rot)) translateY(-32px) scale(1.05);
+  box-shadow: 0 18px 28px rgba(0, 0, 0, 0.62);
   z-index: 6;
+  /* Promoted for the length of the gesture and not one moment longer: a card
+     that keeps its own layer while it sits in the fan is a card rasterised
+     once and then scaled by everything that happens to the fan. */
+  will-change: transform;
 }
 
 button.ek-card.is-raised {
@@ -323,14 +366,84 @@ button.ek-card.is-raised {
 
 button.ek-card.is-dragging {
   cursor: grabbing;
-  transition: filter 180ms ease;
-  filter: drop-shadow(0 26px 34px rgba(0, 0, 0, 0.7));
+  transition: box-shadow 150ms ease;
+  box-shadow: 0 26px 34px rgba(0, 0, 0, 0.7);
+  will-change: transform;
+}
+
+/*
+ * The landing.
+ *
+ * The flying card is removed the instant it arrives and this one takes over,
+ * so without a settle the hand-off is a swap: one card stops, an identical
+ * card appears. A short overshoot on the card that stays makes the two read
+ * as one object arriving. `--rot` is restated in every frame for the same
+ * reason the hover states restate it.
+ */
+button.ek-card:not(.is-undealt) {
+  /* `backwards`, never `both`: an animation that holds its last frame would
+     outrank the hover-lift for the rest of the game. */
+  animation: ek-land 260ms var(--ek-settle) backwards;
+}
+
+@keyframes ek-land {
+  from {
+    transform: rotate(var(--rot)) translateY(14px) scale(0.93);
+    opacity: 0;
+  }
+  60% {
+    transform: rotate(var(--rot)) translateY(-5px) scale(1.02);
+    opacity: 1;
+  }
+  to {
+    transform: rotate(var(--rot));
+    opacity: 1;
+  }
+}
+
+/* Low tier: the card still arrives, it just arrives without the flourish. */
+:root[data-quality='low'] button.ek-card:not(.is-undealt) {
+  animation: none;
 }
 
 /* Dealt but not landed yet — the flying card is what you are watching. */
 button.ek-card.is-undealt {
   opacity: 0;
   transition: none;
+  /* It is not there yet. Grabbing at the space it will occupy should do
+     nothing, not play the card that is still in the air. */
+  pointer-events: none;
+}
+
+/*
+ * The gap.
+ *
+ * A card arriving mid-hand holds its slot open before it gets there: the
+ * element is in the fan from the moment the server says you hold it, but at
+ * no width, and it grows into its place over the length of `GAP_MS` while the
+ * card itself is still in the air. What you see is the fan parting and a card
+ * going into the space that opened — not a card appearing and then being
+ * flown to where it already was.
+ *
+ * Both the width and the overlap animate: a card in the fan occupies
+ * `width + margin-left`, and the margin is negative, so opening only one of
+ * the two would have the neighbours lurch at the end.
+ */
+button.ek-card.is-arriving {
+  animation: ek-make-room var(--ek-gap) var(--ek-out) both;
+}
+
+@keyframes ek-make-room {
+  from {
+    width: 0;
+    margin-left: 0;
+  }
+}
+
+/* Low tier and reduced motion: the slot is simply there, and the card lands
+   in it. Nothing moves that did not have to. */
+:root[data-quality='low'] button.ek-card.is-arriving {
+  animation: none;
 }
 
 /* -------------------------------------------------------------- your hand */
@@ -342,10 +455,11 @@ button.ek-card.is-undealt {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  /* Held up to your chest: part of the fan sits off the bottom of the frame,
-     the way your own hand does when you are the one at the table. */
-  transform: translate(-50%, 12%);
-  padding-top: 40px;
+  /* Held up rather than resting in your lap: only the very bottom edge runs
+     off the frame, so the whole face of every card is on screen and the fan
+     reads as a hand you are holding up to look at. */
+  transform: translate(-50%, 4%);
+  padding-top: 52px;
 }
 
 /* Overlap, then let each card claim its own space back on hover. The overlap
@@ -353,7 +467,7 @@ button.ek-card.is-undealt {
    and a hand you cannot read without hovering every card is a hand you play
    badly. */
 .ek-fan > * + * {
-  margin-left: clamp(-32px, -2.2vw, -14px);
+  margin-left: clamp(-42px, -2.9vw, -18px);
 }
 
 .ek-fan.is-locked {
@@ -385,7 +499,7 @@ button.ek-card.is-undealt {
   justify-items: center;
   gap: var(--s-4);
   max-width: min(620px, 92vw);
-  animation: ek-raise-in 220ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  animation: ek-raise-in 200ms var(--ek-settle) both;
 }
 
 @keyframes ek-raise-in {
@@ -617,8 +731,8 @@ button.ek-card.is-undealt {
   background: none;
   cursor: pointer;
   filter: drop-shadow(0 14px 26px rgba(0, 0, 0, 0.66));
-  animation: ek-nope-rise 260ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
-  transition: transform 140ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  animation: ek-nope-rise 240ms var(--ek-settle) both;
+  transition: transform 140ms var(--ek-out);
 }
 
 @keyframes ek-nope-rise {
@@ -728,7 +842,7 @@ button.ek-card.is-undealt {
   position: absolute;
   left: -9999px;
   top: 0;
-  width: clamp(76px, 9vw, 118px);
+  width: var(--ek-card-w);
   aspect-ratio: 240 / 336;
   pointer-events: none;
 }
@@ -737,11 +851,13 @@ button.ek-card.is-undealt {
   position: absolute;
   left: 0;
   top: 0;
-  width: clamp(76px, 9vw, 118px);
+  width: var(--ek-card-w);
   aspect-ratio: 240 / 336;
   z-index: 12;
   pointer-events: none;
-  filter: drop-shadow(0 16px 26px rgba(0, 0, 0, 0.6));
+  border-radius: 9px;
+  box-shadow: 0 16px 26px rgba(0, 0, 0, 0.6);
+  /* This one keeps its layer: it exists only while it is moving. */
   will-change: transform;
 }
 
@@ -876,7 +992,7 @@ button.ek-card.is-undealt {
 /* ------------------------------------------------------------- the flip */
 
 .ek-flip-in {
-  animation: ek-flip 300ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  animation: ek-flip 280ms var(--ek-settle) both;
 }
 
 @keyframes ek-flip {
@@ -901,7 +1017,9 @@ button.ek-card.is-undealt {
   }
 
   .ek-rau-hand.is-thinking .ek-rau-card:first-child,
-  .ek-discard.is-pending .ek-pile-face {
+  .ek-discard.is-pending .ek-pile-face,
+  button.ek-card:not(.is-undealt),
+  button.ek-card.is-arriving {
     animation: none;
   }
 

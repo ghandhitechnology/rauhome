@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { diffBeats } from './beats'
-import { diffFlights } from './flights'
+import { arrivedSlots, diffFlights } from './flights'
 import type { CardId } from './art'
 import type { Seat, TableState } from './useGame'
 
@@ -184,5 +184,40 @@ describe('which cards visibly move', () => {
   it('flies nothing for a shuffle or a peek', () => {
     expect(diffFlights(tableOf(), tableOf({ known_top: ['skip'] as CardId[] }))).toEqual([])
     expect(diffFlights(tableOf(), tableOf())).toEqual([])
+  })
+})
+
+/*
+ * Where a card lands in your fan.
+ *
+ * The engine sorts a hand whenever it gives you a card, so "the new one" is
+ * not "the last one" — and with duplicates in hand, telling the new slot from
+ * an old one is the whole job.
+ */
+describe('arrivedSlots', () => {
+  it('finds a card appended to the end', () => {
+    expect(arrivedSlots(['skip', 'attack'], ['skip', 'attack', 'nope'])).toEqual([2])
+  })
+
+  it('finds a card sorted into the middle', () => {
+    expect(arrivedSlots(['attack', 'skip'], ['attack', 'defuse', 'skip'])).toEqual([1])
+  })
+
+  it('claims one slot of a duplicate, not all of them', () => {
+    expect(arrivedSlots(['skip', 'skip'], ['skip', 'skip', 'skip'])).toEqual([2])
+  })
+
+  it('finds every slot when several arrive at once', () => {
+    expect(arrivedSlots([], ['skip', 'nope'])).toEqual([0, 1])
+  })
+
+  it('finds nothing when the hand only shrank', () => {
+    expect(arrivedSlots(['skip', 'nope'], ['skip'])).toEqual([])
+  })
+
+  it('finds nothing when a card was swapped for one already held', () => {
+    // Two of a kind stolen away and a duplicate handed back: the count is the
+    // same and so is the content, so no slot is new.
+    expect(arrivedSlots(['skip', 'nope'], ['skip', 'nope'])).toEqual([])
   })
 })

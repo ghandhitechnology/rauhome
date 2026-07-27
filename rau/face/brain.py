@@ -210,7 +210,9 @@ FACE_TOOLS = [
     panels.PRESENT_PANEL_TOOL,
     panels.COMMISSION_PANEL_TOOL,
     web.BROWSE_WEB_TOOL,
-    *kittens_tools.TOOLS,
+    # Deal and clear only — playing cards is the player half's job.
+    kittens_tools.START_GAME_TOOL,
+    kittens_tools.END_GAME_TOOL,
 ]
 
 #: The face model is chosen for latency, so its window is held far below what
@@ -247,10 +249,10 @@ VOICE_SLIM_TOOL_NAMES = frozenset(
         "set_goal",
         "clear_goal",
         "goal_note",
-        # "let's play" and every move after it are ordinary spoken turns. A game
-        # you could not deal until round 2 would be a game you had to ask for
-        # twice.
-        *kittens_tools.TOOL_NAMES,
+        # "let's play" deals on round 0. Playing cards mid-hand is the player
+        # half's job, not the talker's — so play_kittens_card stays off this set.
+        "start_kittens",
+        "end_kittens",
     }
 )
 _DEEP_WORK_MARKERS = (
@@ -800,7 +802,6 @@ def _record_tool_round(
             "start_hard_task": "Starting deep work",
             "body_choreography": "Planning movement",
             "start_kittens": "Dealing a game",
-            "play_kittens_card": "Making a move",
             "end_kittens": "Clearing the table",
             "show_panel": "Making something to look at",
             "list_panels": "Looking at the wall",
@@ -885,6 +886,21 @@ def _call_face(provider, slot, messages):
     )
 
 
+def _journal_table_chat(user_text: str, reply: str) -> None:
+    """While a hand is on, both halves need to see the banter."""
+    if not kittens.active():
+        return
+    from rau.games.kittens import journal as kittens_journal
+
+    kittens_journal.record("user", "user_chat", user_text)
+    kittens_journal.record("rau", "rau_chat", reply)
+    # He has just answered them properly. Hold the proactive table talk back
+    # for a beat so the next thing they hear is not him talking over himself.
+    from rau.games.kittens import banter as kittens_banter
+
+    kittens_banter.note_user_chat()
+
+
 def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
     """
     Non-streaming face reply (handles skills + tools).
@@ -941,6 +957,7 @@ def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
         _maybe_compact_history()
         append_diary("user", user_text)
         append_diary("rau", spoken)
+        _journal_table_chat(user_text, spoken)
         broadcast.done(spoken)
         return spoken
     finally:
@@ -1233,6 +1250,7 @@ def chat_streaming(
         if not defer_diary:
             append_diary("user", user_text)
             append_diary("rau", spoken)
+        _journal_table_chat(user_text, spoken)
         broadcast.done(spoken)
         return StreamingReply(spoken, history_message, user_text, defer_diary, turn)
     finally:

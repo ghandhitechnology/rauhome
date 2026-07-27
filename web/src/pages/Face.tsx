@@ -476,6 +476,8 @@ export default function Face() {
   }, [])
 
   const isVoice = voiceOn
+  /** The mic is open. Talk mode uses the voice socket but never listens. */
+  const listening = modeListens(mode)
   /** A hand is actually on — the exit ritual gives the composer back early. */
   const inGame = tablePhase === 'dealing' || tablePhase === 'playing'
 
@@ -645,28 +647,36 @@ export default function Face() {
         </aside>
       )}
 
-      {isVoice && (
-        <div className="voice-hud">
-          <div className={`voice-orb ${voice.phase}`}>
-            <i
-              className="voice-orb-fill"
-              style={{
-                transform: `scale(${1 + (voice.phase === 'speaking' ? voice.outLevel : voice.micLevel) * 1.8})`,
-              }}
-            />
-          </div>
+      {/*
+        The HUD is for the mode where you cannot see what the machine is
+        doing: the mic is open, and the only way to know whether it heard you
+        is to be told. In talk mode you typed the message yourself and his
+        reply comes out of his mouth over his own head — a tile restating
+        "type below" is a caption on something already in front of you, so it
+        is not drawn at all. The one thing talk mode still needs the HUD for
+        is a voice that has broken: a reply that never arrives out loud is
+        indistinguishable from silence, so an error brings the tile back on
+        its own.
+      */}
+      {(listening || (voiceOn && !!voice.error)) && (
+        <div className={`voice-hud ${listening ? '' : 'is-quiet'}`}>
+          {listening && (
+            <div className={`voice-orb ${voice.phase}`}>
+              <i
+                className="voice-orb-fill"
+                style={{
+                  transform: `scale(${1 + (voice.phase === 'speaking' ? voice.outLevel : voice.micLevel) * 1.8})`,
+                }}
+              />
+            </div>
+          )}
           <div className="voice-read" role="status" aria-live="polite">
-            <span className={`voice-phase ${signals.working ? 'working' : voice.phase}`}>
-              {!voice.connected
-                ? 'connecting…'
-                : signals.working
-                  ? 'at the computer'
-                  : mode === 'talk'
-                    ? voice.phase === 'thinking'
-                      ? 'thinking'
-                      : voice.phase === 'speaking'
-                        ? 'speaking'
-                        : 'type below — he answers out loud'
+            {listening && (
+              <span className={`voice-phase ${signals.working ? 'working' : voice.phase}`}>
+                {!voice.connected
+                  ? 'connecting…'
+                  : signals.working
+                    ? 'at the computer'
                     : voice.phase === 'listening'
                       ? 'listening'
                       : voice.phase === 'thinking'
@@ -674,19 +684,20 @@ export default function Face() {
                         : voice.phase === 'speaking'
                           ? 'speaking — talk to cut in'
                           : 'ready'}
-            </span>
+              </span>
+            )}
             {/* Only Deepgram streams partials; the rest stay blank until final. */}
-            {(voice.partial || voice.finalText) && (
+            {listening && (voice.partial || voice.finalText) && (
               <p className={`voice-transcript ${voice.partial ? 'live' : ''}`}>
                 {voice.partial || voice.finalText}
               </p>
             )}
-            {voice.lastTurn?.interrupted && (
+            {listening && voice.lastTurn?.interrupted && (
               <p className="voice-note">cut off — he only remembers what you heard</p>
             )}
             {voice.error && <p className="voice-note bad">{voice.error}</p>}
           </div>
-          {signals.jobs.length > 0 && (
+          {listening && signals.jobs.length > 0 && (
             <div className="voice-jobs">
               {signals.jobs.map((g, i) => (
                 <span key={`${g}-${i}`} className="voice-job">

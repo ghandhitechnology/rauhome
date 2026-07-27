@@ -13,6 +13,8 @@
  */
 
 import type { Pt } from '../../clawd/gameBridge'
+import { currentTier } from '../../clawd/quality'
+import type { CardId } from './art'
 import type { Seat, TableState } from './useGame'
 
 /** The places a card can be. */
@@ -25,10 +27,37 @@ export type FlightRequest = {
   slot?: number
 }
 
-/** How long a card takes to cross the table. */
-export const FLIGHT_MS = 420
+/**
+ * Which slots in the new hand hold a card that was not there before.
+ *
+ * Not "the last one": the engine sorts a hand every time it gives a card, so a
+ * drawn Defuse lands in the middle of your fan, not on the end. Counting
+ * multiples is what makes that safe — with two Skips already in hand and a
+ * third arriving, only one of the three slots is new, and it has to be the one
+ * the card is flown to.
+ */
+export function arrivedSlots(before: CardId[], after: CardId[]): number[] {
+  const spare = new Map<CardId, number>()
+  for (const card of before) spare.set(card, (spare.get(card) ?? 0) + 1)
+  const slots: number[] = []
+  after.forEach((card, i) => {
+    const held = spare.get(card) ?? 0
+    if (held > 0) spare.set(card, held - 1)
+    else slots.push(i)
+  })
+  return slots
+}
+
+/**
+ * How long a card takes to cross the table.
+ *
+ * Most of it is spent arriving. The card leaves fast and then eases into its
+ * place over the last fifth of the flight, which is the difference between a
+ * card thrown at a spot and a card dealt to one.
+ */
+export const FLIGHT_MS = 380
 /** Gap between cards in a dealt run. */
-export const DEAL_STAGGER_MS = 90
+export const DEAL_STAGGER_MS = 72
 
 function seatSpot(seat: Seat): FlightSpot {
   return seat === 'rau' ? 'rauHand' : 'playerHand'
@@ -89,6 +118,15 @@ export type FlightOptions = {
   duration?: number
   /** Degrees the card turns as it travels. Gives it some weight. */
   spin?: number
+  /**
+   * How big the card is at each end, as a multiple of the flying card's own
+   * width. The flying card is sized like the fan you hold, and the piles it
+   * comes from are room objects a camera-length away — so a card dealt to you
+   * genuinely grows on the way over, and one you throw at the discard pile
+   * genuinely shrinks. Leaving these unset keeps the old near-uniform flight.
+   */
+  fromScale?: number
+  toScale?: number
 }
 
 /**
@@ -128,16 +166,52 @@ export function runFlight(
     return Promise.resolve()
   }
 
+  const s0 = opts.fromScale ?? 0.86
+  const s1 = opts.toScale ?? 1
+
+  /*
+    The landing.
+
+    A card that decelerates straight onto its mark stops dead, which is what
+    an interpolation looks like. This one carries a little past the mark and
+    is pulled back over the last fifth of the flight — the follow-through a
+    real card has because it has mass. Three per cent of the distance is
+    small enough that you never read it as an error and large enough that the
+    stop is not the thing you notice. The low tier skips it: the point of
+    that tier is fewer keyframes to composite, not a different table.
+  */
+  const settles = currentTier() !== 'low'
+  const past = settles
+    ? { x: to.x + (to.x - from.x) * 0.03, y: to.y + (to.y - from.y) * 0.03 }
+    : to
+
   const anim = el.animate(
     [
-      { transform: place(from, -spin / 2, 0.86), opacity: 0 },
-      { transform: place(from, -spin / 2, 0.92), opacity: 1, offset: 0.12 },
-      { transform: place(to, spin / 2, 1), opacity: 1 },
+      {
+        transform: place(from, -spin / 2, s0 * 0.94),
+        opacity: 0,
+        offset: 0,
+        easing: 'cubic-bezier(0.4, 0, 0.6, 1)',
+      },
+      {
+        transform: place(from, -spin / 2, s0),
+        opacity: 1,
+        offset: 0.1,
+        // Fast out: most of the ground is covered in the first half.
+        easing: 'cubic-bezier(0.16, 0.78, 0.28, 1)',
+      },
+      {
+        transform: place(past, (spin / 2) * 1.05, s1 * (settles ? 1.015 : 1)),
+        opacity: 1,
+        offset: 0.8,
+        // Soft landing: it comes back to the mark rather than onto it.
+        easing: 'cubic-bezier(0.33, 0, 0.2, 1)',
+      },
+      { transform: place(to, spin / 2, s1), opacity: 1, offset: 1 },
     ],
     {
       duration: opts.duration ?? FLIGHT_MS,
       delay: opts.delay ?? 0,
-      easing: 'cubic-bezier(0.24, 0.72, 0.24, 1)',
       fill: 'both',
     },
   )

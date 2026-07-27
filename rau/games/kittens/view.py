@@ -9,15 +9,17 @@ and there are exactly two cuts:
   to hide Rau's hand in the React component: the socket payload is one devtools
   panel away, so the hidden state must never leave the process at all.
 
-* `rau_view` / `prompt_fragment` — what goes into the model's context. He gets his
-  own hand, the public table, and an enumerated list of legal moves. He does not
-  get your hand and he does not get the deck order, which means when he wins he
-  actually won.
+* `rau_view` / `prompt_fragment` — what the *player* half sees: hand, public
+  table, peeks he paid for, and enumerated legal moves. He does not get your
+  hand or the deck order.
 
-The asymmetry between the two is deliberate and small: Rau is handed his legal
-moves as structured text because he has to name one in a tool call, while the
-browser gets raw state because a person can see the table. Neither receives a
-single field the other player is entitled to keep private.
+* `talker_fragment` — what the *face* half sees while chatting: the same public
+  table and peeks, plus the shared journal, but no legal-move menu. Moves are
+  made by the player half, not by the talker.
+
+Kittens tool results use `rau_view` / `seat_view` for the mover so a See the
+Future peek is never delivered via the human's seat payload. Neither cut
+receives a field the other player is entitled to keep private.
 
 `tests/test_kittens_fairness.py` asserts this by brute force over full games —
 if a card that should be hidden ever appears in either output, it fails.
@@ -156,21 +158,15 @@ def _move_line(move: Dict[str, Any]) -> str:
     return kind
 
 
-def prompt_fragment(game: Game, seat: str = RAU) -> str:
-    """
-    The game as Rau is entitled to see it, written for a language model.
-
-    Appended to the face system prompt only while a game is live. Two rules shape
-    it: everything here is something a human opponent could also know, and every
-    move he is allowed to make is spelled out with its exact arguments, so a legal
-    move is always a copy rather than a derivation.
-    """
+def _table_lines(game: Game, seat: str) -> List[str]:
+    """Shared public + private-for-seat facts, without a move menu."""
     if game.phase == PHASE_OVER:
         who = "You won" if game.winner == seat else "You lost"
-        return (
-            f"\n## The game\n{who}. {game.over_reason}\n"
-            "The table is finished. React to it in your own voice, then let it go.\n"
-        )
+        return [
+            "\n## The game",
+            f"{who}. {game.over_reason}",
+            "The table is finished. React to it in your own voice, then let it go.",
+        ]
 
     opponent = other(seat)
     lines = [
@@ -184,7 +180,9 @@ def prompt_fragment(game: Game, seat: str = RAU) -> str:
 
     if game.known_top[seat]:
         peeked = ", ".join(deck_mod.label(c) for c in game.known_top[seat])
-        lines.append(f"You have seen the top of the deck: {peeked} (in that order, from the top).")
+        lines.append(
+            f"You have seen the top of the deck: {peeked} (in that order, from the top)."
+        )
 
     if game.phase == PHASE_NOPE and game.pending:
         played = ", ".join(deck_mod.label(c) for c in game.pending.cards)
@@ -219,18 +217,55 @@ def prompt_fragment(game: Game, seat: str = RAU) -> str:
     else:
         lines.append("")
         lines.append("It is their turn. Wait, and talk.")
+    return lines
+
+
+def prompt_fragment(game: Game, seat: str = RAU) -> str:
+    """
+    The game as the player half is entitled to see it.
+
+    Every move he is allowed to make is spelled out with its exact arguments, so
+    a legal move is always a copy rather than a derivation.
+    """
+    lines = _table_lines(game, seat)
+    if game.phase == PHASE_OVER:
+        return "\n".join(lines) + "\n"
 
     moves = game.legal_moves(seat)
     if moves:
         lines.append("")
-        lines.append("Legal moves right now — call the tool with exactly these arguments:")
-        lines.extend(f"- {_move_line(m)}" for m in moves)
+        lines.append("Legal moves right now — reply with one of these as JSON `move`:")
+        lines.extend(f"- {json.dumps(m)}" for m in moves)
         lines.append("")
         lines.append(
             "Play to win, and say something while you do it — one short line, in your "
             "own voice, the way someone actually talks across a table. Do not narrate "
             "the rules and do not list your hand out loud."
         )
+    return "\n".join(lines) + "\n"
+
+
+def talker_fragment(game: Game, seat: str = RAU) -> str:
+    """
+    The game as the face talker sees it — table and journal, no move menu.
+
+    Moves are made by the player half. The talker reacts, banters, and deals or
+    clears the table; he does not play_kittens_card.
+    """
+    from rau.games.kittens import journal
+
+    lines = _table_lines(game, seat)
+    if game.phase != PHASE_OVER:
+        lines.append("")
+        lines.append(
+            "Your player half makes the moves at this table. You talk across it — "
+            "react, banter, celebrate, complain. Do not try to play cards yourself; "
+            "start_kittens and end_kittens are the only game tools you have."
+        )
+    history = journal.tail()
+    if history:
+        lines.append("")
+        lines.append(history.strip())
     return "\n".join(lines) + "\n"
 
 

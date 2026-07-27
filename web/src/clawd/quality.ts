@@ -130,8 +130,22 @@ export function quality(): QualityBudget {
   return BUDGETS[currentTier()]
 }
 
+/**
+ * Publish the tier to the document, for CSS.
+ *
+ * The canvas reads `quality()` directly, but the card table is DOM: its
+ * secondary motion — the settle on a landing card, the lift under your
+ * pointer — is written in CSS and has to be gated by the same one switch.
+ * Idempotent, and safe to call from anywhere that might change the tier.
+ */
+export function publishTier(): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.dataset.quality = currentTier()
+}
+
 export function setTier(tier: QualityTier): void {
   chosen = tier
+  publishTier()
   try {
     localStorage.setItem(KEY, tier)
   } catch {
@@ -142,6 +156,7 @@ export function setTier(tier: QualityTier): void {
 /** Forget an explicit choice and go back to judging the machine. */
 export function clearTier(): void {
   chosen = null
+  publishTier()
   try {
     localStorage.removeItem(KEY)
   } catch {
@@ -157,5 +172,6 @@ export function tierIsAutomatic(): boolean {
 /** Another tab changed the setting. Only the UI needs telling; see `Face`. */
 export function adoptStoredTier(): QualityTier {
   chosen = stored()
+  publishTier()
   return currentTier()
 }
