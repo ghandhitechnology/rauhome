@@ -1132,6 +1132,56 @@ def api_room_props_reset():
     return {"ok": True, "layout": props.reset_layout()}
 
 
+@app.get("/api/game/kittens")
+def api_kittens_state():
+    """
+    The table as you are allowed to see it.
+
+    Only needed on load and after a reconnect — every change is pushed over
+    `/ws` as `game_state`. The payload is redacted in `rau/games/kittens/view.py`
+    before it leaves the process, not in the component that renders it, because
+    a websocket frame is one devtools panel away from being read.
+    """
+    from rau.games.kittens import session as kittens
+
+    return {"ok": True, "state": kittens.state(), "record": kittens.tally()}
+
+
+@app.post("/api/game/kittens")
+def api_kittens_start():
+    from rau.games.kittens import session as kittens
+
+    if kittens.active():
+        return {"ok": True, "state": kittens.state()}
+    return {"ok": True, "state": kittens.start()}
+
+
+@app.delete("/api/game/kittens")
+def api_kittens_end():
+    from rau.games.kittens import session as kittens
+
+    return kittens.end("cleared from the table")
+
+
+@app.post("/api/game/kittens/move")
+def api_kittens_move(body: Dict[str, Any]):
+    """
+    Your move.
+
+    Applied synchronously so the answer is the new table rather than a promise
+    of one. Rau's reply is not part of this response: it arrives as an ordinary
+    streamed chat turn a moment later, which is what makes this feel like
+    playing him instead of pressing a button.
+    """
+    from rau.games.kittens import session as kittens
+    from rau.games.kittens.engine import USER
+
+    result = kittens.apply_move(USER, body or {})
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
 @app.get("/api/panels")
 def api_panels():
     from rau.face import panels
@@ -1172,6 +1222,17 @@ def api_panels_clear():
 
     panels.clear_panels()
     return {"ok": True}
+
+
+@app.delete("/api/panels/{panel_id}")
+def api_panel_close(panel_id: str):
+    """Take one panel down. Permanent — there is no archive to restore from."""
+    from rau.face import panels
+
+    result = panels.close_panel(panel_id)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404)
+    return result
 
 
 @app.get("/api/events/history")

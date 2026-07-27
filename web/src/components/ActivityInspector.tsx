@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, type ActivitySpan, type AgentStep, type Job } from '../api'
 import { activityFor, activityStore, useActivity } from '../activity'
 import { live } from '../live'
@@ -73,7 +73,7 @@ function AgentWorkTree() {
   async function refresh() {
     try {
       const listed = await api.jobs()
-      const recent = (listed.jobs || []).slice(-12)
+      const recent = (listed.jobs || []).slice(-12).reverse()
       const detailed = await Promise.all(
         recent.map(async (job) => {
           try {
@@ -179,8 +179,38 @@ function AgentWorkTree() {
 }
 
 function ActivityTimeline({ items }: { items: ActivitySpan[] }) {
+  const listRef = useRef<HTMLOListElement>(null)
+  /** Stick to the newest edge (top) unless the user scrolls down into history. */
+  const stickRef = useRef(true)
+  const topIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    const onScroll = () => {
+      stickRef.current = el.scrollTop <= 24
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || items.length === 0) return
+    const topId = items[0]?.id ?? null
+    const arrived = topId !== topIdRef.current
+    topIdRef.current = topId
+    if (arrived && stickRef.current) {
+      el.scrollTop = 0
+    }
+  }, [items])
+
   return (
-    <ol className="activity-timeline" aria-label="Rau activity timeline">
+    <ol
+      ref={listRef}
+      className="activity-timeline"
+      aria-label="Rau activity timeline"
+    >
       {items.map((span) => (
         <li key={span.id} className={`activity-item status-${span.status}`}>
           <span className="activity-icon" aria-hidden>{icon(span.kind)}</span>
@@ -240,7 +270,8 @@ export default function ActivityInspector({
 
   const items = useMemo(() => {
     const filtered = activityFor(all, { turnId, jobId, global })
-    return filtered.slice(-160)
+    // Newest first — keep the latest window, then reverse for the rail.
+    return filtered.slice(-160).reverse()
   }, [all, global, jobId, turnId])
 
   if (!visible) return null
@@ -254,7 +285,7 @@ export default function ActivityInspector({
   const label =
     items.length === 0
       ? 'Activity'
-      : active.at(-1)?.label || (failed ? 'Activity failed' : done ? 'Activity complete' : 'Activity')
+      : active[0]?.label || (failed ? 'Activity failed' : done ? 'Activity complete' : 'Activity')
   const counts = [
     tools ? `${tools} tool${tools === 1 ? '' : 's'}` : '',
     jobs ? `${jobs} agent${jobs === 1 ? '' : 's'}` : '',

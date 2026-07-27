@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '../router'
 import ClawdRoom, { type ClawdRoomApi } from '../components/ClawdRoom'
 import ActivityInspector, {
@@ -26,6 +26,8 @@ import { api } from '../api'
 import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
 import { panelStore, type PanelSummary } from '../panels'
+
+const GameTable = lazy(() => import('../games/kittens/GameTable'))
 import {
   IDLE_FACE_STREAM,
   bubbleSpeechFromStream,
@@ -385,13 +387,30 @@ export default function Face() {
 
   // Panels Rau has put on the wall; the documents themselves are only ever
   // mounted inside PanelViewer's sandboxed frame.
-  useEffect(() => panelStore.subscribe(() => setWall(panelStore.list())), [])
+  //
+  // The room is also the only place a `present_panel` request is honoured: the
+  // store just records it, and this claims it. That means Rau can say "look at
+  // this" while you are somewhere else and it will be open and waiting the
+  // moment you walk in, instead of a modal appearing over your conversation.
+  useEffect(
+    () =>
+      panelStore.subscribe(() => {
+        setWall(panelStore.list())
+        const presented = panelStore.takePending()
+        if (presented) panelStore.show(presented)
+      }),
+    [],
+  )
 
   useEffect(() => {
     api
       .panels()
       .then((d) => panelStore.replaceAll(d.panels || []))
       .catch(() => {})
+    // A present that arrived while the user was on another route is claimed
+    // here, on arrival.
+    const waiting = panelStore.takePending()
+    if (waiting) panelStore.show(waiting)
   }, [])
 
   const isVoice = mode === 'voice'
@@ -411,20 +430,49 @@ export default function Face() {
       {wall.length > 0 && (
         <div className="face-wall" role="group" aria-label="Panels on the wall">
           {wall.map((p) => (
-            <button
-              key={p.panel_id}
-              className={`face-wall-chip kind-${p.kind}`}
-              onClick={() => panelStore.show(p.panel_id)}
-              title={`Open “${p.title}”`}
-            >
-              <span className="face-wall-kind">{p.kind}</span>
-              <span className="face-wall-title">{p.title}</span>
-            </button>
+            // A row rather than one button: the close control cannot be nested
+            // inside the open control, and the whole chip should still open.
+            <div key={p.panel_id} className={`face-wall-row kind-${p.kind}`}>
+              <button
+                className="face-wall-chip"
+                onClick={() => panelStore.show(p.panel_id)}
+                title={
+                  p.headings?.length
+                    ? `Open “${p.title}” — ${p.headings.join(' · ')}`
+                    : `Open “${p.title}”`
+                }
+              >
+                <span className="face-wall-kind">{p.kind}</span>
+                <span className="face-wall-title">{p.title}</span>
+              </button>
+              <button
+                className="face-wall-close"
+                // Optimistic: the hub broadcasts panel_closed, but waiting for
+                // the round trip makes the click feel unacknowledged.
+                onClick={() => {
+                  panelStore.remove(p.panel_id)
+                  api.closePanel(p.panel_id).catch(() => {})
+                }}
+                title={`Take “${p.title}” down`}
+                aria-label={`Take ${p.title} down`}
+              >
+                ✕
+              </button>
+            </div>
           ))}
         </div>
       )}
 
       <PanelViewer />
+
+      {/*
+        The table, when there is one. It renders nothing at all between games,
+        and it is lazy so the thirteen inline-SVG card faces are not part of the
+        bundle every visitor pays for just to look at the room.
+      */}
+      <Suspense fallback={null}>
+        <GameTable />
+      </Suspense>
 
       <header className="face-top">
         <div className="face-top-left">

@@ -183,6 +183,29 @@ export class Scene {
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y }
   }
 
+  /**
+   * Project a rect authored in stage units onto the screen.
+   *
+   * Same camera maths as `screenRect`, for things whose position is known in
+   * the room's own coordinates rather than derived from the rig — the framed
+   * panels on the back wall being the reason this exists.
+   */
+  stageRect(x: number, y: number, w: number, h: number) {
+    const u = this.unit
+    const cz = this.camera.zoom
+    const cx = STAGE.w * u * 0.5
+    const cy = STAGE.h * u * 0.5
+
+    const project = (px: number, py: number) => ({
+      x: this.offsetX + cx + (px - cx - this.camera.x * u) * cz,
+      y: this.offsetY + cy + (py - cy - this.camera.y * u) * cz,
+    })
+
+    const tl = project(x * u, y * u)
+    const br = project((x + w) * u, (y + h) * u)
+    return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y }
+  }
+
   /** Subtle film grain, redrawn as sparse dots rather than per-pixel noise. */
   private drawGrain(ctx: CanvasRenderingContext2D) {
     if (!quality().grain) return

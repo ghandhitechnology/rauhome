@@ -750,6 +750,30 @@ def _emit_progress(job: Job, progress: str) -> None:
     BUS.emit("job_progress", id=job.id, goal=job.goal, progress=progress)
 
 
+def _with_panels_note(job_id: str, summary: str) -> str:
+    """
+    Append what this job put on the wall, if anything.
+
+    The result string is the only thing the face is handed when it weaves a
+    finished job (`weave_result`), so a panel that is not named here is a panel
+    Rau will never mention — the user would find it on the wall with no idea
+    where it came from.
+    """
+    try:
+        from rau.face import panels
+
+        made = panels.panels_for_job(job_id)
+    except Exception:  # noqa: BLE001 — a missing note must not fail the job
+        return summary
+    if not made:
+        return summary
+    titles = ", ".join(f"“{panel['title']}”" for panel in made)
+    return (
+        f"{summary}\n\nPut on the wall: {titles}. "
+        "Mention it in a line; they can open it in the room."
+    )
+
+
 def _job_thread(job: Job) -> None:
     """Run dependency-ready plan nodes and persist each transition."""
     _renew_job_lease(job)
@@ -1541,6 +1565,12 @@ def _run_subagent(
 
         if not finalize:
             return final_summary
+
+        # A worker hangs its panel the moment it makes one — nothing interrupts
+        # the conversation to say so. This is where that silence gets paid off:
+        # the wall is folded into the summary, so when the face weaves the
+        # result it knows there is something to point at.
+        final_summary = _with_panels_note(job.id, final_summary)
 
         state.update_job(
             job.id,

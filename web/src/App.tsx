@@ -1,18 +1,21 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { api } from './api'
 import { ModeProvider, useMode } from './mode'
 import { useGlobalHotkey } from './hooks/useGlobalHotkey'
 import { Link, Navigate, useLocation } from './router'
 import { live } from './live'
-
-const Conversation = lazy(() => import('./pages/Conversation'))
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Face = lazy(() => import('./pages/Face'))
-const Pet = lazy(() => import('./pages/Pet'))
-const Identity = lazy(() => import('./pages/Identity'))
-const Settings = lazy(() => import('./pages/Settings'))
-const Setup = lazy(() => import('./pages/Setup'))
-const Operations = lazy(() => import('./pages/Operations'))
+import PageSkeleton from './components/PageSkeleton'
+import {
+  Conversation,
+  Dashboard,
+  Face,
+  Identity,
+  Operations,
+  Pet,
+  Settings,
+  Setup,
+  normalizePath,
+} from './routes'
 
 const NAV = [
   { to: '/', label: 'Talk' },
@@ -83,7 +86,7 @@ function Shell() {
   // The room owns the whole viewport — no shell chrome around it.
   if (isFace) {
     return (
-      <Suspense fallback={<RouteFallback />}>
+      <Suspense fallback={<PageSkeleton pathname="/face" />}>
         <Face />
       </Suspense>
     )
@@ -119,7 +122,10 @@ function Shell() {
       <main className={`main ${isTalk ? 'main-talk' : ''}`}>
         {/* keyed on path so each route replays its entrance */}
         <div key={loc.pathname} className={isSetup ? undefined : 'route-fade'}>
-          <Suspense fallback={<RouteFallback />}>
+          {/* The fallback keeps the shell — topbar, nav, page frame — and only
+              stands in for the route's own body, so a chunk fetch never wipes
+              the chrome the user is already looking at. */}
+          <Suspense fallback={<PageSkeleton pathname={loc.pathname} />}>
             <RoutePage pathname={loc.pathname} onSetupDone={() => setReady(true)} />
           </Suspense>
         </div>
@@ -146,7 +152,7 @@ function RoutePage({
   pathname: string
   onSetupDone: () => void
 }) {
-  const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
+  const path = normalizePath(pathname)
   switch (path) {
     case '/':
       return <Conversation />
@@ -167,18 +173,4 @@ function RoutePage({
     default:
       return null
   }
-}
-
-function RouteFallback() {
-  return (
-    <div className="boot">
-      <div className="boot-inner">
-        <span className="boot-word">Rau</span>
-        <span className="boot-bar">
-          <i />
-        </span>
-        <span className="muted">waking up</span>
-      </div>
-    </div>
-  )
 }

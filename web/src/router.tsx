@@ -10,6 +10,43 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react'
+import { flushSync } from 'react-dom'
+import { routeLoader } from './routes'
+
+type ViewTransitionCapableDocument = Document & {
+  startViewTransition?: (update: () => void) => { finished: Promise<void> }
+}
+
+/**
+ * How long we will hold the outgoing page on screen waiting for the incoming
+ * route's chunk. Under that, the swap is seamless. Over it — a cold cache, a
+ * throttled connection — we stop waiting and let `<Suspense>` show the route's
+ * skeleton, because a frozen UI is worse than a visible loading state.
+ */
+const CHUNK_WAIT_MS = 250
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
+
+function canViewTransition(): boolean {
+  return typeof (document as ViewTransitionCapableDocument).startViewTransition === 'function'
+}
+
+/** Resolve once the chunk is warm, or once we have waited long enough. */
+function settleRoute(pathname: string): Promise<void> {
+  const loader = routeLoader(pathname)
+  if (!loader) return Promise.resolve()
+  return Promise.race([
+    // A chunk that fails to load must not wedge navigation — the route will
+    // surface the error itself once React tries to render it.
+    loader().then(
+      () => undefined,
+      () => undefined,
+    ),
+    new Promise<void>((resolve) => window.setTimeout(resolve, CHUNK_WAIT_MS)),
+  ])
+}
 
 export type Location = {
   pathname: string
@@ -44,24 +81,61 @@ function readLocation(): Location {
 export function BrowserRouter({ children }: { children: ReactNode }) {
   const [location, setLocation] = useState(readLocation)
 
+  // Tells the stylesheet to stand down `.route-fade`, so a route never plays a
+  // cross-fade and a slide-up at the same time. Set from JS rather than hard-
+  // coded in the CSS because it is a browser capability, not a design choice.
   useEffect(() => {
-    const onPopState = () => setLocation(readLocation())
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
+    if (canViewTransition()) document.documentElement.dataset.viewTransitions = 'on'
   }, [])
 
-  const navigate = useCallback((to: string, options: NavigateOptions = {}) => {
-    const url = new URL(to, window.location.href)
-    if (url.origin !== window.location.origin) {
-      window.location.assign(url.href)
+  /**
+   * Commit a location change, cross-fading if the browser can. `flushSync` is
+   * required: `startViewTransition` snapshots the DOM the moment its callback
+   * returns, so the update has to be synchronous or it captures the old tree
+   * twice and nothing appears to animate.
+   */
+  const commit = useCallback((apply: () => void) => {
+    const doc = document as ViewTransitionCapableDocument
+    if (!doc.startViewTransition || prefersReducedMotion()) {
+      apply()
       return
     }
-
-    const next = `${url.pathname}${url.search}${url.hash}`
-    if (options.replace) window.history.replaceState(null, '', next)
-    else window.history.pushState(null, '', next)
-    setLocation(readLocation())
+    doc.startViewTransition(() => flushSync(apply))
   }, [])
+
+  useEffect(() => {
+    const onPopState = () => {
+      // Back should feel identical to a click, chunk preload included.
+      const target = readLocation()
+      void settleRoute(target.pathname).then(() => commit(() => setLocation(target)))
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [commit])
+
+  const navigate = useCallback(
+    (to: string, options: NavigateOptions = {}) => {
+      const url = new URL(to, window.location.href)
+      if (url.origin !== window.location.origin) {
+        window.location.assign(url.href)
+        return
+      }
+
+      const next = `${url.pathname}${url.search}${url.hash}`
+      // The history entry is written inside the transition alongside the render
+      // so the address bar and the pixels change together — pushing first would
+      // leave the URL pointing at a page not yet on screen for the whole
+      // duration of the chunk fetch.
+      void settleRoute(url.pathname).then(() =>
+        commit(() => {
+          if (options.replace) window.history.replaceState(null, '', next)
+          else window.history.pushState(null, '', next)
+          setLocation(readLocation())
+        }),
+      )
+    },
+    [commit],
+  )
 
   const value = useMemo(() => ({ location, navigate }), [location, navigate])
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>

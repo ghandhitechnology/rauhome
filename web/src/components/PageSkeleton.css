@@ -1,0 +1,75 @@
+/* Route-shaped loading states. Layout only — the shimmer itself is the shared
+   `.skeleton` primitive in index.css. */
+
+/* A skeleton that fades in immediately is a flash on a fast chunk. Holding it
+   invisible for a beat means the common case — a warm or near-warm module —
+   resolves before the user ever sees a loading state at all. */
+.page-skeleton {
+  animation: fade-in var(--dur-2) var(--ease) 120ms both;
+}
+
+/* ── talk ──────────────────────────────────────────────────── */
+
+.convo-skeleton {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  height: 100%;
+}
+
+.convo-skeleton-hero {
+  flex-shrink: 0;
+  padding-bottom: var(--s-4);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--s-4);
+}
+
+.convo-skeleton-thread {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-1) var(--s-1) var(--s-5);
+}
+
+.convo-skeleton-bubble {
+  border-radius: var(--r-lg);
+}
+
+.convo-skeleton-bubble.left {
+  align-self: flex-start;
+  border-bottom-left-radius: 6px;
+}
+
+.convo-skeleton-bubble.right {
+  align-self: flex-end;
+  border-bottom-right-radius: 6px;
+}
+
+.convo-skeleton-compose {
+  flex-shrink: 0;
+  margin-bottom: var(--s-4);
+  border-radius: var(--r-xl);
+}
+
+/* ── setup ─────────────────────────────────────────────────── */
+
+.setup-skeleton {
+  max-width: 640px;
+  margin: var(--s-7) auto 0;
+}
+
+/* ── face / pet ────────────────────────────────────────────── */
+
+/* The room fills the viewport and is nearly black. Match it exactly so the
+   real canvas mounting underneath is invisible rather than a swap. */
+.canvas-skeleton {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-0);
+}

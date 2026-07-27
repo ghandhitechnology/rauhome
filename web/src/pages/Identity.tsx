@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import PageSkeleton from '../components/PageSkeleton'
 import './Identity.css'
 
 export default function Identity() {
@@ -59,16 +60,7 @@ export default function Identity() {
   }
 
   if (!loaded) {
-    return (
-      <div className="grid-2">
-        {[0, 1].map((i) => (
-          <section key={i} className="panel">
-            <div className="skeleton skeleton-line" style={{ width: '35%', height: '1.6rem' }} />
-            <div className="skeleton" style={{ height: '16rem', marginTop: '1.2rem' }} />
-          </section>
-        ))}
-      </div>
-    )
+    return <PageSkeleton pathname="/identity" />
   }
 
   return (

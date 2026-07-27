@@ -1,4 +1,83 @@
 /* ─────────────────────────────────────────────────────────────
+   Rau — fonts
+
+   Self-hosted from /public/fonts rather than fonts.googleapis.com: Rau is a
+   local-first app that has to look identical with the network off, and a
+   remote stylesheet meant the display serif simply never arrived offline.
+   See web/public/fonts/LICENSE.md.
+
+   `swap` rather than `block` because a bounded fallback beats invisible text;
+   in practice the preload hints in index.html win the race and nothing swaps.
+   No size-adjust / ascent-override here on purpose — the correct values have
+   to be measured per family, and a guessed one distorts the type permanently
+   in exchange for smoothing a flash that the preload already prevents.
+   ───────────────────────────────────────────────────────────── */
+
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/instrument-serif-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/instrument-serif-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/instrument-serif-italic-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/instrument-serif-italic-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* DM Sans is variable — one file covers the 400/500/600 the app uses. */
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/dm-sans-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/dm-sans-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ─────────────────────────────────────────────────────────────
    Rau — design tokens
    Neutral graphite base, warm amber accent. No green.
    ───────────────────────────────────────────────────────────── */
@@ -18,6 +97,8 @@
   --ink-2: #c7c8d2;
   --muted: #8b8d9a;
   --faint: #5c5e6b;
+  /* tail of the display-heading gradient (Conversation + Setup share it) */
+  --ink-fade: #9a9ba6;
 
   /* lines */
   --line: rgba(255, 255, 255, 0.085);
@@ -35,6 +116,32 @@
   --danger: #ff6f5e;
   --danger-a12: rgba(255, 111, 94, 0.12);
   --danger-a35: rgba(255, 111, 94, 0.35);
+
+  /* status — same base/a12/a35 shape as --accent and --danger, so any surface
+     can tint itself the same way regardless of which state it is reporting.
+     These replace the one-off hexes that had drifted apart across files
+     (#72b88b vs #7fd4a8 both meant "done", #e16d6d vs --danger both "failed"). */
+  --ok: #7fd4a8;
+  --ok-a12: rgba(127, 212, 168, 0.12);
+  --ok-a35: rgba(127, 212, 168, 0.35);
+
+  --info: #8ec5ff;
+  --info-a12: rgba(142, 197, 255, 0.12);
+  --info-a35: rgba(142, 197, 255, 0.35);
+
+  --warn: #e2b04a;
+  --warn-a12: rgba(226, 176, 74, 0.12);
+  --warn-a35: rgba(226, 176, 74, 0.35);
+
+  /* spacing — one ladder instead of every file re-picking from an implicit one */
+  --s-1: 0.25rem;
+  --s-2: 0.4rem;
+  --s-3: 0.6rem;
+  --s-4: 0.85rem;
+  --s-5: 1.15rem;
+  --s-6: 1.4rem;
+  --s-7: 2rem;
+  --s-8: 3rem;
 
   /* type */
   --font-display: "Instrument Serif", Georgia, serif;
@@ -58,6 +165,10 @@
   --dur-2: 220ms;
   --dur-3: 380ms;
   --dur-4: 620ms;
+  /* Page-scale motion is deliberately quicker than element-scale motion: a
+     620ms slide is fine for one card arriving, and far too grand for the whole
+     viewport swapping. --dur-4 stays for the showpieces (boot, Setup steps). */
+  --dur-page: 260ms;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --spring: cubic-bezier(0.34, 1.42, 0.5, 1);
@@ -372,6 +483,7 @@ h3 {
   transform: scale(1);
   background: var(--surface-2);
   box-shadow: inset 0 0 0 1px var(--line-2);
+  view-transition-name: nav-pill;
 }
 
 .nav a span {
@@ -418,9 +530,40 @@ h3 {
   flex-direction: column;
 }
 
-/* Route-level entrance */
+/* Route-level entrance — the fallback for browsers without the View
+   Transitions API. When the router can drive a real cross-document-style
+   transition it sets data-view-transitions on <html> and this stands down,
+   so a route never plays both a crossfade and a slide. */
 .route-fade {
-  animation: rise var(--dur-4) var(--ease) both;
+  animation: rise var(--dur-page) var(--ease) both;
+}
+
+html[data-view-transitions='on'] .route-fade {
+  animation: none;
+}
+
+/* ── view transitions ──────────────────────────────────────── */
+
+::view-transition-old(root) {
+  animation: fade-in var(--dur-page) var(--ease) reverse;
+}
+
+::view-transition-new(root) {
+  animation: fade-in var(--dur-page) var(--ease);
+}
+
+/* The nav indicator is a single element that slides between items rather than
+   six that fade independently. Named only on the active link, so the API has
+   exactly one old and one new box to interpolate between. */
+::view-transition-group(nav-pill) {
+  animation-duration: var(--dur-page);
+  animation-timing-function: var(--spring);
+}
+
+/* The topbar and the sliding pill are their own snapshots — without this the
+   whole page (chrome included) crossfades and the pill cannot travel. */
+.topbar {
+  view-transition-name: topbar;
 }
 
 /* ── boot screen ───────────────────────────────────────────── */
@@ -534,8 +677,10 @@ h3 {
     box-shadow var(--dur-2) var(--ease);
 }
 
-/* sheen that sweeps across on hover */
-.btn::after {
+/* Sheen that sweeps across on hover. Primary only — on a dense screen like
+   Operations, every ghost and danger button flashing on hover reads as noise
+   rather than polish. Reserve it for the one action that wants attention. */
+.btn.primary::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -545,7 +690,7 @@ h3 {
   pointer-events: none;
 }
 
-.btn:hover::after {
+.btn.primary:hover::after {
   transform: translateX(120%);
 }
 
@@ -606,7 +751,7 @@ h3 {
   box-shadow: none;
 }
 
-.btn:disabled::after {
+.btn.primary:disabled::after {
   display: none;
 }
 
@@ -831,6 +976,18 @@ h3 {
 
 /* ── shared text helpers ───────────────────────────────────── */
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -842,6 +999,13 @@ h3 {
 .mono {
   font-family: var(--font-mono);
   font-size: 0.85rem;
+}
+
+/* Digits that tick — elapsed times, counters, timestamps. Proportional figures
+   change width as they change value, which shivers everything to their right. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .eyebrow {
@@ -881,5 +1045,15 @@ h3 {
 
   body::before {
     display: none;
+  }
+
+  /* The ::view-transition pseudo tree is not matched by the `*` rule above, so
+     it has to be silenced by name or route changes still cross-fade. The
+     router also declines to start a transition at all under this preference —
+     this is the belt to that pair of braces. */
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
   }
 }

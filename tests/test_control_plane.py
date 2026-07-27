@@ -9,7 +9,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from rau.computer.session import ComputerSessionManager
-from rau.control.store import ControlStore
+from rau.control.store import SCHEMA_VERSION, ControlStore
 from rau.scheduler.cron import CronSpec, nominal_key
 from rau.scheduler.service import SchedulerService
 
@@ -24,7 +24,11 @@ class ControlStoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_schema_wal_and_global_computer_lease(self):
-        self.assertEqual(self.store.schema_status()["schema_version"], 3)
+        # Bumped to 4 when the wall moved into the control plane: panels used
+        # to live in an in-process dict and vanished on every hub restart.
+        self.assertEqual(
+            self.store.schema_status()["schema_version"], SCHEMA_VERSION
+        )
         first = self.store.create_computer_session(
             {"id": "one", "state": "active", "deadline": time.time() + 60}
         )

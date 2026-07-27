@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../../api'
+import AuthCard, { VerifyLine } from '../../components/AuthCard'
 import { CHAT_AUTH_IDS, type StepProps } from './types'
 
 const RECOMMENDED = 'openrouter'
@@ -89,27 +90,18 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
           const isOpen = open === p.id || (!p.configured && open === null && i === 0)
           const meta = catalog?.providers?.[p.id]
           return (
-            <article
+            <AuthCard
               key={p.id}
-              className={`auth-card ${p.configured ? 'ok' : ''} ${v.status === 'bad' ? 'bad' : ''}`}
-              style={{ '--i': i } as React.CSSProperties}
+              label={p.label}
+              help={meta?.blurb || p.help}
+              configured={p.configured}
+              masked={p.masked}
+              bad={v.status === 'bad'}
+              index={i}
+              tag={p.id === RECOMMENDED ? 'easiest start' : undefined}
+              open={isOpen}
+              onToggle={() => setOpen(isOpen ? '' : p.id)}
             >
-              <button className="auth-head" onClick={() => setOpen(isOpen ? '' : p.id)}>
-                <span className="auth-title">
-                  <span className="auth-name">
-                    {p.label}
-                    {p.id === RECOMMENDED && <em className="tag">easiest start</em>}
-                  </span>
-                  <span className="auth-help">{meta?.blurb || p.help}</span>
-                </span>
-                <span className={`pill ${p.configured ? 'on' : 'off'}`}>
-                  <i className="pill-dot" />
-                  {p.configured ? p.masked || 'connected' : 'not connected'}
-                </span>
-              </button>
-
-              <div className={`auth-body ${isOpen ? 'open' : ''}`}>
-                <div className="auth-body-inner">
                   <div className="field">
                     <label>{p.env}</label>
                     <input
@@ -128,14 +120,7 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
                     />
                   </div>
 
-                  {v.status !== 'idle' && (
-                    <p className={`verify-line ${v.status}`}>
-                      {v.status === 'checking' && <i className="spinner" />}
-                      {v.status === 'ok' && <i className="tick" />}
-                      {v.status === 'bad' && <i className="cross" />}
-                      {v.detail}
-                    </p>
-                  )}
+                  <VerifyLine status={v.status} detail={v.detail} />
 
                   <div className="row">
                     <button
@@ -167,9 +152,7 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
                       </button>
                     )}
                   </div>
-                </div>
-              </div>
-            </article>
+            </AuthCard>
           )
         })}
       </div>

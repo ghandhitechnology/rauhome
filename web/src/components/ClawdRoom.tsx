@@ -10,10 +10,16 @@ const PET_WALK_RANGE = { min: 58, max: 102 }
 import type { RoomVisual } from '../clawd/roomVisual'
 import { useClawdCanvas } from '../clawd/useClawdCanvas'
 import { live } from '../live'
+import { panelStore } from '../panels'
+import { wallPanelRects } from '../clawd/panelsLayer'
 import type { MotionName } from '../clawd/motions'
 import './ClawdRoom.css'
 
 export type HitRect = { x: number; y: number; w: number; h: number }
+
+function within(rect: HitRect, x: number, y: number): boolean {
+  return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
+}
 
 type Props = {
   signals: Signals
@@ -79,9 +85,12 @@ export default function ClawdRoom({
   const pointer = useRef<{ x: number; y: number } | null>(null)
   const parallax = useRef({ x: 0, y: 0 })
   const hitRect = useRef<HitRect>({ x: 0, y: 0, w: 0, h: 0 })
+  /** Where each framed panel currently sits on screen, newest first. */
+  const panelHits = useRef<{ id: string; rect: HitRect }[]>([])
   const onHitRectRef = useRef(onHitRect)
   onHitRectRef.current = onHitRect
   const [hovering, setHovering] = useState(false)
+  const [overPanel, setOverPanel] = useState(false)
 
   // Screen glow follows whether Rau is actually working.
   const roomState = useRef<RoomState>({ hour: 12, lamp: 0, screen: 0.2, time: 0 })
@@ -142,9 +151,9 @@ export default function ClawdRoom({
         x: (e.clientX / window.innerWidth - 0.5) * 2,
         y: (e.clientY / window.innerHeight - 0.5) * 2,
       }
-      const r = hitRect.current
-      setHovering(
-        e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h,
+      setHovering(within(hitRect.current, e.clientX, e.clientY))
+      setOverPanel(
+        panelHits.current.some((hit) => within(hit.rect, e.clientX, e.clientY)),
       )
     }
     window.addEventListener('pointermove', onMove)
@@ -214,20 +223,41 @@ export default function ClawdRoom({
 
       hitRect.current = combined
       onHitRectRef.current?.(combined)
+
+      // The framed panels are painted into the baked backdrop, so their screen
+      // positions are projected fresh here rather than captured from the draw:
+      // the camera drifts with parallax every frame while the bake does not.
+      panelHits.current = showRoom
+        ? wallPanelRects().map(({ panel, x, y, w, h }) => ({
+            id: panel.panel_id,
+            rect: scene.stageRect(x, y, w, h),
+          }))
+        : []
     },
     [rig, director, scene, cinematic, hourOverride, lampOn, hovering, roomVisual, showRoom, charScale],
   )
 
   return (
-    <div className={`clawd-room ${hovering ? 'over-clawd' : ''} ${showRoom ? '' : 'pet-mode'}`}>
+    <div
+      className={`clawd-room ${hovering ? 'over-clawd' : ''} ${
+        overPanel ? 'over-panel' : ''
+      } ${showRoom ? '' : 'pet-mode'}`}
+    >
       <canvas
         ref={canvasRef}
         onPointerDown={(e) => {
-          const r = hitRect.current
-          const inside =
-            e.clientX >= r.x && e.clientX <= r.x + r.w && e.clientY >= r.y && e.clientY <= r.y + r.h
-          if (!inside) return
           if (e.button === 2) return
+          // Panels are checked first: they hang on the back wall, so when one
+          // sits behind him the frame is the thing being pointed at, not the
+          // character standing in front of it.
+          const framed = panelHits.current.find((hit) =>
+            within(hit.rect, e.clientX, e.clientY),
+          )
+          if (framed) {
+            panelStore.show(framed.id)
+            return
+          }
+          if (!within(hitRect.current, e.clientX, e.clientY)) return
           bodyController.humanTakeover()
           director.startle()
           // Pet shell: drag the native window from the body hit area.

@@ -149,3 +149,72 @@
   color: var(--danger);
 }
 
+/* Result marks, drawn by `VerifyLine`. These used to live in Setup.css, which
+   Settings does not import — so a verified key on the settings page showed a
+   blank gap where its tick belonged. The setup rail also uses `.tick`, and now
+   picks it up through the AuthCard the wizard already renders. */
+
+.tick,
+.cross {
+  display: inline-block;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.tick {
+  width: 0.95em;
+  height: 0.95em;
+}
+
+.tick::after {
+  content: "";
+  position: absolute;
+  left: 30%;
+  top: 8%;
+  width: 30%;
+  height: 62%;
+  border: solid currentColor;
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(42deg);
+  transform-origin: center;
+  animation: tick-draw var(--dur-3) var(--ease) both;
+}
+
+@keyframes tick-draw {
+  from {
+    opacity: 0;
+    transform: rotate(42deg) scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(42deg) scale(1);
+  }
+}
+
+.rail-step.done .tick {
+  color: var(--accent);
+}
+
+.cross {
+  width: 0.9em;
+  height: 0.9em;
+}
+
+.cross::before,
+.cross::after {
+  content: "";
+  position: absolute;
+  inset: 45% 5%;
+  height: 1.8px;
+  background: currentColor;
+  border-radius: 2px;
+}
+
+.cross::before {
+  transform: rotate(45deg);
+}
+
+.cross::after {
+  transform: rotate(-45deg);
+}
+

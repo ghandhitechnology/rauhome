@@ -55,7 +55,7 @@
   font-size: clamp(3rem, 10vw, 4.4rem);
   margin: 0;
   line-height: 0.95;
-  background: linear-gradient(180deg, var(--ink), #9a9ba6);
+  background: linear-gradient(180deg, var(--ink), var(--ink-fade));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -323,7 +323,7 @@
 }
 
 .convo-typing.working i {
-  background: #8ec5ff;
+  background: var(--info);
   animation-duration: 0.9s;
 }
 

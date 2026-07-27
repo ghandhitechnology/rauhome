@@ -1,0 +1,678 @@
+/**
+ * The table, dressed.
+ *
+ * Two rules hold everything together. Cards are laid out with `transform` only —
+ * a fan of ten cards that reflowed on hover would judder on every mouse move.
+ * And every motion here is either a real event in the game (a card flips, the
+ * kitten goes off) or feedback for a thing you just did; nothing loops, and
+ * nothing moves to fill silence.
+ */
+
+.ek-table {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto auto auto;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5) var(--s-5);
+  overflow: hidden;
+  isolation: isolate;
+
+  /* Felt: a dark green table under the room's own darkness, with the light
+     coming from above the deck the way a lamp over a table would. */
+  background:
+    radial-gradient(120% 80% at 50% 38%, rgba(78, 139, 90, 0.16), transparent 62%),
+    radial-gradient(140% 100% at 50% 0%, rgba(0, 0, 0, 0.28), transparent 55%),
+    var(--bg-0);
+  color: var(--ink);
+  animation: ek-table-in 380ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes ek-table-in {
+  from {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+}
+
+/* ------------------------------------------------------------------ header */
+
+.ek-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+}
+
+.ek-turn {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  font-size: 0.95rem;
+}
+
+.ek-turn strong {
+  letter-spacing: 0.01em;
+}
+
+.ek-turn-his {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.ek-owed {
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--danger-a35);
+  border-radius: 999px;
+  background: var(--danger-a12);
+  color: var(--danger);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------- cards */
+
+.ek-card {
+  --i: 0;
+  --n: 1;
+  /* Fan angle: the middle card is upright and the ends splay out. `--i` is the
+     card's position and `--n` the hand size, both set by the component, so the
+     fan stays symmetrical however many cards you are holding. Every transform
+     below re-states it, because a hover that dropped it would snap the card
+     straight before lifting it. */
+  --rot: calc((var(--i) - (var(--n) - 1) / 2) * 3.2deg);
+  width: clamp(74px, 9.5vw, 116px);
+  aspect-ratio: 240 / 336;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 9px;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.55));
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    filter 180ms ease;
+  will-change: transform;
+}
+
+.ek-card svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+button.ek-card {
+  cursor: pointer;
+}
+
+button.ek-card:disabled {
+  cursor: default;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5)) saturate(0.55) brightness(0.72);
+}
+
+button.ek-card:not(:disabled):hover,
+button.ek-card:not(:disabled):focus-visible {
+  transform: rotate(var(--rot)) translateY(-16px) scale(1.04);
+  filter: drop-shadow(0 16px 26px rgba(0, 0, 0, 0.6));
+  z-index: 3;
+}
+
+button.ek-card.is-selected {
+  transform: rotate(var(--rot)) translateY(-30px) scale(1.05);
+  filter: drop-shadow(0 18px 30px rgba(0, 0, 0, 0.6))
+    drop-shadow(0 0 0 2px var(--accent-a40));
+  z-index: 4;
+}
+
+.ek-card-static {
+  pointer-events: none;
+}
+
+.ek-card-mini {
+  width: clamp(44px, 5vw, 62px);
+}
+
+/* -------------------------------------------------------------------- hands */
+
+.ek-hand {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  min-height: 1px;
+}
+
+/* Overlap, then let each card claim its own space back on hover. Negative
+   margin rather than absolute positioning, so the fan stays centred at any
+   hand size without measuring anything.
+
+   The overlap is deliberately less than half a card: the title band is the
+   bottom strip, and a hand you cannot read without hovering every card is a
+   hand you play badly. */
+.ek-hand > * + * {
+  margin-left: clamp(-30px, -2.1vw, -12px);
+}
+
+.ek-hand-mine {
+  padding-top: 30px; /* room for the lift and the fan tilt, so it never clips */
+}
+
+.ek-hand-mine .ek-card {
+  transform: rotate(var(--rot));
+  transform-origin: bottom center;
+}
+
+.ek-hand-opponent {
+  transform: scale(0.62);
+  transform-origin: top center;
+  opacity: 0.9;
+}
+
+.ek-hand-opponent .ek-card {
+  transform: rotate(180deg);
+}
+
+.ek-hand-opponent.is-thinking .ek-card:first-child {
+  animation: ek-consider 1.6s ease-in-out infinite;
+}
+
+@keyframes ek-consider {
+  50% {
+    transform: rotate(180deg) translateY(10px);
+  }
+}
+
+.ek-empty {
+  margin: 0;
+  color: var(--faint);
+  font-size: 0.8rem;
+}
+
+/* -------------------------------------------------------------------- piles */
+
+.ek-middle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-7);
+  min-height: 0;
+}
+
+.ek-piles {
+  display: flex;
+  gap: var(--s-6);
+}
+
+.ek-pile {
+  display: grid;
+  justify-items: center;
+  gap: var(--s-2);
+}
+
+.ek-pile-stack {
+  position: relative;
+}
+
+/* The draw pile reads as a stack because it casts more than one shadow. */
+.ek-pile-stack[data-count]::before,
+.ek-pile-stack[data-count]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background: #0f0d0b;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.ek-pile-stack[data-count]::before {
+  transform: translate(4px, 5px) rotate(1.4deg);
+}
+
+.ek-pile-stack[data-count]::after {
+  transform: translate(-3px, 3px) rotate(-1.1deg);
+}
+
+/* Above both slabs. Without the z-index the `::after` slab paints over the card
+   — positioned siblings with `z-index: auto` stack in document order — and the
+   draw pile renders as a black rectangle. */
+.ek-pile-stack > * {
+  position: relative;
+  z-index: 1;
+}
+
+.ek-pile-empty {
+  width: clamp(74px, 9.5vw, 116px);
+  aspect-ratio: 240 / 336;
+  border: 1px dashed var(--line-2);
+  border-radius: 9px;
+}
+
+.ek-pile-label {
+  display: grid;
+  justify-items: center;
+  font-size: 0.75rem;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.ek-pile-label em {
+  font-style: normal;
+  font-size: 0.68rem;
+  color: var(--faint);
+}
+
+.ek-flip-in {
+  animation: ek-flip 300ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes ek-flip {
+  from {
+    transform: rotateY(-90deg) translateY(-10px);
+    opacity: 0;
+  }
+}
+
+/* --------------------------------------------------------- see the future */
+
+.ek-future {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+}
+
+.ek-future-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+/* --------------------------------------------------------------------- feed */
+
+.ek-feed {
+  display: grid;
+  gap: 2px;
+  min-height: 2.6rem;
+  text-align: center;
+  font-size: 0.78rem;
+}
+
+.ek-feed-line {
+  margin: 0;
+  color: var(--faint);
+}
+
+.ek-feed-line:last-child {
+  color: var(--ink-2);
+}
+
+/* -------------------------------------------------------------- nope window */
+
+.ek-nope-window {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+}
+
+.ek-nope-window.is-yours {
+  border-color: var(--danger-a35);
+  animation: ek-urgent 900ms ease-in-out infinite alternate;
+}
+
+@keyframes ek-urgent {
+  to {
+    box-shadow: 0 0 0 1px var(--danger-a35), 0 0 26px rgba(255, 111, 94, 0.16);
+  }
+}
+
+/* The bar is the clock. It shrinks left-to-right in real time, driven by rAF
+   from the deadline rather than by anything the server pushes. */
+.ek-nope-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, var(--danger-a12), var(--danger-a35));
+  pointer-events: none;
+}
+
+.ek-nope-body {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+}
+
+.ek-nope-body p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.ek-nope-count {
+  color: var(--muted);
+}
+
+.ek-nope-waiting {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.ek-nope-actions {
+  display: flex;
+  gap: var(--s-2);
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------------ buttons */
+
+.ek-btn {
+  padding: 0.45rem 0.9rem;
+  border-radius: 9px;
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.ek-btn:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--line-2);
+  transform: translateY(-1px);
+}
+
+.ek-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ek-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent-deep);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.ek-btn-primary:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.ek-btn-draw {
+  border-color: var(--line-2);
+  background: var(--sunken);
+}
+
+.ek-btn-quiet {
+  background: transparent;
+  color: var(--ink-2);
+}
+
+/* NOPE is the loudest card in the deck and it gets the loudest button. */
+.ek-btn-nope {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #1a0805;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  font-size: 0.9rem;
+  padding: 0.5rem 1.4rem;
+}
+
+.ek-btn-nope:hover:not(:disabled) {
+  transform: translateY(-1px) rotate(-1.2deg) scale(1.03);
+  background: #ff8878;
+}
+
+/* ------------------------------------------------------------------ actions */
+
+.ek-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  min-height: 2.4rem;
+  flex-wrap: wrap;
+}
+
+.ek-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.ek-error {
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  border: 1px solid var(--danger-a35);
+  border-radius: 9px;
+  background: var(--danger-a12);
+  color: var(--danger);
+  font-size: 0.8rem;
+  text-align: center;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ prompts */
+
+.ek-prompt {
+  display: grid;
+  justify-items: center;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  animation: ek-prompt-in 240ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes ek-prompt-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.ek-prompt h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.ek-prompt p {
+  margin: 0;
+  max-width: 46ch;
+  text-align: center;
+  color: var(--ink-2);
+  font-size: 0.82rem;
+}
+
+.ek-prompt-cards {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  justify-content: center;
+  padding-top: 20px;
+}
+
+.ek-prompt-defuse {
+  border-color: var(--ok-a35);
+}
+
+.ek-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: min(420px, 80vw);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.ek-slider-row input {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.ek-slider-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.ek-demand-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--s-2);
+  width: min(560px, 86vw);
+}
+
+.ek-demand-chip {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.ek-demand-chip:hover {
+  border-color: var(--accent-a40);
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- game over */
+
+.ek-over {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 5, 8, 0.82);
+  backdrop-filter: blur(10px);
+  animation: ek-over-in 420ms ease both;
+}
+
+@keyframes ek-over-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The whole table takes the hit, once. */
+.ek-over.is-loss {
+  animation:
+    ek-over-in 420ms ease both,
+    ek-shake 520ms cubic-bezier(0.36, 0.07, 0.19, 0.97) 80ms;
+}
+
+@keyframes ek-shake {
+  10%, 90% { transform: translate3d(-2px, 0, 0); }
+  20%, 80% { transform: translate3d(5px, 0, 0); }
+  30%, 50%, 70% { transform: translate3d(-9px, 0, 0); }
+  40%, 60% { transform: translate3d(9px, 0, 0); }
+}
+
+.ek-over-card {
+  display: grid;
+  justify-items: center;
+  gap: var(--s-3);
+  padding: var(--s-6) var(--s-7);
+  text-align: center;
+}
+
+.ek-over-art {
+  width: clamp(120px, 16vw, 180px);
+  animation: ek-over-card-in 560ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+.ek-over.is-loss .ek-over-art {
+  animation:
+    ek-over-card-in 560ms cubic-bezier(0.2, 0.8, 0.3, 1) both,
+    ek-blast 700ms ease-out 220ms;
+}
+
+@keyframes ek-over-card-in {
+  from {
+    opacity: 0;
+    transform: scale(0.7) rotate(-8deg);
+  }
+}
+
+@keyframes ek-blast {
+  40% {
+    transform: scale(1.14);
+    filter: drop-shadow(0 0 40px rgba(214, 64, 47, 0.85));
+  }
+}
+
+.ek-over-card h2 {
+  margin: 0;
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  font-weight: 400;
+}
+
+.ek-over-card p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.88rem;
+}
+
+.ek-over-hands {
+  color: var(--faint) !important;
+  font-size: 0.8rem !important;
+}
+
+.ek-over-actions {
+  display: flex;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+
+/* --------------------------------------------------------------- restraint */
+
+@media (prefers-reduced-motion: reduce) {
+  .ek-table,
+  .ek-prompt,
+  .ek-over,
+  .ek-over-art,
+  .ek-flip-in {
+    animation: none;
+  }
+
+  .ek-hand-opponent.is-thinking .ek-card:first-child,
+  .ek-nope-window.is-yours {
+    animation: none;
+  }
+
+  .ek-card {
+    transition: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .ek-table {
+    padding: var(--s-3);
+  }
+
+  .ek-middle {
+    gap: var(--s-4);
+    flex-wrap: wrap;
+  }
+
+  .ek-hand > * + * {
+    margin-left: -34px;
+  }
+}

@@ -48,6 +48,10 @@ def _capability(name: str) -> str:
         return "external_apps"
     if name.startswith("memory_"):
         return "memory"
+    if name.endswith("_panel"):
+        return "visual"
+    if "kittens" in name:
+        return "game"
     return "coordination"
 
 
@@ -108,18 +112,25 @@ def _build_registry() -> Dict[str, ToolDescriptor]:
         if not name:
             continue
         effect = _effect(name)
+        capability = _capability(name)
+        # A panel writes nothing but pixels: it lands in a sandboxed frame that
+        # cannot reach the network or this app, and taking it down is one call.
+        # Asking the user to approve each one would mean a commissioned
+        # dashboard stops halfway and waits, which is the opposite of the
+        # silent worker it is meant to be.
+        needs_approval = effect != "read" and capability != "visual"
         registry[name] = ToolDescriptor(
             name=name,
-            capability=_capability(name),
+            capability=capability,
             input_schema=dict(function.get("parameters") or {}),
             effect_class=effect,
             idempotent=effect == "read",
-            approval_policy="never" if effect == "read" else "exact",
+            approval_policy="exact" if needs_approval else "never",
             timeout_sec=600.0 if name == "run_shell" else 120.0,
             concurrency_key=(
                 "computer"
-                if _capability(name) == "computer_use"
-                else ("mutation" if effect != "read" else "")
+                if capability == "computer_use"
+                else ("mutation" if needs_approval else "")
             ),
             result_adapter=_adapt,
             verifier=_verified,

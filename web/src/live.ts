@@ -228,7 +228,23 @@ function driveBody(event: LiveEvent) {
         title: String(event.title ?? 'Untitled'),
         kind: String(event.panel_kind ?? 'report'),
         created: Number(event.created ?? Date.now() / 1000),
+        revision: Number(event.revision ?? 1),
       })
+      break
+    case 'panel_updated':
+      panelStore.update({
+        panel_id: String(event.panel_id ?? ''),
+        title: String(event.title ?? 'Untitled'),
+        kind: String(event.panel_kind ?? 'report'),
+        revision: Number(event.revision ?? 1),
+      })
+      break
+    case 'panel_closed':
+      panelStore.remove(String(event.panel_id ?? ''))
+      break
+    case 'panel_presented':
+      // Recorded, not opened — only the room acts on it. See panels.ts.
+      panelStore.present(String(event.panel_id ?? ''))
       break
     case 'panel_cleared':
       panelStore.clear()

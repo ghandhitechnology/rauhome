@@ -25,12 +25,20 @@ _EXTERNAL = re.compile(
     r"\b(email|calendar|slack|drive|notion|github|web service|account)\b",
     re.I,
 )
+#: Goals whose point is something to look at. Gated rather than always-on so a
+#: worker fixing a test is not also carrying HTML tools it will never reach for.
+_VISUAL = re.compile(
+    r"\b(dashboard|panel|chart|graph|plot|visuali\w*|report|poster)\b",
+    re.I,
+)
 
 
 def capabilities_for_goal(goal: str, executor: str) -> list[str]:
     if executor == "pi":
         return ["coding", "filesystem", "shell"]
     found = ["memory"]
+    if _VISUAL.search(goal or ""):
+        found.append("visual")
     if _CODING.search(goal or ""):
         found.extend(("filesystem", "shell"))
     if _COMPUTER.search(goal or ""):
