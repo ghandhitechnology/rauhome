@@ -4,7 +4,6 @@ import ClawdRoom, { type ClawdRoomApi } from '../components/ClawdRoom'
 import ActivityInspector, {
   ActivityChip,
 } from '../components/ActivityInspector'
-import PermissionMenu from '../components/PermissionMenu'
 import { EMPTY_SIGNALS, type Signals } from '../clawd/director'
 import type { MotionName } from '../clawd/motions'
 import {
@@ -20,7 +19,7 @@ import {
   tierIsAutomatic,
   type QualityTier,
 } from '../clawd/quality'
-import { useMode } from '../mode'
+import { useMode, modeLabel, modeListens, modeUsesVoice } from '../mode'
 import { useVoiceSession } from '../voice'
 import { api } from '../api'
 import { live } from '../live'
@@ -30,6 +29,7 @@ import { panelStore, type PanelSummary } from '../panels'
 import { gameStore, useGame } from '../games/kittens/useGame'
 import { phaseStore, usePhase } from '../games/kittens/phase'
 import { gameBridge } from '../clawd/gameBridge'
+import FaceComposer from './FaceComposer'
 
 const GameTable = lazy(() => import('../games/kittens/GameTable'))
 import {
@@ -98,8 +98,6 @@ function tagOf(sentence: string): string | null {
 
 export default function Face() {
   const [signals, setSignals] = useState<Signals>(EMPTY_SIGNALS)
-  const [draft, setDraft] = useState('')
-  const [sending, setSending] = useState(false)
   const [panel, setPanel] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
   const [wall, setWall] = useState<PanelSummary[]>(() => panelStore.list())
@@ -156,13 +154,6 @@ export default function Face() {
     return () => window.removeEventListener('storage', onStorage)
   }, [])
   const apiRef = useRef<ClawdRoomApi | null>(null)
-  const composeRef = useRef<HTMLInputElement | null>(null)
-
-  // Expanding the chip should put the cursor in it; nobody expands a text box
-  // in order to look at it.
-  useEffect(() => {
-    if (composerOpen) composeRef.current?.focus()
-  }, [composerOpen])
   const lastReply = useRef({ at: 0, text: '', sig: '' })
   const sendingRef = useRef(false)
   /** Last sentence seen, so a repeated level tick is not read as a new line. */
@@ -175,7 +166,8 @@ export default function Face() {
   const streamStampRef = useRef('')
 
   const { mode } = useMode()
-  const voice = useVoiceSession({ enabled: mode === 'voice' })
+  const voiceOn = modeUsesVoice(mode)
+  const voice = useVoiceSession({ enabled: voiceOn, listen: modeListens(mode) })
   const [stream, setStream] = useState<FaceStream>(IDLE_FACE_STREAM)
   const streamRef = useRef(stream)
   streamRef.current = stream
@@ -199,7 +191,7 @@ export default function Face() {
 
   // Chat mode: `/ws` tokens paint the character bubble only (no composer panel).
   useEffect(() => {
-    if (mode === 'voice') return
+    if (voiceOn) return
     if (stream.phase === 'off') {
       setSignals((s) => (s.streaming ? { ...s, streaming: false } : s))
       return
@@ -237,11 +229,11 @@ export default function Face() {
       lastReplyAt: first ? Date.now() : s.lastReplyAt || Date.now(),
       sentenceTag: first ? tagOf(speech) : s.sentenceTag,
     }))
-  }, [mode, stream])
+  }, [voiceOn, stream])
 
-  // Voice: ear-aligned captions only — never paint model-speed chat_delta.
+  // Voice / talk: ear-aligned captions only — never paint model-speed chat_delta.
   useEffect(() => {
-    if (mode !== 'voice') return
+    if (!voiceOn) return
     // `lastReplyAt` is an event stamp, not a heartbeat. Levels tick ~15x a
     // second, so re-stamping it on every tick would read to the director as a
     // stream of brand-new replies: the bubble would never expire and a
@@ -258,9 +250,10 @@ export default function Face() {
     if (!speaking && voice.phase !== 'thinking') spokenRef.current = ''
     setSignals((s) => ({
       ...s,
-      userSpeaking: voice.phase === 'listening',
+      // Talk mode has no mic — never claim the user is speaking.
+      userSpeaking: modeListens(mode) && voice.phase === 'listening',
       rauSpeaking: speaking,
-      userLevel: voice.micLevel,
+      userLevel: modeListens(mode) ? voice.micLevel : 0,
       rauLevel: voice.outLevel,
       thinking: voice.phase === 'thinking',
       // Keep captions visible if a tool fires while audio is still playing.
@@ -271,6 +264,7 @@ export default function Face() {
       jobs: voice.tools.filter((t) => t.name === 'start_hard_task').map((t) => String(t.args.goal ?? '')),
     }))
   }, [
+    voiceOn,
     mode,
     voice.phase,
     voice.micLevel,
@@ -333,7 +327,7 @@ export default function Face() {
         if (streamRef.current.phase !== 'off') {
           return next
         }
-        if (mode === 'voice') {
+        if (voiceOn) {
           // Ambient hub state only — speech bubble stays with the voice effect.
           return {
             ...next,
@@ -354,7 +348,7 @@ export default function Face() {
     } catch {
       /* hub down — Clawd keeps pottering about regardless */
     }
-  }, [mode])
+  }, [mode, voiceOn])
 
   useEffect(() => {
     refresh()
@@ -401,49 +395,45 @@ export default function Face() {
     }
   }, [refresh])
 
-  async function send() {
-    const text = draft.trim()
-    if (!text || sending) return
+  const send = useCallback(
+    async (text: string) => {
+      // At the table this is what makes him glance up from his cards. Stamped
+      // whichever way the message goes out, because being spoken to is being
+      // spoken to.
+      gameBridge.userChattedAt = Date.now()
 
-    // At the table this is what makes him glance up from his cards. Stamped
-    // whichever way the message goes out, because being spoken to is being
-    // spoken to.
-    gameBridge.userChattedAt = Date.now()
+      // In voice/talk mode the turn belongs to the socket, so typing goes down
+      // the same path and comes back as speech.
+      if (voiceOn && voice.connected) {
+        setStream(IDLE_FACE_STREAM)
+        streamStampRef.current = ''
+        voice.sendText(text)
+        return
+      }
 
-    // In voice mode the turn belongs to the socket, so typing goes down the
-    // same path and comes back as speech.
-    if (mode === 'voice' && voice.connected) {
-      setDraft('')
-      setStream(IDLE_FACE_STREAM)
+      sendingRef.current = true
       streamStampRef.current = ''
-      voice.sendText(text)
-      return
-    }
-
-    setSending(true)
-    sendingRef.current = true
-    setDraft('')
-    streamStampRef.current = ''
-    setStream({ turnId: '', text: '', phase: 'wait' })
-    setSignals((s) => ({
-      ...s,
-      thinking: true,
-      streaming: true,
-      speech: null,
-    }))
-    try {
-      await api.chat(text)
-      await refresh()
-    } catch {
-      // Hub unreachable — hand the message back rather than dropping it.
-      setStream(IDLE_FACE_STREAM)
-      setDraft((d) => d || text)
-    } finally {
-      sendingRef.current = false
-      setSending(false)
-      await refresh()
-    }
-  }
+      setStream({ turnId: '', text: '', phase: 'wait' })
+      setSignals((s) => ({
+        ...s,
+        thinking: true,
+        streaming: true,
+        speech: null,
+      }))
+      try {
+        await api.chat(text)
+        await refresh()
+      } catch {
+        // Hub unreachable — hand the message back rather than dropping it.
+        setStream(IDLE_FACE_STREAM)
+        throw new Error('chat failed')
+      } finally {
+        sendingRef.current = false
+        await refresh()
+      }
+    },
+    [mode, voiceOn, voice, refresh],
+  )
 
   // Escape closes the director panel; Enter focuses the input.
   useEffect(() => {
@@ -485,7 +475,7 @@ export default function Face() {
     if (waiting) panelStore.show(waiting)
   }, [])
 
-  const isVoice = mode === 'voice'
+  const isVoice = voiceOn
   /** A hand is actually on — the exit ritual gives the composer back early. */
   const inGame = tablePhase === 'dealing' || tablePhase === 'playing'
 
@@ -601,9 +591,12 @@ export default function Face() {
             }}
             className="face-activity-chip"
           />
-          <span className={`mode-pill ${isVoice ? 'on' : ''}`} title="Shift+Space to switch">
+          <span
+            className={`mode-pill ${isVoice ? 'on' : ''}`}
+            title="Shift+Space to switch — chat, voice, or talk (type in, speak out)"
+          >
             <i className="mode-dot" />
-            {isVoice ? 'voice' : 'chat'}
+            {modeLabel(mode)}
             <em>⇧␣</em>
           </span>
           {/*
@@ -668,13 +661,19 @@ export default function Face() {
                 ? 'connecting…'
                 : signals.working
                   ? 'at the computer'
-                  : voice.phase === 'listening'
-                    ? 'listening'
-                    : voice.phase === 'thinking'
+                  : mode === 'talk'
+                    ? voice.phase === 'thinking'
                       ? 'thinking'
                       : voice.phase === 'speaking'
-                        ? 'speaking — talk to cut in'
-                        : 'ready'}
+                        ? 'speaking'
+                        : 'type below — he answers out loud'
+                    : voice.phase === 'listening'
+                      ? 'listening'
+                      : voice.phase === 'thinking'
+                        ? 'thinking'
+                        : voice.phase === 'speaking'
+                          ? 'speaking — talk to cut in'
+                          : 'ready'}
             </span>
             {/* Only Deepgram streams partials; the rest stay blank until final. */}
             {(voice.partial || voice.finalText) && (
@@ -816,45 +815,15 @@ export default function Face() {
         part of playing him, and shutting the input off during his turn would
         be shutting off the thing worth having. A message sent while he is
         thinking about a move simply waits behind it, which is also what
-        happens at a real table.
+        happens at a real table. Draft state lives in FaceComposer so typing
+        does not re-render the room or the card table.
       */}
-      <footer
-        className={`face-compose ${inGame && !composerOpen ? 'is-chip' : ''}`}
-      >
-        {inGame && !composerOpen ? (
-          <button
-            className="face-chip"
-            onClick={() => setComposerOpen(true)}
-            title="Say something to Rau"
-          >
-            <span className="face-chip-dot" aria-hidden />
-            talk to Rau
-          </button>
-        ) : (
-          <div className="face-box">
-            <input
-              ref={composeRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') send()
-                if (e.key === 'Escape' && inGame) setComposerOpen(false)
-              }}
-              placeholder="Say something to Rau…"
-              aria-label="Message Rau"
-            />
-            <PermissionMenu />
-            <button
-              className="face-send"
-              disabled={!draft.trim() || sending}
-              onClick={send}
-              aria-label="Send"
-            >
-              {sending ? <i className="spinner" /> : '→'}
-            </button>
-          </div>
-        )}
-      </footer>
+      <FaceComposer
+        inGame={inGame}
+        open={composerOpen}
+        onOpenChange={setComposerOpen}
+        onSend={send}
+      />
     </div>
   )
 }

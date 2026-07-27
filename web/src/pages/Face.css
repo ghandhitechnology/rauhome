@@ -248,11 +248,13 @@
      above the card table so the chat is never buried under a fan of cards. */
   z-index: 35;
   width: min(560px, calc(100vw - 2.5rem));
+  /* Isolate layout so open/close does not thrash the card fan underneath. */
+  contain: layout style;
   transition:
-    left var(--dur-2) var(--ease),
-    bottom var(--dur-2) var(--ease),
-    width var(--dur-2) var(--ease),
-    transform var(--dur-2) var(--ease);
+    left 180ms var(--ease),
+    bottom 180ms var(--ease),
+    width 180ms var(--ease),
+    transform 180ms var(--ease);
 }
 
 /*
@@ -277,20 +279,22 @@
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(12, 10, 10, 0.62);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(10px);
   box-shadow: var(--shadow-3);
   color: var(--ink-2);
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
   transition:
-    border-color var(--dur-2) var(--ease),
-    color var(--dur-2) var(--ease);
+    border-color 140ms var(--ease),
+    color 140ms var(--ease),
+    transform 140ms var(--spring);
 }
 
 .face-chip:hover {
   border-color: var(--accent-a40);
   color: var(--ink);
+  transform: translateY(-1px);
 }
 
 .face-chip-dot {
@@ -304,16 +308,17 @@
 .face-box {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   padding: 0.35rem 0.35rem 0.35rem 0.25rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(12, 10, 10, 0.62);
-  backdrop-filter: blur(14px);
+  background: rgba(12, 10, 10, 0.72);
+  /* Lighter blur while typing — heavy backdrop-filter was a source of jank. */
+  backdrop-filter: blur(8px);
   box-shadow: var(--shadow-3);
   transition:
-    border-color var(--dur-2) var(--ease),
-    box-shadow var(--dur-2) var(--ease);
+    border-color 140ms var(--ease),
+    box-shadow 140ms var(--ease);
 }
 
 .face-box:focus-within {
@@ -323,6 +328,7 @@
 
 .face-box input {
   flex: 1;
+  min-width: 0;
   border: none;
   outline: none;
   background: transparent;
@@ -333,6 +339,29 @@
 
 .face-box input::placeholder {
   color: var(--faint);
+}
+
+.face-collapse {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.06);
+  transition:
+    color 140ms var(--ease),
+    background 140ms var(--ease);
+}
+
+.face-collapse:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .face-send {
@@ -348,8 +377,8 @@
   color: var(--accent-ink);
   background: linear-gradient(135deg, var(--accent-soft), var(--accent) 55%, var(--accent-deep));
   transition:
-    transform var(--dur-2) var(--spring),
-    opacity var(--dur-2) var(--ease);
+    transform 140ms var(--spring),
+    opacity 140ms var(--ease);
 }
 
 .face-send:hover:not(:disabled) {
