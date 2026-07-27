@@ -73,7 +73,7 @@ MOTIONS: Tuple[str, ...] = (
 )
 
 #: Places in the room. Mirrors `STATIONS` in web/src/clawd/room.ts.
-STATIONS: Tuple[str, ...] = ("window", "plant", "rug", "centre", "desk", "shelf")
+STATIONS: Tuple[str, ...] = ("window", "plant", "rug", "table", "centre", "desk", "shelf")
 
 #: Semantic gaze targets. The renderer turns each into an eye aim; the model
 #: never gets to write eye coordinates.
@@ -113,7 +113,7 @@ BODY_CHOREOGRAPHY_TOOL: Dict[str, Any] = {
             "BEFORE you speak, at most once per turn, and only when the "
             "movement genuinely adds something — most turns need no plan at "
             "all. Each cue picks a motion, a place to look, and/or a station "
-            "to walk to (window, plant, centre, desk, shelf). Setting "
+            "to walk to (window, plant, table, centre, desk, shelf). Setting "
             "`station` walks you there; motion plays on arrival. "
             "`motion: walk` alone is in-place only. Anchor with `now` to move "
             "immediately, `reply_start` / `reply_end`, or a verbatim `phrase`. "
@@ -174,7 +174,7 @@ BODY_CHOREOGRAPHY_TOOL: Dict[str, Any] = {
                                 "enum": list(STATIONS),
                                 "description": (
                                     "Walk to this place in the room: window, "
-                                    "plant, centre, desk, or shelf."
+                                    "plant, table, centre, desk, or shelf."
                                 ),
                             },
                             "hold_ms": {
@@ -209,7 +209,7 @@ PROMPT = (
     "more than once per turn. Anchor a cue to `now` (fires as soon as the tool "
     "runs), `reply_start`, `reply_end`, or a `phrase` you then say "
     "word-for-word — an anchor phrase you do not actually speak simply never "
-    "fires. Stations you can walk to: window, plant, centre, desk, shelf. "
+    "fires. Stations you can walk to: window, plant, table, centre, desk, shelf. "
     "Set `station` to walk there; any `motion` plays on arrival. "
     "`motion: walk` without a station only steps in place. Example: "
     '`{"anchor":"now","station":"desk","motion":"type","gaze":"screen"}`. '

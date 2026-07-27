@@ -45,6 +45,11 @@ class PlaybackWorklet extends AudioWorkletProcessor {
         this._pos = 0
         this._playedSamples = 0
         this._level = 0
+        // Answer in stream order: the main thread zeroes its own counter on
+        // this echo, after every report already on the wire — otherwise one
+        // of them lands after the zero and resurrects the old timeline.
+        this.port.postMessage({ reset: true })
+        return
       }
     }
   }

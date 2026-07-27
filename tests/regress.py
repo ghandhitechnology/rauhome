@@ -198,9 +198,11 @@ def test_voice_sentences() -> None:
     for tok in ["Sure", " — ", "let me ", "look. ", "One ", "moment. ", "Done"]:
         released += buf.push(tok)
 
-    check("released mid-stream", len(released) == 2, str(released))
+    # Sub-MIN_CHARS sentences ("One moment.") are no longer shipped as their
+    # own clipped TTS request — they merge with what follows instead.
+    check("released mid-stream", len(released) == 1, str(released))
     check("first is a whole sentence", released[0] == "Sure — let me look.", released[0])
-    check("tail flushes", buf.flush() == "Done")
+    check("tail flushes", buf.flush() == "One moment. Done")
 
 
 # ── deep work ─────────────────────────────────────────────────────────

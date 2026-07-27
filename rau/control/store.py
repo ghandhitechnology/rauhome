@@ -953,6 +953,12 @@ class ControlStore:
         if state:
             query += " WHERE state=?"
             params.append(state)
+            if state == "pending":
+                # An expired gate can no longer be settled; listing it as
+                # pending would offer a decision that decide_confirmation
+                # always rejects.
+                query += " AND expires>?"
+                params.append(time.time())
         query += " ORDER BY created DESC LIMIT ?"
         params.append(max(1, min(1000, int(limit))))
         with self._lock, self._connect() as db:
@@ -1500,6 +1506,62 @@ class ControlStore:
             value.pop("accessibility_json", "[]"), []
         )
         return value
+
+    def next_queued_retry_at(self) -> Optional[float]:
+        """Earliest `retry_at` among queued runs, for the scheduler's sleep."""
+        self._ensure()
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT MIN(retry_at) AS r FROM schedule_runs WHERE state='queued'"
+            ).fetchone()
+        return float(row["r"]) if row and row["r"] is not None else None
+
+    def prune(self, cutoff: float) -> Dict[str, int]:
+        """Delete terminal rows older than `cutoff`; returns per-table counts."""
+        self._ensure()
+        stamp = float(cutoff)
+        marks = ",".join("?" for _ in TERMINAL_STATES)
+        counts: Dict[str, int] = {}
+        with self._lock, self._connect() as db:
+            cur = db.execute(
+                f"DELETE FROM schedule_runs WHERE state IN ({marks}) AND updated<?",
+                (*TERMINAL_STATES, stamp),
+            )
+            counts["schedule_runs"] = int(cur.rowcount)
+            # Steps go with their job regardless of FK enforcement, so delete
+            # them explicitly before the job row instead of relying on cascade.
+            cur = db.execute(
+                f"""
+                DELETE FROM steps WHERE job_id IN (
+                    SELECT id FROM jobs WHERE state IN ({marks}) AND updated<?
+                )
+                """,
+                (*TERMINAL_STATES, stamp),
+            )
+            counts["steps"] = int(cur.rowcount)
+            cur = db.execute(
+                f"DELETE FROM jobs WHERE state IN ({marks}) AND updated<?",
+                (*TERMINAL_STATES, stamp),
+            )
+            counts["jobs"] = int(cur.rowcount)
+            cur = db.execute(
+                """
+                DELETE FROM confirmations
+                WHERE state IN ('decided','expired')
+                  AND COALESCE(decided, expires, created)<?
+                """,
+                (stamp,),
+            )
+            counts["confirmations"] = int(cur.rowcount)
+            cur = db.execute(
+                "DELETE FROM control_events WHERE created<?", (stamp,)
+            )
+            counts["control_events"] = int(cur.rowcount)
+            cur = db.execute(
+                "DELETE FROM idempotency WHERE updated<?", (stamp,)
+            )
+            counts["idempotency"] = int(cur.rowcount)
+        return counts
 
     def mark_unfinished_interrupted(self, *, now: Optional[float] = None) -> int:
         """Make restart recovery explicit instead of leaving phantom workers."""

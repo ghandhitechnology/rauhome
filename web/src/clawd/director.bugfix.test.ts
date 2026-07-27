@@ -91,4 +91,17 @@ describe('Director bugfixes', () => {
     // frame before the pose swap is a stumble, not an arrival.
     expect(calls.filter((c) => c.name === 'carry' && c.restart)).toHaveLength(0)
   })
+
+  it('cancelDirected re-aims him at the middle of the room', () => {
+    // The table ritual's goTo outlives the table without this: the room-mode
+    // walk gravitates to whatever target names, so a cancelled trip has to
+    // name somewhere that still exists.
+    director.goTo('shelf')
+    expect(director.targetStation).toBe('shelf')
+    expect(director.isArrived).toBe(false)
+
+    director.cancelDirected()
+    expect(director.targetStation).toBe('centre')
+    expect(director.isArrived).toBe(true)
+  })
 })

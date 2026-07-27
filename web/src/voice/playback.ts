@@ -19,6 +19,8 @@ type WorkletMessage = {
   playedMs?: number
   idle?: boolean
   flushed?: boolean
+  /** reset: the worklet confirms it zeroed its own played-time counter. */
+  reset?: boolean
 }
 
 export class TtsPlayback {
@@ -37,7 +39,14 @@ export class TtsPlayback {
 
   start(): Promise<void> {
     if (this.closed) return Promise.resolve()
-    if (!this.opening) this.opening = this.open()
+    if (!this.opening) {
+      this.opening = this.open().catch((e: unknown) => {
+        // Don't cache the failure: one transient error would otherwise
+        // reject every later start() with this same stale promise.
+        this.opening = null
+        throw e
+      })
+    }
     return this.opening
   }
 
@@ -111,8 +120,14 @@ export class TtsPlayback {
   /** Drop queued audio and put the played-time counter back to zero. */
   reset() {
     this.pending.length = 0
-    this.playedMs = 0
-    this.node?.port.postMessage({ cmd: 'reset' })
+    const node = this.node
+    if (!node) {
+      this.playedMs = 0
+      return
+    }
+    // Zeroed on the worklet's echo (see receive), not here: the counter
+    // rewinds only after every report the worklet had already posted.
+    node.port.postMessage({ cmd: 'reset' })
   }
 
   async close(): Promise<void> {
@@ -139,6 +154,12 @@ export class TtsPlayback {
   }
 
   private receive(msg: WorkletMessage) {
+    // The worklet answers reset in stream order, so zeroing on its echo
+    // cannot be undone by a level report that was already on the wire.
+    if (msg.reset) {
+      this.playedMs = 0
+      return
+    }
     this.playedMs = msg.playedMs ?? this.playedMs
     if (msg.flushed) {
       this.settle()

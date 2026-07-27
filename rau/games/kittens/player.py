@@ -227,9 +227,13 @@ def _fallback_move(game: Game) -> Dict[str, Any]:
     if not moves:
         return {"move": "concede"}
     chosen = dict(moves[-1])
+    # The two open-choice moves are listed with prose placeholders ("0..N",
+    # "<any card…>"), which the engine refuses verbatim — fill them with real
+    # values or the guaranteed move is guaranteed to fail.
     if chosen.get("move") == "combo" and "named_card" in chosen:
-        chosen["named_card"] = chosen.get("named_card") or "skip"
-    if chosen.get("move") == "insert_kitten" and "index" not in chosen:
+        if chosen["named_card"] not in deck_mod.ALL_CARDS:
+            chosen["named_card"] = "skip"
+    if chosen.get("move") == "insert_kitten" and not isinstance(chosen.get("index"), int):
         chosen["index"] = 0
     if chosen.get("move") == "give_favor" and "card" not in chosen and game.hands[RAU]:
         chosen["card"] = game.hands[RAU][0]

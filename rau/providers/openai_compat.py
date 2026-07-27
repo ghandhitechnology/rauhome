@@ -27,6 +27,14 @@ MAX_MALFORMED_STREAM_EVENTS = 16
 _STANDARD_URL_OPEN = urllib.request.urlopen
 
 
+class _HTTPStatusError(RuntimeError):
+    """HTTP failure that keeps its status code for stream-mode fallbacks."""
+
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
 def _readable_reasoning(delta: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
     """Normalize OpenRouter/OpenAI/DeepSeek reasoning without exposing opaque data."""
     text_parts: List[str] = []
@@ -70,6 +78,19 @@ def _choice_delta(chunk: Any) -> Dict[str, Any]:
     return delta if isinstance(delta, dict) else {}
 
 
+def _choice_finish_reason(chunk: Any) -> Optional[str]:
+    if not isinstance(chunk, dict):
+        return None
+    choices = chunk.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return None
+    reason = choice.get("finish_reason")
+    return reason if isinstance(reason, str) and reason else None
+
+
 def _tool_index(value: Any) -> Optional[int]:
     try:
         index = int(value if value is not None else 0)
@@ -94,9 +115,10 @@ def _stream_lines(resp: Any, name: str):
             raw = readline(MAX_STREAM_LINE_BYTES + 1)
             if not raw:
                 return
-            if len(raw) > MAX_STREAM_LINE_BYTES or (
-                len(raw) == MAX_STREAM_LINE_BYTES + 1
-                and not raw.endswith((b"\n", b"\r"))
+            # readline caps at MAX+1 bytes: reaching that without a newline
+            # means the line itself is longer than the limit.
+            if len(raw) == MAX_STREAM_LINE_BYTES + 1 and not raw.endswith(
+                (b"\n", b"\r")
             ):
                 raise RuntimeError(
                     f"{name} stream line exceeded {MAX_STREAM_LINE_BYTES} bytes"
@@ -176,7 +198,9 @@ class OpenAICompatProvider(ChatProvider):
             return transport(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
             detail = exc.read(4000).decode("utf-8", errors="replace")
-            raise RuntimeError(f"{self.name} HTTP {exc.code}: {detail}") from exc
+            raise _HTTPStatusError(
+                f"{self.name} HTTP {exc.code}: {detail}", exc.code
+            ) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"{self.name} is unreachable: {exc.reason}") from exc
         except OSError as exc:
@@ -316,6 +340,20 @@ class OpenAICompatProvider(ChatProvider):
                     if isinstance(token, str) and token:
                         accum.append(token)
                         yield token
+        except _HTTPStatusError as e:
+            # Mirror the Anthropic fallback: some endpoints cannot stream.
+            if e.status in (400, 404, 415, 501):
+                result = self.chat(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    effort=effort,
+                )
+                if result.content:
+                    yield result.content
+                return result.content
+            raise
         except urllib.error.URLError as e:
             raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
         except OSError as e:
@@ -370,6 +408,7 @@ class OpenAICompatProvider(ChatProvider):
         reasoning: List[str] = []
         reasoning_details: List[Dict[str, Any]] = []
         malformed = 0
+        finish_reason: Optional[str] = None
 
         try:
             with self._open(req, timeout=120) as resp:
@@ -390,6 +429,9 @@ class OpenAICompatProvider(ChatProvider):
                         continue
 
                     delta = _choice_delta(chunk)
+                    finish = _choice_finish_reason(chunk)
+                    if finish:
+                        finish_reason = finish
 
                     thought, continuation = _readable_reasoning(delta)
                     if continuation:
@@ -446,10 +488,33 @@ class OpenAICompatProvider(ChatProvider):
                             name=fn_name,
                             args_fragment=frag if isinstance(frag, str) else "",
                         )
+        except _HTTPStatusError as e:
+            if e.status in (400, 404, 415, 501):
+                # Streaming unsupported — fall back to one blocking call.
+                result = self.chat(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tools=tools,
+                    effort=effort,
+                )
+                if result.content:
+                    yield TextDelta(result.content)
+                yield StreamDone(result)
+                return
+            raise
         except urllib.error.URLError as e:
             raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
         except OSError as e:
             raise RuntimeError(f"{self.name} connection failed: {e}") from e
+
+        # A tool call cut short by max_tokens would execute with
+        # {"_raw": partial} arguments — fail the turn instead.
+        if finish_reason == "length" and parts:
+            raise RuntimeError(
+                f"{self.name} stream truncated by max_tokens during a tool call"
+            )
 
         yield StreamDone(
             ChatResult(

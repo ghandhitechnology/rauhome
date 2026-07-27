@@ -75,6 +75,17 @@ def classify_tool(name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
             return True, f"Overwrite existing file: {target}"
         return False, ""
 
+    if n == "read_file":
+        path = str(args.get("path") or "")
+        target = _target_path(path)
+        # The read side of the .env check above: once secret contents reach
+        # the model's context they can be sent anywhere, so the read itself
+        # is what has to be gated. Both forms are checked, as on writes.
+        target_text = f"{path}\n{target}".lower()
+        if any(x in target_text for x in (".env", ".ssh", "secret", "credential")):
+            return True, f"Sensitive file read: {path}"
+        return False, ""
+
     if n.startswith("composio") or n.startswith("mcp_") or "execute" in n:
         if n.endswith("search") or n.endswith("list") or n.endswith("status"):
             return False, ""

@@ -287,6 +287,27 @@ class BrowserbaseTests(unittest.TestCase):
             any(p["payload"].get("status") == "REQUEST_RELEASE" for p in self.posts)
         )
 
+    def test_a_session_without_a_connect_url_is_released_before_failing(self) -> None:
+        """The create call succeeded, so the session is billing; raising on
+        the missing connectUrl must hand it back first, not leave it idling
+        until the provider's timeout."""
+        def no_connect_url(url, payload, headers, *, timeout):  # noqa: ARG002
+            self.posts.append({"url": url, "payload": payload, "headers": headers})
+            if url.endswith("/sessions"):
+                return {"id": "sess-9"}  # no connectUrl
+            return {}
+
+        browser = BrowserbaseBrowser(
+            post=no_connect_url, connect=lambda url, timeout: self.socket
+        )
+        with mock.patch("rau.browse.browserbase.get_secret", return_value="key"):
+            with self.assertRaises(BrowseError) as caught:
+                browser.fetch("app.dev")
+        self.assertEqual(caught.exception.code, "bad_response")
+        release = [p for p in self.posts if p["payload"].get("status") == "REQUEST_RELEASE"]
+        self.assertEqual(len(release), 1)
+        self.assertTrue(release[0]["url"].endswith("/sessions/sess-9"))
+
     def test_authenticates_with_the_header_browserbase_expects(self) -> None:
         with mock.patch("rau.browse.browserbase.get_secret", return_value="secret"):
             self._browser().fetch("app.dev")

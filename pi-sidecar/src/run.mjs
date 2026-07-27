@@ -29,9 +29,31 @@ const MAX_SKILLS = 64;
 const MAX_SKILL_FIELD_CHARS = 100_000;
 const MAX_SKILLS_TOTAL_CHARS = 200_000;
 const MAX_TOOLS = 16;
-const MAX_CONFIRM_TIMEOUT_MS = 10 * 60_000;
-const MAX_RUN_TIMEOUT_MS = 60 * 60_000;
+// The Python orchestrator budgets scheduled jobs in whole days; the caps must
+// accept that or every scheduled run is rejected at creation.
+const MAX_CONFIRM_TIMEOUT_MS = 24 * 60 * 60_000;
+const MAX_RUN_TIMEOUT_MS = 24 * 60 * 60_000;
 const MAX_TURNS = 100;
+
+const SENSITIVE_ENV_SUFFIXES = ["_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"];
+const SENSITIVE_ENV_NAMES = new Set(["AUTHORIZATION", "AWS_SESSION_TOKEN"]);
+
+/**
+ * Mirror of rau.agent.tools._shell_env: a model-authored bash command must not
+ * inherit provider credentials (README: "Model-authored subprocesses do not
+ * inherit provider credentials"). The sidecar's own provider auth resolves
+ * from the sidecar process environment inside pi-ai, never from the tool
+ * shell, so scrubbing the child environment cannot break it.
+ */
+export function scrubShellEnv(base = process.env) {
+	return Object.fromEntries(
+		Object.entries(base).filter(
+			([key]) =>
+				!SENSITIVE_ENV_SUFFIXES.some((suffix) => key.toUpperCase().endsWith(suffix)) &&
+				!SENSITIVE_ENV_NAMES.has(key.toUpperCase()),
+		),
+	);
+}
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = realpathSync(process.env.PI_SIDECAR_ROOT ?? resolve(MODULE_DIR, "../.."));
@@ -153,7 +175,12 @@ export class ConfinedExecutionEnv extends NodeExecutionEnv {
 					),
 				);
 			}
-			return super.exec(command, { ...options, cwd: cwdResult.value });
+			return super.exec(command, {
+				...options,
+				cwd: cwdResult.value,
+				env: { ...scrubShellEnv(), ...options?.env },
+				inheritEnv: false,
+			});
 		}
 		const wrapped = [
 			"/usr/bin/sandbox-exec",
@@ -163,7 +190,12 @@ export class ConfinedExecutionEnv extends NodeExecutionEnv {
 			"-c",
 			shellQuote(command),
 		].join(" ");
-		return super.exec(wrapped, { ...options, cwd: cwdResult.value });
+		return super.exec(wrapped, {
+			...options,
+			cwd: cwdResult.value,
+			env: { ...scrubShellEnv(), ...options?.env },
+			inheritEnv: false,
+		});
 	}
 }
 

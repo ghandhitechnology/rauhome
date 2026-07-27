@@ -8,7 +8,7 @@
  * holds at any window size.
  */
 
-import { bakeBackdrop, blitBackdrop, ROOM_LEFT, ROOM_TOP, ROOM_W, unitKey } from './backdrop'
+import { bakeBackdrop, bakeForeground, blitBackdrop, ROOM_LEFT, ROOM_TOP, ROOM_W, unitKey } from './backdrop'
 import { clamp, clamp01 } from './easing'
 import { drawWallPanels, panelsOwnPosterSlot, wallPanelsKey } from './panelsLayer'
 import { mixHex, ROOM, skyAt } from './paletteClassic'
@@ -515,8 +515,19 @@ export function drawRoomBack(ctx: Ctx, u: number, s: RoomState) {
 /**
  * Out-of-focus foreground for depth. Drawn over the character, so it is kept
  * to the extreme edges where it never hides him.
+ *
+ * Baked the way the enhanced room's is: it never changes, and
+ * `ctx.filter = 'blur(...)'` forces its own compositing pass — one of the few
+ * genuinely expensive things a 2D canvas can be asked to do, and it was being
+ * asked every frame.
  */
 export function drawRoomFore(ctx: Ctx, u: number) {
+  const baked = bakeForeground(u, `classic|${unitKey(u)}`, paintFore)
+  if (baked) blitBackdrop(ctx, u, baked)
+  else paintFore(ctx, u)
+}
+
+function paintFore(ctx: Ctx, u: number) {
   ctx.save()
   ctx.globalAlpha = 0.5
   ctx.filter = 'blur(6px)'

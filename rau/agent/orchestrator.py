@@ -390,8 +390,15 @@ def spawn_children(parent_id: str, goals: Iterable[str]) -> Dict[str, Any]:
             return {"ok": False, "error": "no sub-goal could start", "refused": refused}
 
         _emit_progress(parent, f"Split into {len(children)} sub-goals")
+        # A parent blocked here still dies by its own runtime deadline —
+        # otherwise children could outwait the budget they were spawned under.
+        deadline = parent.deadline_monotonic or float("inf")
         for child in children:
-            while not (child.finished.is_set() or parent.cancel.is_set()):
+            while not (
+                child.finished.is_set()
+                or parent.cancel.is_set()
+                or time.monotonic() >= deadline
+            ):
                 child.finished.wait(timeout=CHILD_POLL_SEC)
     finally:
         # Owning no slot while coordinating is what lets an eco parent's single
@@ -530,10 +537,20 @@ def resolve_confirm(approved: bool, confirm_id: Optional[str] = None) -> None:
 
     Without an id — voice shortcuts, older clients — it lands on the oldest
     pending confirm, which is exactly the one the single-slot views show.
+    A stale explicit id retargets only a deny: an approval must never reach
+    a confirm the caller never saw.
     """
     resolved_id = confirm_id
     if confirm_id:
         job_id = state.confirm_job_id(confirm_id)
+        if not job_id and not approved:
+            # The named confirm is gone (timed out or already resolved). Only
+            # a deny may land on the oldest one still waiting: cancelling the
+            # wrong confirm grants nothing, while a retargeted approval would
+            # authorize an action the caller never vetted.
+            pending = state.get_confirm()
+            job_id = pending.get("job_id") if pending else None
+            resolved_id = pending.get("id") if pending else None
     else:
         pending = state.get_confirm()
         job_id = pending.get("job_id") if pending else None
@@ -723,7 +740,15 @@ def _await_confirm(
     # Also push voice-facing control hint
     state.push_control({"action": "ask_confirm", "summary": summary, "id": cid})
 
-    ok = job.confirm_ready.wait(timeout=timeout)
+    # Wait in slices so a cancel that already landed — or one racing the
+    # confirm's arrival — parks nobody: every waiter is out within a poll.
+    deadline = time.monotonic() + timeout
+    while not job.confirm_ready.wait(
+        timeout=max(0.0, min(CHILD_POLL_SEC, deadline - time.monotonic()))
+    ):
+        if job.cancel.is_set() or time.monotonic() >= deadline:
+            break
+    ok = job.confirm_ready.is_set()
     state.set_confirm(job.id, None)
     approved = ok and job.confirm_decision is True
     # The parked window ends here whether the answer was yes, no or silence:
@@ -731,7 +756,10 @@ def _await_confirm(
     # its slot and read as running rather than still awaiting a decision. A
     # cancelled job is terminal and update_job leaves it untouched.
     state.update_job(job.id, state="running", progress=summary)
-    if state.durable_enabled() and not ok:
+    if state.durable_enabled() and not approved:
+        # Any ending that is not a yes — deny, timeout, cancel — must settle
+        # the durable row too, or the dashboard shows a dead Approve button
+        # until the row expires. The call is idempotent.
         from rau.control import control_store
 
         control_store.decide_confirmation(cid, False)
@@ -1033,6 +1061,10 @@ def _job_thread(job: Job) -> None:
         final_summary = ordered[-1] if len(ordered) == 1 else "\n\n".join(
             f"{index + 1}. {summary}" for index, summary in enumerate(ordered)
         )
+        # A worker hangs its panel the moment it makes one — nothing
+        # interrupts the conversation to say so. The note rides the summary,
+        # so when the face weaves the result it knows what to point at.
+        final_summary = _with_panels_note(job.id, final_summary)
         append_diary("task", final_summary, meta={"goal": job.goal, "id": job.id})
         state.update_job(
             job.id,
@@ -1042,6 +1074,11 @@ def _job_thread(job: Job) -> None:
             result=final_summary,
             plan=job.plan.to_dict(),
         )
+        if job.cancel.is_set():
+            # A cancel that landed while the summary was being assembled has
+            # already announced this job's ending; a done event now would
+            # contradict it.
+            return
         _emit_hard_task(job, state="done", result=final_summary)
         BUS.emit(
             "job_done",
@@ -1183,6 +1220,12 @@ def _retryable_failure(message: str) -> bool:
             "missing required",
             "cycle",
             "cancel",
+            # Specific budget phrases only: bare "budget"/"exhausted" would
+            # misclassify transient RESOURCE_EXHAUSTED-style 429s as permanent.
+            "turn budget",
+            "step budget",
+            "runtime budget",
+            "budget exhausted",
         )
     ):
         return False
@@ -1514,10 +1557,9 @@ def _run_subagent(
                         _update_step(
                             job,
                             state_name="running",
-                            attempt=step + 2,
                             strategy=(
-                                f"revision {step + 2}: gather explicit evidence "
-                                f"after verifier rejection: {validation_error}"
+                                "revision: gather explicit evidence after "
+                                f"verifier rejection: {validation_error}"
                             ),
                         )
 
@@ -1563,47 +1605,9 @@ def _run_subagent(
         if not final_summary:
             raise RuntimeError("subagent finished without a summary")
 
-        if not finalize:
-            return final_summary
-
-        # A worker hangs its panel the moment it makes one — nothing interrupts
-        # the conversation to say so. This is where that silence gets paid off:
-        # the wall is folded into the summary, so when the face weaves the
-        # result it knows there is something to point at.
-        final_summary = _with_panels_note(job.id, final_summary)
-
-        state.update_job(
-            job.id,
-            state="running",
-            lifecycle_state="verifying",
-            progress="verifying result",
-        )
-        _update_step(
-            job,
-            state_name="verifying",
-            evidence=[
-                {"kind": "completion_summary", "present": True},
-                *[
-                    {"kind": "verification", "detail": item}
-                    for item in job.completion.get("verification", [])
-                ],
-            ],
-        )
-        append_diary("task", final_summary, meta={"goal": goal, "id": job.id})
-        state.update_job(job.id, state="done", progress="done", result=final_summary)
-        _emit_hard_task(job, state="done", result=final_summary)
-        BUS.emit("job_done", id=job.id, goal=goal, state="done", result=final_summary)
-        # Ask face to weave result. A child's answer is never spoken on its own:
-        # it goes back to the parent as a tool result, and the parent's summary
-        # is what the user hears.
-        if job.parent_id is None:
-            state.push_control(
-                {
-                    "action": "weave_result",
-                    "goal": goal,
-                    "result": final_summary,
-                }
-            )
+        # Finalizing — the panels note, state writes, done events, the weave
+        # into the room — is `_job_thread`'s job; a step runner only hands
+        # back the summary.
         return final_summary
     except Exception as e:
         if job.cancel.is_set():
@@ -1667,7 +1671,12 @@ def _execute_tool(
 ) -> Dict[str, Any]:
     """Execute once across retries/restarts, preserving uncertain effects."""
     if not state.durable_enabled():
-        return run_tool(name, arguments, job_id=job.id, cancel=job.cancel)
+        # Same contract as the durable path below: an unexpected tool error
+        # becomes a result the model can read, never a killed job.
+        try:
+            return run_tool(name, arguments, job_id=job.id, cancel=job.cancel)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
     from rau.control import control_store
 
     key = f"{job.id}:{job.step_id or 'step'}:{call_id or name}"
@@ -1852,11 +1861,17 @@ def _run_pi_subagent(
             )
             _emit_progress(job, line[:500] or "Pi working")
 
+        confirm_timeout = (
+            24 * 3600.0
+            if job.scheduled_run_id
+            else _bounded_number(settings.get("confirm_timeout_sec"), 45.0, 0.1, 600.0)
+        )
+
         def confirm(request: ConfirmRequest) -> bool:
             return _await_confirm(
                 job,
                 request.summary or request.tool,
-                24 * 3600.0 if job.scheduled_run_id else 45.0,
+                confirm_timeout,
                 tool=request.tool,
                 arguments=request.input,
             )
@@ -1895,9 +1910,9 @@ def _run_pi_subagent(
             ),
             max_turns=max_turns,
             run_timeout_ms=runtime_ms,
-            confirm_timeout_ms=24 * 3600 * 1000
-            if job.scheduled_run_id
-            else 45_000,
+            # Sent as-is: scheduled runs keep their 24h window, and the
+            # sidecar caps are the sidecar's business.
+            confirm_timeout_ms=int(confirm_timeout * 1000),
         )
         result = client.run(
             spec,

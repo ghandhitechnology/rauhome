@@ -285,8 +285,12 @@ export class Scene {
   /** Subtle film grain, redrawn as sparse dots rather than per-pixel noise. */
   private drawGrain(ctx: CanvasRenderingContext2D) {
     if (!quality().grain) return
-    const w = ctx.canvas.width
-    const h = ctx.canvas.height
+    // canvas.width counts device pixels while the transform the dots are
+    // drawn through is dpr-scaled: undivided, up to half the scatter lands
+    // offscreen and the rest renders at twice the intended size.
+    const dpr = ctx.getTransform().a || 1
+    const w = ctx.canvas.width / dpr
+    const h = ctx.canvas.height / dpr
     ctx.save()
     ctx.globalAlpha = 0.028
     ctx.fillStyle = '#FFFFFF'

@@ -135,11 +135,25 @@ export default function ClawdRoom({
   useEffect(() => {
     live.start()
     return bodyController.registerTarget({
-      applyCue: (cue) => director.applyCue(cue),
+      applyCue: (cue) => {
+        // A station cue or desk-work sustain would walk him out of a hand:
+        // the director's cue branch runs ahead of the `manual` flag the
+        // choreographer sets, so the game turns cues away at the door.
+        if (choreographer.busy) {
+          // A turned-away station cue still owes the controller its arrival:
+          // the hold waits on cueArrived(), and with no walk ever coming it
+          // would sit pending until the plan expired — taking every later
+          // cue with it. pump() arms that hold only after this returns, so
+          // the answer has to land a tick later, not synchronously.
+          if (cue.station) queueMicrotask(() => bodyController.cueArrived())
+          return
+        }
+        director.applyCue(cue)
+      },
       releaseCue: () => director.releaseCue(),
       reportsArrival: true,
     })
-  }, [director])
+  }, [director, choreographer])
 
   useEffect(() => {
     // A human reaching for the body mid-game gets it, but the table has to be
@@ -282,19 +296,11 @@ export default function ClawdRoom({
           }))
         : []
     },
-    [
-      rig,
-      director,
-      scene,
-      choreographer,
-      cinematic,
-      hourOverride,
-      lampOn,
-      hovering,
-      roomVisual,
-      showRoom,
-      charScale,
-    ],
+    // Only the stable objects. Everything else the frame needs reaches the
+    // loop through drawRef, which is refreshed every render — listing the
+    // props here tore the RAF loop down and rebuilt it on every hover or
+    // hour scrub, a one-frame blank each time.
+    [rig, director, scene, choreographer],
   )
 
   return (

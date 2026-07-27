@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -17,6 +18,8 @@ from rau.agent import edit  # noqa: E402
 from rau.agent.danger import classify_tool  # noqa: E402
 from rau.agent.sandbox import PathEscape, resolve_in_root  # noqa: E402
 from rau.agent.tools import _number, run_tool  # noqa: E402
+from rau.computer import session as comp_session  # noqa: E402
+from rau.control.store import ControlStore  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -74,8 +77,24 @@ class BoundedReadTests(unittest.TestCase):
         result = run_tool("read_file", {"path": str(big)})
         self.assertTrue(result["ok"])
         self.assertEqual(len(result["content"]), 50000)
+        # A clipped read must be marked, with the true total alongside.
+        self.assertIs(result.get("truncated"), True)
+        self.assertEqual(result.get("total_chars"), 200_000)
         # A truncated read must not license an edit against unseen contents.
         seen, _why = edit._seen_current(big.resolve())
+        self.assertFalse(seen)
+
+    def test_huge_file_reports_a_floor_total(self) -> None:
+        huge = self.tmp / "huge.txt"
+        huge.write_text("x" * 5_200_000, encoding="utf-8")
+        result = run_tool("read_file", {"path": str(huge)})
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["content"]), 50000)
+        self.assertIs(result.get("truncated"), True)
+        # Past the counting cap the marker degrades to a floor: scanning a
+        # multi-GB file to its end just for the total would block the worker.
+        self.assertEqual(result.get("total_chars"), ">5000000")
+        seen, _why = edit._seen_current(huge.resolve())
         self.assertFalse(seen)
 
     def test_small_file_is_fully_read_and_edit_licensed(self) -> None:
@@ -84,6 +103,7 @@ class BoundedReadTests(unittest.TestCase):
         result = run_tool("read_file", {"path": str(small)})
         self.assertTrue(result["ok"])
         self.assertEqual(result["content"], "alpha = 1\n")
+        self.assertNotIn("truncated", result)
         seen, _why = edit._seen_current(small.resolve())
         self.assertTrue(seen)
         edited = edit.edit_file(str(small), "alpha = 1", "alpha = 2")
@@ -117,6 +137,127 @@ class ShellOutputCapTests(unittest.TestCase):
             result = run_tool("run_shell", {"command": "fake"})
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], -signal.SIGKILL)
+
+
+class ShellTailClipTests(unittest.TestCase):
+    """Output past the tail window must be marked, not silently dropped."""
+
+    def test_overlong_stdout_is_marked_truncated(self) -> None:
+        result = run_tool(
+            "run_shell", {"command": "head -c 9000 /dev/zero | tr '\\0' x"}
+        )
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertLessEqual(len(result["stdout"]), 8000)
+        self.assertIs(result.get("truncated"), True)
+
+    def test_overlong_stderr_is_marked_truncated(self) -> None:
+        result = run_tool(
+            "run_shell",
+            {"command": "head -c 3000 /dev/zero | tr '\\0' e >&2; printf ok"},
+        )
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertLessEqual(len(result["stderr"]), 2000)
+        self.assertIs(result.get("truncated"), True)
+
+    def test_small_output_carries_no_truncation_marker(self) -> None:
+        result = run_tool("run_shell", {"command": "printf ok"})
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertNotIn("truncated", result)
+
+
+class SecretReadGateTests(unittest.TestCase):
+    """Reads of secret-shaped paths are confirm-gated like the write side.
+
+    Classification only — no path here is ever opened.
+    """
+
+    def test_env_and_secret_paths_need_confirmation(self) -> None:
+        for path in (
+            ".env",
+            "config/.env.local",
+            "secrets/api_keys.json",
+            "identity/credentials.json",
+            ".ssh/config",
+        ):
+            with self.subTest(path=path):
+                needs, summary = classify_tool("read_file", {"path": path})
+                self.assertTrue(needs)
+                self.assertIn("read", summary.lower())
+
+    def test_ordinary_reads_stay_ungated(self) -> None:
+        for path in ("README.md", "rau/agent/tools.py", "docs/environment.md"):
+            with self.subTest(path=path):
+                needs, _summary = classify_tool("read_file", {"path": path})
+                self.assertFalse(needs)
+
+
+def _ok_shot() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "action": "screenshot",
+        "image_b64": "x" * 220,
+        "mime": "image/png",
+        "width": 10,
+        "height": 10,
+        "scale": 1.0,
+        "display_id": 1,
+        "coordinate_space": "logical_points",
+        "displays": [{"display_id": 1}],
+    }
+
+
+class ComputerObserveLeaseTests(unittest.TestCase):
+    """A bare computer_observe must release the machine lease it borrowed."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.manager = comp_session.ComputerSessionManager(
+            store=ControlStore(Path(self._tmp.name) / "control.db"),
+            capture=lambda **_kw: _ok_shot(),
+            inspect=lambda **_kw: ([], {}),
+            action=lambda *_a, **_kw: {"ok": True, "action": "click"},
+        )
+        patcher = patch.object(comp_session, "COMPUTER", self.manager)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _assert_lease_free(self) -> None:
+        try:
+            again = self.manager.start()
+        except RuntimeError as exc:
+            self.fail(f"bare observe leaked the active lease: {exc}")
+        self.manager.finish(str(again["id"]))
+
+    def test_bare_observe_releases_lease(self) -> None:
+        result = run_tool("computer_observe", {})
+        self.assertTrue(result.get("ok"), result)
+        self._assert_lease_free()
+
+    def test_failed_observe_releases_lease(self) -> None:
+        self.manager.capture = lambda **_kw: {"ok": False, "error": "denied"}
+        result = run_tool("computer_observe", {})
+        self.assertFalse(result.get("ok"))
+        self._assert_lease_free()
+
+    def test_raising_observe_releases_lease(self) -> None:
+        def boom(**_kw):
+            raise RuntimeError("synthetic capture failure")
+
+        self.manager.capture = boom
+        result = run_tool("computer_observe", {})
+        self.assertFalse(result.get("ok"))
+        self.assertIn("synthetic", str(result.get("error")))
+        self._assert_lease_free()
+
+    def test_supplied_session_is_not_finished(self) -> None:
+        started = self.manager.start()
+        session_id = str(started["id"])
+        result = run_tool("computer_observe", {"session_id": session_id})
+        self.assertTrue(result.get("ok"), result)
+        status = self.manager.status(session_id)
+        self.assertEqual(status["session"]["state"], "active")
+        self.manager.finish(session_id)
 
 
 class CuaActionErrorTests(unittest.TestCase):

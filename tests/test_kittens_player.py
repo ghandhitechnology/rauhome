@@ -5,18 +5,20 @@ Run: python -m unittest tests.test_kittens_player -v
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from rau.games.kittens import deck as deck_mod  # noqa: E402
 from rau.games.kittens import journal, player, session, tools  # noqa: E402
 from rau.games.kittens import view as view_mod  # noqa: E402
-from rau.games.kittens.deck import ATTACK, SKIP  # noqa: E402
-from rau.games.kittens.engine import PHASE_PLAYING, RAU, USER, Game  # noqa: E402
+from rau.games.kittens.deck import ATTACK, DEFUSE, EXPLODING_KITTEN, SKIP  # noqa: E402
+from rau.games.kittens.engine import PHASE_DEFUSE, PHASE_PLAYING, RAU, USER, Game  # noqa: E402
 from tests.test_kittens_session import isolate_memory, quiesce  # noqa: E402
 
 
@@ -132,6 +134,81 @@ class TakeTurn(unittest.TestCase):
         text = journal.tail()
         self.assertIn("watching you", text)
         self.assertIn("drew", text.lower())
+
+
+class FallbackMove(unittest.TestCase):
+    """The guaranteed move must actually be guaranteed — placeholders are not playable."""
+
+    def test_the_insert_placeholder_becomes_a_real_index(self):
+        game = Game(seed=1)
+        game.hands[RAU] = [DEFUSE]
+        game.hands[USER] = [SKIP]
+        game.draw = [EXPLODING_KITTEN, ATTACK]
+        game.current = RAU
+        game.draw_card(RAU)
+        assert game.phase == PHASE_DEFUSE
+        move = player._fallback_move(game)
+        self.assertEqual(move["move"], "insert_kitten")
+        self.assertIsInstance(move["index"], int, "int('0..N') is how the table wedged")
+        game.insert_kitten(RAU, move["index"])  # must not raise
+        self.assertEqual(game.phase, PHASE_PLAYING)
+
+    def test_the_named_card_placeholder_becomes_a_real_card(self):
+        game = Game(seed=1)
+        with patch.object(
+            game,
+            "legal_moves",
+            return_value=[
+                {
+                    "move": "combo",
+                    "cards": ["tacocat"] * 3,
+                    "named_card": "<any card you want from their hand>",
+                }
+            ],
+        ):
+            move = player._fallback_move(game)
+        self.assertIn(move["named_card"], deck_mod.ALL_CARDS)
+
+
+class ListedMoves(unittest.TestCase):
+    """A move the prompt lists must play exactly as copied."""
+
+    def _listed(self, game: Game) -> List[Dict[str, Any]]:
+        text = view_mod.prompt_fragment(game, RAU)
+        return [
+            json.loads(line[2:])
+            for line in text.splitlines()
+            if line.startswith("- {")
+        ]
+
+    def test_the_defuse_listing_plays_as_printed(self):
+        game = Game(seed=1)
+        game.hands[RAU] = [DEFUSE]
+        game.hands[USER] = [SKIP]
+        game.draw = [EXPLODING_KITTEN, ATTACK]
+        game.current = RAU
+        game.draw_card(RAU)
+        assert game.phase == PHASE_DEFUSE
+        moves = self._listed(game)
+        self.assertEqual([m["move"] for m in moves], ["insert_kitten"])
+        self.assertIsInstance(moves[0]["index"], int, "a listed move must copy verbatim")
+        game.insert_kitten(RAU, moves[0]["index"])  # must not raise
+        self.assertEqual(game.phase, PHASE_PLAYING)
+
+    def test_a_three_of_a_kind_listing_names_a_real_card(self):
+        game = Game(seed=1)
+        game.hands[RAU] = ["tacocat", "tacocat", "tacocat", SKIP]
+        game.hands[USER] = [SKIP, ATTACK]
+        game.current = RAU
+        moves = [
+            m
+            for m in self._listed(game)
+            if m["move"] == "combo" and len(m["cards"]) == 3
+        ]
+        self.assertTrue(moves, "the set is held, so it must be listed")
+        for move in moves:
+            self.assertIn(move["named_card"], deck_mod.ALL_CARDS)
+        game.combo(RAU, moves[0]["cards"], named_card=moves[0]["named_card"])
 
 
 class JournalShared(unittest.TestCase):

@@ -186,7 +186,10 @@ def end(reason: str = "cleared") -> Dict[str, Any]:
         _game = None
     pump.stop()
     journal.clear()
-    if game and game.phase != PHASE_OVER:
+    if game:
+        # Emit even when the game is already over: a tab that opened after the
+        # result was broadcast only knows the finished table, and it clears on
+        # this event, not on game_over.
         BUS.emit("game_ended", game="kittens", reason=reason)
     return {"ok": True}
 

@@ -29,7 +29,14 @@ export class MicCapture {
 
   start(): Promise<void> {
     if (this.stopped) return Promise.resolve()
-    if (!this.opening) this.opening = this.open()
+    if (!this.opening) {
+      this.opening = this.open().catch((e: unknown) => {
+        // Don't cache the failure: one transient getUserMedia error would
+        // otherwise reject every later start() with this same stale promise.
+        this.opening = null
+        throw e
+      })
+    }
     return this.opening
   }
 

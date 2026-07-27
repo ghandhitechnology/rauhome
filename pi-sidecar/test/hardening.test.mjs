@@ -9,6 +9,7 @@ import {
 	ConfinedExecutionEnv,
 	PiRun,
 	PROJECT_ROOT,
+	scrubShellEnv,
 	withDefaults,
 } from "../src/run.mjs";
 import { createSidecarServer } from "../src/server.mjs";
@@ -39,6 +40,47 @@ test("request options reject malformed values and cwd escapes", () => {
 	assert.throws(() => withDefaults({ goal: "x", provider: "../../evil" }), /provider/);
 	const gated = withDefaults({ goal: "x", tools: ["bash"], confirm_tools: [] });
 	assert.deepEqual(gated.confirmTools, ["bash"], "callers cannot disable mandatory confirmation");
+});
+
+test("timeout ceilings accept a full day and reject beyond it", () => {
+	// The Python orchestrator sends up to 24h for scheduled jobs; rejecting
+	// those values failed every scheduled Pi run at creation with a 400.
+	const day = 24 * 60 * 60_000;
+	const accepted = withDefaults({ goal: "x", confirm_timeout_ms: day, run_timeout_ms: day });
+	assert.equal(accepted.confirmTimeoutMs, day);
+	assert.equal(accepted.runTimeoutMs, day);
+	assert.throws(() => withDefaults({ goal: "x", confirm_timeout_ms: day + 1 }), /confirm_timeout_ms/);
+	assert.throws(() => withDefaults({ goal: "x", run_timeout_ms: day + 1 }), /run_timeout_ms/);
+});
+
+test("tool shells inherit no credentials from the sidecar environment", async () => {
+	process.env.PI_TEST_LEAK_API_KEY = "leak-marker";
+	process.env.PI_TEST_LEAK_VISIBLE = "visible-marker";
+	try {
+		assert.deepEqual(
+			scrubShellEnv({
+				SOME_API_KEY: "x",
+				SOME_TOKEN: "y",
+				AWS_SESSION_TOKEN: "z",
+				AUTHORIZATION: "Bearer z",
+				PATH: "/bin",
+			}),
+			{ PATH: "/bin" },
+		);
+		const env = new ConfinedExecutionEnv({ cwd: PROJECT_ROOT, root: PROJECT_ROOT });
+		const result = await env.exec("env", { timeout: 5 });
+		assert.equal(result.ok, true);
+		assert.equal(result.value.exitCode, 0);
+		assert.ok(!result.value.stdout.includes("leak-marker"), "credential values must not reach the shell");
+		assert.ok(!result.value.stdout.includes("PI_TEST_LEAK_API_KEY"), "credential names must not reach the shell");
+		assert.ok(
+			result.value.stdout.includes("PI_TEST_LEAK_VISIBLE=visible-marker"),
+			"non-credential variables still pass through",
+		);
+	} finally {
+		delete process.env.PI_TEST_LEAK_API_KEY;
+		delete process.env.PI_TEST_LEAK_VISIBLE;
+	}
 });
 
 test("every builtin provider factory can be selected", async () => {
