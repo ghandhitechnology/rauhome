@@ -20,9 +20,6 @@ from rau.paths import PRESENCE_FILE, ensure_dirs
 from rau.providers.registry import load_settings
 from rau import state
 
-_thread: Optional[threading.Thread] = None
-_stop = threading.Event()
-
 #: Soft re-entry: notice the pause, don't restart the friendship.
 REENTRY_SOFT_SEC = 15 * 60
 #: Hard re-entry: clear live chat history; treat as coming back after a stretch.
@@ -306,10 +303,24 @@ def save_presence() -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, PRESENCE_FILE)
+        # The file fsync does not persist the rename; fsync the directory too.
+        dir_fd = os.open(PRESENCE_FILE.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     finally:
         try:
             os.unlink(tmp_name)
         except FileNotFoundError:
+            pass
+    # Drop temp files orphaned by a crash (never one being written now).
+    cutoff = time.time() - 60
+    for stale in PRESENCE_FILE.parent.glob(f".{PRESENCE_FILE.name}.*.tmp"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+        except OSError:
             pass
 
 
@@ -652,12 +663,6 @@ def maybe_nudge() -> None:
     append_heartbeat_event("nudge", line)
     BUS.emit("presence_nudge", text=line)
     state.push_control({"action": "speak", "text": line})
-
-
-def heartbeat_loop() -> None:
-    while not _stop.is_set():
-        _heartbeat_tick()
-        _stop.wait(90)
 
 
 def start_heartbeat() -> None:

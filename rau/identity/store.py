@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -112,9 +113,24 @@ def write_text(path: Path, content: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        # The file fsync does not persist the rename; the directory must be
+        # fsynced too, or a power loss can still resurrect the old soul.
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     finally:
         try:
             tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    # Drop temp files orphaned by a crash (never one being written now).
+    cutoff = time.time() - 60
+    for stale in path.parent.glob(f".{path.name}.*.tmp"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
         except OSError:
             pass
 

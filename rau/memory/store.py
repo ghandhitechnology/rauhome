@@ -33,6 +33,26 @@ def _safe_file_part(value: str) -> str:
     return cleaned[:40] or "note"
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Persist the rename itself; a file fsync alone can lose the dirent."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _sweep_stale_tmp(path: Path) -> None:
+    """Drop temp files orphaned by a crash (never one being written now)."""
+    cutoff = time.time() - 60
+    for stale in path.parent.glob(f".{path.name}.*.tmp"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _atomic_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -45,8 +65,10 @@ def _atomic_text(path: Path, content: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     finally:
         tmp.unlink(missing_ok=True)
+    _sweep_stale_tmp(path)
 
 
 def append_diary(role: str, text: str, *, meta: Optional[Dict[str, Any]] = None) -> Path:

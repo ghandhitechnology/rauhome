@@ -376,6 +376,9 @@ def test_face_gate() -> None:
             gated("run_shell", {"command": "rm -rf /tmp/anything"}),
         )
         check("reading is still allowed", not gated("read_file", {"path": "README.md"}))
+        # A secret-shaped read is confirm-gated like the write side, so the
+        # face refuses it instead of running it (the file is never opened).
+        check("reading a secret file is refused", gated("read_file", {"path": ".env"}))
         check("diary writes are still allowed", not gated("memory_write", {"text": "note"}))
 
         after = victim.read_text()

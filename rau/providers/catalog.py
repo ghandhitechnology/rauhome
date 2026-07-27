@@ -432,6 +432,24 @@ _KIMI = {
     "default": "high",
     "param": "kimi",
 }
+# Kimi Coding Plan is Anthropic-compatible: effort rides in a thinking
+# payload, and thinking forbids a non-default temperature (fixed_temperature).
+_KIMI_CODE = {
+    "supported": True,
+    "levels": ["low", "high", "max"],
+    "default": "high",
+    "param": "anthropic",
+    "fixed_temperature": True,
+}
+# Strict OpenAI reasoning endpoints (o-series / GPT-5) reject any non-default
+# temperature with HTTP 400, so the wire layer must omit it entirely.
+_OPENAI_STRICT = {
+    "supported": True,
+    "levels": list(_ALL),
+    "default": "medium",
+    "param": "openai",
+    "fixed_temperature": True,
+}
 _CLAUDE = {
     "supported": True,
     "levels": list(_ALL),
@@ -444,7 +462,11 @@ PROVIDER_REASONING_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "deepseek": dict(_DEEPSEEK),
     "kimi": dict(_KIMI),
     "moonshot": dict(_KIMI),
-    "kimi_code": dict(_KIMI),
+    "kimi_code": dict(_KIMI_CODE),
+    # Unlisted openai/codex ids are treated as ordinary chat models: their
+    # configured temperature passes through. reasoning_for() upgrades ids
+    # matching the reasoning families (o-series, GPT-5) to _OPENAI_STRICT,
+    # which omits temperature because only those endpoints 400 on it.
     "codex": dict(_OPENAI_REASONING),
     "openai": dict(_OPENAI_REASONING),
     "openrouter": dict(_OPENAI_REASONING),
@@ -459,12 +481,12 @@ MODEL_REASONING: Dict[str, Dict[str, Any]] = {
     "deepseek/deepseek-v4-flash": dict(_DEEPSEEK),
     "deepseek/deepseek-v4-pro": dict(_DEEPSEEK),
     # OpenAI / Codex
-    "gpt-5.6-sol": dict(_OPENAI_REASONING),
-    "gpt-5.6-terra": dict(_OPENAI_REASONING),
+    "gpt-5.6-sol": dict(_OPENAI_STRICT),
+    "gpt-5.6-terra": dict(_OPENAI_STRICT),
     "gpt-5.6-luna": dict(_OPENAI_FAST),
-    "gpt-5.5": dict(_OPENAI_REASONING),
-    "openai/gpt-5.6-sol": dict(_OPENAI_REASONING),
-    "openai/gpt-5.6-terra": dict(_OPENAI_REASONING),
+    "gpt-5.5": dict(_OPENAI_STRICT),
+    "openai/gpt-5.6-sol": dict(_OPENAI_STRICT),
+    "openai/gpt-5.6-terra": dict(_OPENAI_STRICT),
     "openai/gpt-5.6-luna": dict(_OPENAI_FAST),
     # OpenRouter Claude / Gemini
     "anthropic/claude-fable-5": dict(_CLAUDE),
@@ -478,10 +500,11 @@ MODEL_REASONING: Dict[str, Dict[str, Any]] = {
     "kimi-k2.6": dict(_KIMI),
     "kimi-k2-thinking": dict(_KIMI),
     "moonshotai/kimi-k3": dict(_KIMI),
-    "k3": dict(_KIMI),
-    "k3-256k": dict(_KIMI),
-    "kimi-for-coding": dict(_KIMI),
-    "kimi-for-coding-highspeed": dict(_KIMI),
+    # Kimi Coding Plan ids (Anthropic transport, thinking payload)
+    "k3": dict(_KIMI_CODE),
+    "k3-256k": dict(_KIMI_CODE),
+    "kimi-for-coding": dict(_KIMI_CODE),
+    "kimi-for-coding-highspeed": dict(_KIMI_CODE),
     # Misc OpenRouter
     "z-ai/glm-5.2": dict(_OPENAI_REASONING),
     "x-ai/grok-4.5": dict(_OPENAI_REASONING),
@@ -502,7 +525,19 @@ def _normalize_reasoning(raw: Dict[str, Any]) -> Dict[str, Any]:
         "levels": levels,
         "default": default,
         "param": param,
+        "fixed_temperature": bool(raw.get("fixed_temperature")),
     }
+
+
+def _openai_rejects_temperature(mid_l: str) -> bool:
+    """True for unlisted openai/codex ids that 400 on a non-default temperature.
+
+    Only the reasoning families (o-series, GPT-5) reject temperature;
+    ordinary chat ids (gpt-4o, gpt-4.1, ...) accept it, so the provider
+    default must not strip it from them.
+    """
+    tail = mid_l.rsplit("/", 1)[-1]
+    return tail.startswith(("o1", "o3", "o4", "gpt-5"))
 
 
 def reasoning_for(provider: str, model: str) -> Dict[str, Any]:
@@ -524,7 +559,13 @@ def reasoning_for(provider: str, model: str) -> Dict[str, Any]:
     if mid_l.startswith("deepseek") or "/deepseek" in mid_l:
         return _normalize_reasoning(_DEEPSEEK)
     if mid_l.startswith("kimi") or mid_l in ("k3", "k3-256k") or "moonshot" in mid_l:
+        # The same free-text id means a different wire format depending on
+        # which Kimi surface the slot points at.
+        if prov in ("kimi_code", "kimi-code", "kimi_coding"):
+            return _normalize_reasoning(_KIMI_CODE)
         return _normalize_reasoning(_KIMI)
+    if prov in ("openai", "codex") and _openai_rejects_temperature(mid_l):
+        return _normalize_reasoning(_OPENAI_STRICT)
 
     base = PROVIDER_REASONING_DEFAULTS.get(prov) or _OPENAI_REASONING
     return _normalize_reasoning(base)

@@ -109,12 +109,16 @@ class PhaseStore {
    *
    * No ritual: he did not just decide to play, he has been sitting there the
    * whole time and you went away.
+   *
+   * Safe to call over a game already adopted: a choreographer mid-ritual
+   * ignores the seating, and a *fresh* one — the room was navigated away from
+   * mid-game and come back to, leaving the phase 'playing' — is sat down
+   * where the last room had him.
    */
   adopt(): void {
-    if (this.phase !== 'idle') return
     gameBridge.active = true
     gameBridge.choreography?.seatInstantly()
-    this.set('playing')
+    if (this.phase === 'idle') this.set('playing')
   }
 
   /**
@@ -176,14 +180,15 @@ export const phaseStore = new PhaseStore()
  * hub, or the socket handing back an empty room — still has to put him back
  * on his feet. Only a real transition counts: the table is null before the
  * first deal lands too, and ending on that would cancel the ritual that is
- * still starting.
+ * still starting. Every live phase ends, summoning most of all: the walk
+ * must never complete into a game that no longer exists.
  */
 let hadTable = gameStore.get() !== null
 gameStore.subscribe(() => {
   const has = gameStore.get() !== null
   if (hadTable && !has) {
-    const phase = phaseStore.get()
-    if (phase === 'playing' || phase === 'dealing') void phaseStore.end({ fast: true })
+    // end() already ignores idle/ending, so there is nothing to gate on here.
+    void phaseStore.end({ fast: true })
   }
   hadTable = has
 })

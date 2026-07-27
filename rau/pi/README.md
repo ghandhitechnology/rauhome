@@ -28,11 +28,18 @@ The allowed filesystem root defaults to the repository containing
 file-tool path, and symlinked path component must remain under that root. Bash
 runs under macOS `sandbox-exec` with writes limited to the root and build/temp
 caches. If seatbelt is unavailable bash fails closed unless
-`PI_SIDECAR_ALLOW_UNSANDBOXED=1` is explicitly set.
+`PI_SIDECAR_ALLOW_UNSANDBOXED=1` is explicitly set. Tool shells inherit an
+environment scrubbed of credential variables (`*_KEY`, `*_TOKEN`, `*_SECRET`,
+`*_PASSWORD`, `*_CREDENTIAL`), and the supervisor spawns the sidecar with an
+equally scrubbed environment that keeps only the configured Pi provider's own
+credentials.
 
 Loopback binding needs no token. Binding `PI_SIDECAR_HOST` to any non-loopback
 address requires a `PI_SIDECAR_TOKEN` of at least 32 characters; the Python
 client reads the same environment variable and sends it as a bearer token.
+When the supervisor spawns the sidecar itself it generates a fresh token into
+both the child and the hub environment, so no other local process can drive
+that sidecar; a hand-started sidecar stays tokenless exactly as before.
 POST bodies must be `application/json`, which also prevents simple browser
 cross-origin requests from starting tools against the local service.
 

@@ -3,17 +3,97 @@ from __future__ import annotations
 
 import atexit
 import os
+import secrets
 import shutil
 import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from rau.paths import ROOT
 from rau.pi.client import PiSidecar
 from rau.providers.registry import load_settings
+
+#: Mirrors rau.agent.tools._shell_env: the sidecar runs model-authored tools, so
+#: it must not inherit provider credentials beyond the one its own provider
+#: needs. The sidecar additionally scrubs its tool shells itself (run.mjs).
+_SENSITIVE_ENV_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL")
+_SENSITIVE_ENV_NAMES = {"AUTHORIZATION", "AWS_SESSION_TOKEN"}
+
+#: Credential variables pi-ai 0.82.1 (pinned in pi-sidecar/package.json)
+#: resolves from the environment per provider id — its env-api-keys.js. Only
+#: the configured Pi provider's entries are handed to the sidecar; every other
+#: provider key stays out of a process a prompt-injected command can inspect.
+_PI_PROVIDER_ENV: Dict[str, Tuple[str, ...]] = {
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN"),
+    "github-copilot": ("COPILOT_GITHUB_TOKEN",),
+    "ant-ling": ("ANT_LING_API_KEY",),
+    "qwen-token-plan": ("QWEN_TOKEN_PLAN_API_KEY",),
+    "qwen-token-plan-cn": ("QWEN_TOKEN_PLAN_CN_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "azure-openai-responses": ("AZURE_OPENAI_API_KEY",),
+    "nvidia": ("NVIDIA_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "google": ("GEMINI_API_KEY",),
+    "google-vertex": ("GOOGLE_CLOUD_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"),
+    "groq": ("GROQ_API_KEY",),
+    "cerebras": ("CEREBRAS_API_KEY",),
+    "xai": ("XAI_API_KEY",),
+    "radius": ("RADIUS_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "vercel-ai-gateway": ("AI_GATEWAY_API_KEY",),
+    "zai": ("ZAI_API_KEY",),
+    "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
+    "mistral": ("MISTRAL_API_KEY",),
+    "minimax": ("MINIMAX_API_KEY",),
+    "minimax-cn": ("MINIMAX_CN_API_KEY",),
+    "moonshotai": ("MOONSHOT_API_KEY",),
+    "moonshotai-cn": ("MOONSHOT_API_KEY",),
+    "huggingface": ("HF_TOKEN",),
+    "fireworks": ("FIREWORKS_API_KEY",),
+    "together": ("TOGETHER_API_KEY",),
+    "opencode": ("OPENCODE_API_KEY",),
+    "opencode-go": ("OPENCODE_API_KEY",),
+    "kimi-coding": ("KIMI_API_KEY",),
+    "cloudflare-workers-ai": ("CLOUDFLARE_API_KEY",),
+    "cloudflare-ai-gateway": ("CLOUDFLARE_API_KEY",),
+    "xiaomi": ("XIAOMI_API_KEY",),
+    "xiaomi-token-plan-cn": ("XIAOMI_TOKEN_PLAN_CN_API_KEY",),
+    "xiaomi-token-plan-ams": ("XIAOMI_TOKEN_PLAN_AMS_API_KEY",),
+    "xiaomi-token-plan-sgp": ("XIAOMI_TOKEN_PLAN_SGP_API_KEY",),
+    "amazon-bedrock": (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_PROFILE",
+    ),
+}
+
+
+def _sidecar_env() -> Dict[str, str]:
+    """Environment for a spawned sidecar: no credentials it does not need."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().endswith(_SENSITIVE_ENV_SUFFIXES)
+        and key.upper() not in _SENSITIVE_ENV_NAMES
+    }
+    # Sidecar configuration rides along even when it looks sensitive
+    # (PI_SIDECAR_TOKEN); the sidecar keeps it out of tool shells itself.
+    for key, value in os.environ.items():
+        if key.startswith("PI_SIDECAR_"):
+            env[key] = value
+    provider = str(
+        os.environ.get("PI_PROVIDER") or load_settings().get("pi_provider") or ""
+    ).strip()
+    for key in _PI_PROVIDER_ENV.get(provider, ()):
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    return env
 
 
 class PiSupervisor:
@@ -58,10 +138,21 @@ class PiSupervisor:
                     raise RuntimeError(
                         "Pi sidecar is not installed; run setup for the optional Pi worker"
                     )
+                child_env = _sidecar_env()
+                # A spawned sidecar gets a fresh bearer token so no other local
+                # process can drive it or approve its own confirms — loopback
+                # alone is not authentication. Publishing it in the hub env is
+                # how default-constructed clients pick it up (PiSidecar reads
+                # PI_SIDECAR_TOKEN); rau.agent.tools._shell_env strips it back
+                # out of model-authored shells. A hand-started sidecar is
+                # untouched, so the documented tokenless manual path still works.
+                token = secrets.token_urlsafe(32)
+                child_env["PI_SIDECAR_TOKEN"] = token
+                os.environ["PI_SIDECAR_TOKEN"] = token
                 self._process = subprocess.Popen(
                     [node, str(entry)],
                     cwd=str(ROOT / "pi-sidecar"),
-                    env=os.environ.copy(),
+                    env=child_env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
@@ -69,6 +160,9 @@ class PiSupervisor:
                 if not self._registered:
                     atexit.register(self.stop)
                     self._registered = True
+        # Constructed after the spawn lock so the client picks up the token a
+        # concurrent spawner may have just published in the environment.
+        client = PiSidecar()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if client.available():

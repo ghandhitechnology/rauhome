@@ -181,6 +181,60 @@ describe('BodyController', () => {
     expect(room.released).toBe(1)
   })
 
+  it('keeps the plan pumping when the room turns a station cue away but answers the hold', async () => {
+    body.dispose()
+    body = new BodyController()
+    body.now = () => Date.now()
+    const room = spy()
+    room.target.reportsArrival = true
+    // The contract ClawdRoom's choreographer gate relies on: mid-game the
+    // room turns cues away at the door, and answers the hold for the walk it
+    // declined — a tick later, because pump() arms the hold only after
+    // applyCue() returns.
+    let busy = true
+    const apply = room.target.applyCue
+    room.target.applyCue = (c) => {
+      if (busy) {
+        if (c.station) queueMicrotask(() => body.cueArrived())
+        return
+      }
+      apply(c)
+    }
+    body.registerTarget(room.target)
+
+    body.startTurn(TURN)
+    body.applyPlan(
+      plan([
+        cue({ anchor: 'now', station: 'desk', hold_ms: 500 }),
+        cue({ anchor: 'now', motion: 'wave', hold_ms: 100 }),
+      ]),
+    )
+    // Turned away, never applied — and until the answer lands the hold never
+    // starts: this is the wedge the gate has to answer for.
+    expect(room.applied).toHaveLength(0)
+    vi.advanceTimersByTime(10_000)
+    expect(room.released).toBe(0)
+    expect(body.activeCue?.station).toBe('desk')
+
+    await Promise.resolve()
+    // The answered arrival starts the hold, and the rest of the plan plays.
+    vi.advanceTimersByTime(499)
+    expect(room.released).toBe(0)
+    vi.advanceTimersByTime(2)
+    expect(room.released).toBe(1)
+    vi.advanceTimersByTime(100)
+    expect(room.released).toBe(2)
+    expect(body.activeCue).toBeNull()
+
+    // And the next plan pumps again.
+    busy = false
+    body.startTurn('turn_2')
+    body.applyPlan(
+      plan([cue({ anchor: 'now', motion: 'perk', hold_ms: 100 })], { turn_id: 'turn_2' }),
+    )
+    expect(room.applied.map((c) => c.motion)).toEqual(['perk'])
+  })
+
   it('queues cues that come due together and plays them in plan order', () => {
     body.startTurn(TURN)
     body.applyPlan(

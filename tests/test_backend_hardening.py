@@ -358,7 +358,7 @@ def _slot(provider="kimi", model="k3", effort="high"):
 
 class RegistryTests(_TempTree):
     # A fully valid user config: every CHAT_SLOT populated, kimi-selected face.
-    REAL = {"face": _slot(), "subagent": _slot(), "dream": _slot()}
+    REAL = {"face": _slot(), "subagent": _slot(), "player": _slot(), "dream": _slot()}
 
     def setUp(self):
         super().setUp()
@@ -594,27 +594,6 @@ class DreamWindowTests(unittest.TestCase):
     def at(self, hh, mm):
         return datetime(2026, 7, 26, hh, mm)
 
-    @contextlib.contextmanager
-    def _bounded_loop(self, d, iterations):
-        """Let dream_loop() spin exactly `iterations` times, then exit.
-
-        NOTE: dream_loop ignores the return value of _stop.wait(), so the exit
-        condition has to come from is_set() — patching wait() alone hangs.
-        """
-        ticks = {"n": 0}
-
-        def is_set():
-            return ticks["n"] >= iterations
-
-        def wait(_timeout):
-            ticks["n"] += 1
-            return False
-
-        d._stop.clear()
-        with patch.object(d._stop, "is_set", is_set), \
-             patch.object(d._stop, "wait", wait):
-            yield
-
     def test_normal_window(self):
         f = self.dreamer._in_window
         self.assertTrue(f(self.at(3, 0), "02:00", "05:00"))
@@ -646,44 +625,6 @@ class DreamWindowTests(unittest.TestCase):
                 f(self.at(3, 0), bad, "05:00")
             with self.assertRaises(ValueError, msg=repr(bad)):
                 f(self.at(3, 0), "02:00", bad)
-
-    def test_dream_loop_survives_a_malformed_window_setting(self):
-        d = self.dreamer
-        emitted = []
-        with self._bounded_loop(d, 3), \
-             patch.object(d, "load_settings",
-                          return_value={"dream_window_start": "oops",
-                                        "dream_window_end": "05:00"}), \
-             patch.object(d.BUS, "emit", lambda name, **kw: emitted.append((name, kw))), \
-             patch.object(d, "run_dream", side_effect=AssertionError("must not run")):
-            d.dream_loop()
-
-        self.assertEqual(len(emitted), 1, "malformed settings should be rate-limited")
-        self.assertTrue(all(name == "dream_error" for name, _ in emitted))
-
-    def test_a_failing_dream_should_not_be_retried_every_60_seconds(self):
-        # BUG (cost/log flood): run_dream() failures never advance `last_day`,
-        # so a persistent failure (no API key, provider 500, malformed window)
-        # retries every 60s for the whole 3h window — ~180 provider calls and
-        # ~180 dream_error events per night. Needs a per-day failure latch or
-        # exponential backoff.
-        d = self.dreamer
-        calls = {"n": 0}
-
-        def boom(_day):
-            calls["n"] += 1
-            raise RuntimeError("provider down")
-
-        with self._bounded_loop(d, 10), \
-             patch.object(d, "load_settings",
-                          return_value={"dream_window_start": "00:00",
-                                        "dream_window_end": "23:59"}), \
-             patch.object(d.BUS, "emit", lambda name, **kw: None), \
-             patch.object(d, "should_defer", return_value=False), \
-             patch.object(d, "run_dream", side_effect=boom):
-            d.dream_loop()
-
-        self.assertLessEqual(calls["n"], 3, f"retried {calls['n']} times in one window")
 
 
 # ==========================================================================

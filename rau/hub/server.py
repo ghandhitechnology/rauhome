@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -48,6 +49,8 @@ from rau import state
 load_dotenv(override=False)
 ensure_dirs()
 
+log = logging.getLogger("rau.hub")
+
 app = FastAPI(title="Rau Hub", version="1.0.0")
 _security_settings = load_settings()
 _extra_hosts = _security_settings.get("hub_allowed_hosts") or []
@@ -64,12 +67,12 @@ app.add_middleware(
 
 class EmotionIn(BaseModel):
     emotion: str = "idle"
-    text: str = ""
+    text: str = Field(default="", max_length=1_000)
 
 
 class LogIn(BaseModel):
     role: str = "user"
-    text: str = ""
+    text: str = Field(default="", max_length=16_000)
 
 
 class ControlIn(BaseModel):
@@ -97,13 +100,13 @@ class IdentityApplyFresh(BaseModel):
 
 
 class IdentityApplyHard(BaseModel):
-    identity: str
-    backstory: str
+    identity: str = Field(max_length=100_000)
+    backstory: str = Field(max_length=100_000)
 
 
 class IdentitySteer(BaseModel):
-    identity: Optional[str] = None
-    backstory: Optional[str] = None
+    identity: Optional[str] = Field(default=None, max_length=100_000)
+    backstory: Optional[str] = Field(default=None, max_length=100_000)
 
 
 class ModelsIn(BaseModel):
@@ -143,7 +146,13 @@ class EffortIn(BaseModel):
     face: Optional[str] = None
     subagent: Optional[str] = None
     dream: Optional[str] = None
+    player: Optional[str] = None
     all: Optional[str] = None
+
+
+# Slots the effort API manages; kept in one place so the "all" loop and the
+# per-slot loop can never disagree.
+_EFFORT_SLOTS = ("face", "subagent", "dream", "player")
 
 
 class ResourceProfileIn(BaseModel):
@@ -155,7 +164,7 @@ class GoalIn(BaseModel):
 
 
 class GoalNoteIn(BaseModel):
-    text: str
+    text: str = Field(max_length=4_000)
 
 
 class ScheduleIn(BaseModel):
@@ -258,6 +267,10 @@ async def _shutdown() -> None:
     from rau.pet import stop_pet
     from rau.pi.supervisor import PI_SUPERVISOR
 
+    # Cancel in-flight agent jobs first: their worker threads are joined at
+    # interpreter exit, so leaving one running turns shutdown into a wait of
+    # up to max_runtime_sec (or a 24h confirm wait).
+    orchestrator.cancel_all()
     stop_dreamer()
     stop_heartbeat()
     SCHEDULER.stop()
@@ -863,15 +876,15 @@ def api_effort_put(body: EffortIn):
         if level not in EFFORT_LEVELS:
             return JSONResponse({"ok": False, "error": "invalid effort"}, status_code=400)
         errors = []
-        for slot in ("face", "subagent", "dream"):
+        for slot in _EFFORT_SLOTS:
             err = _apply(slot, level)
             if err:
                 errors.append(err)
-        if len(errors) == 3:
+        if len(errors) == len(_EFFORT_SLOTS):
             return JSONResponse(
                 {"ok": False, "error": "; ".join(errors)}, status_code=400
             )
-    for slot in ("face", "subagent", "dream"):
+    for slot in _EFFORT_SLOTS:
         if slot in data:
             level = str(data[slot]).lower()
             if level not in EFFORT_LEVELS:
@@ -1023,9 +1036,17 @@ def api_memory():
 @app.post("/api/dream/run")
 def api_dream_run():
     try:
-        return run_dream()
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        result = run_dream()
+    except Exception:
+        log.exception("dream run failed")
+        return JSONResponse(
+            {"ok": False, "error": "dream run failed"}, status_code=500
+        )
+    # run_dream() holds a non-blocking lock: a second trigger while one is in
+    # flight is a conflict, not a failure.
+    if isinstance(result, dict) and result.get("status") == "already_running":
+        return JSONResponse(result, status_code=409)
+    return result
 
 
 @app.get("/api/settings")
@@ -1107,8 +1128,11 @@ def api_chat(body: ChatIn):
     try:
         # The broadcast lives inside chat_streaming; nothing extra to do here.
         reply = str(brain.chat_streaming(text, on_token=lambda _t: None, turn_id=turn_id))
-    except Exception as e:
-        reply = f"I hit a snag thinking: {e}"
+    except Exception:
+        # The raw exception can carry provider URLs, keys, or internals — log
+        # it, but answer in-voice without the detail.
+        log.exception("chat turn failed")
+        reply = "I hit a snag thinking. Give me a moment and try again."
     state.add_log("rau", reply, turn_id)
     # Sticky mood / runtime emotion already applied inside chat_streaming.
     emo = state.get_emotion()
@@ -1324,9 +1348,12 @@ async def ws_voice(ws: WebSocket):
                 await session.send(t="error", detail=str(e))
     except WebSocketDisconnect:
         pass
-    except Exception as e:  # noqa: BLE001 — never let one socket kill the hub
+    except Exception:  # noqa: BLE001 — never let one socket kill the hub
+        # Raw exception text can leak internals; the client only needs to know
+        # the session errored.
+        log.exception("voice websocket failed")
         try:
-            await ws.send_json({"t": "error", "detail": str(e)})
+            await ws.send_json({"t": "error", "detail": "internal voice error"})
         except Exception:
             pass
     finally:
@@ -1356,7 +1383,10 @@ async def ws_events(ws: WebSocket):
                 await ws.send_json(event)
             except asyncio.TimeoutError:
                 await ws.send_json({"kind": "ping", "status": _live_status()})
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, OSError, RuntimeError):
+        # All three are one event — the client vanished mid-send (abrupt tab
+        # close surfaces as ClientDisconnected, an OSError, or as a RuntimeError
+        # from sending after the close frame). Nothing to do but unsubscribe.
         pass
     finally:
         BUS.unsubscribe_async(q)

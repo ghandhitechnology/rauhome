@@ -27,7 +27,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from rau.events import BUS
 from rau.face import brain, choreography
-from rau.voice.stt import get_stt_provider, resolve_stt
+from rau.voice.stt import SAMPLE_RATE, get_stt_provider, resolve_stt
 from rau.voice.tts_stream import SR, SentenceTiming, pcm_duration_ms, speak_stream
 from rau import state
 
@@ -138,6 +138,9 @@ class _Turn:
     thread: Optional[threading.Thread] = None
     producer: Optional[threading.Thread] = None
     reply: Any = None
+    #: The LLM→TTS pipe, so a cancel/close can kill a parked TTS consumer
+    #: instead of waiting out a stalled producer.
+    token_pipe: Any = None
     interrupted_sent: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -161,6 +164,10 @@ class _Turn:
             if not self.first_audio_at:
                 return 0.0
             elapsed_ms = (time.monotonic() - self.first_audio_at) * 1000.0
+            # The clock starts at first audio *send*, but sends pace up to
+            # MAX_PLAYBACK_AHEAD_SEC ahead of the speaker. Bias down by that
+            # budget so an interrupt never commits text that was only queued.
+            elapsed_ms -= MAX_PLAYBACK_AHEAD_SEC * 1000.0
             return min(self.utterance.total_ms, max(0.0, elapsed_ms))
 
     def claim_reaction(self) -> bool:
@@ -263,10 +270,13 @@ class VoiceSession:
         self._schedule(go())
 
     async def set_phase(self, phase: str, *, turn: Optional[_Turn] = None) -> None:
-        if turn is not None and (
-            not self._is_current(turn) or turn.cancel.is_set()
-        ):
-            return
+        if turn is not None:
+            if not self._is_current(turn):
+                return
+            # A cancelled turn must not move forwards (thinking/speaking), but
+            # it must still be allowed to settle back to idle.
+            if phase != "idle" and turn.cancel.is_set():
+                return
         if phase != self.phase:
             self.phase = phase
             await self.send(t="phase", phase=phase)
@@ -346,8 +356,13 @@ class VoiceSession:
         task = self._stt_task
         if task is not None:
             self._cancel_stt_watchdog()
+            # Local Whisper on CPU can take about as long to finalise as the
+            # utterance itself; a flat timeout kills long uploads mid-flight.
+            utterance_sec = mic.bytes_seen / 2.0 / SAMPLE_RATE
             self._stt_watchdog = asyncio.create_task(
-                self._watch_stt_finalization(task),
+                self._watch_stt_finalization(
+                    task, max(STT_FINALIZE_SEC, utterance_sec)
+                ),
                 name="rau-voice-stt-finalize",
             )
 
@@ -356,9 +371,11 @@ class VoiceSession:
         if watchdog is not None and watchdog is not asyncio.current_task():
             watchdog.cancel()
 
-    async def _watch_stt_finalization(self, task: asyncio.Task) -> None:
+    async def _watch_stt_finalization(
+        self, task: asyncio.Task, timeout: float = STT_FINALIZE_SEC
+    ) -> None:
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=STT_FINALIZE_SEC)
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
         except asyncio.TimeoutError:
             if task is self._stt_task:
                 task.cancel()
@@ -444,17 +461,29 @@ class VoiceSession:
                 self._cancel_stt_watchdog()
 
         text = " ".join(final_parts).strip()
-        if latest_partial and not text.endswith(latest_partial):
+        # A trailing partial from a stream that just died is suspect, but
+        # settled finals are complete utterances: keep them even on error.
+        if latest_partial and not failed and not text.endswith(latest_partial):
             text = f"{text} {latest_partial}".strip()
         text = text[:MAX_TRANSCRIPT_CHARS]
-        if text and not failed and not self.closed:
+        if failed and final_parts:
+            log.warning("stt: stream failed; committing settled finals anyway")
+        if text and not self.closed:
             async with self._stt_commit_lock:
                 if epoch == self._stt_epoch and not self.closed:
                     await self.send(t="final", text=text)
                     if epoch == self._stt_epoch:
                         await self.begin_turn(text)
-        elif not self.closed and self.phase == "listening":
-            await self.set_phase("idle")
+        elif not self.closed:
+            # Same guard and ordering as the commit branch: an invalidated
+            # tail must not idle a phase a newer utterance already owns.
+            async with self._stt_commit_lock:
+                if (
+                    epoch == self._stt_epoch
+                    and not self.closed
+                    and self.phase == "listening"
+                ):
+                    await self.set_phase("idle")
 
     # ── the turn ─────────────────────────────────────────────────────
 
@@ -528,6 +557,7 @@ class VoiceSession:
 
         note_user_reply()
         tokens = _TokenPipe()
+        turn.token_pipe = tokens
 
         def produce() -> None:
             def on_token(token: str) -> None:
@@ -550,7 +580,12 @@ class VoiceSession:
                     voice=True,
                 )
             except brain.Cancelled as cancelled:
-                brain.finish_interrupted_turn(cancelled, turn.heard_text())
+                # Commits the interruption to history — real disk IO, so it
+                # must not take the pipe down with it when it fails.
+                try:
+                    brain.finish_interrupted_turn(cancelled, turn.heard_text())
+                except Exception:
+                    log.exception("voice: interrupted-turn commit failed")
             except Exception as e:
                 self.send_threadsafe(
                     turn=turn, t="error", detail=f"model: {str(e)[:500]}"
@@ -559,9 +594,17 @@ class VoiceSession:
                 # Covers the narrow race where cancellation lands after
                 # chat_streaming committed a deferred reply but before its
                 # return value was observed by the turn thread.
-                if turn.cancel.is_set() and isinstance(turn.reply, brain.StreamingReply):
-                    brain.finish_interrupted_turn(turn.reply, turn.heard_text())
-                tokens.close()
+                try:
+                    if turn.cancel.is_set() and isinstance(
+                        turn.reply, brain.StreamingReply
+                    ):
+                        brain.finish_interrupted_turn(turn.reply, turn.heard_text())
+                except Exception:
+                    log.exception("voice: interrupted-turn commit failed")
+                finally:
+                    # A diary OSError above can never skip this: the TTS
+                    # consumer must always see the pipe die.
+                    tokens.close()
 
         turn.producer = threading.Thread(
             target=produce,
@@ -669,7 +712,7 @@ class VoiceSession:
             cancelled_during_lag = turn.cancel.wait(PRE_SPEECH_LAG_SEC)
             if not cancelled_during_lag:
                 for _ in speak_stream(
-                    tokens.iter(),
+                    tokens.iter(cancel=turn.cancel),
                     on_audio=tracked_audio,
                     on_sentence=on_sentence,
                     on_timing=on_timing,
@@ -677,7 +720,7 @@ class VoiceSession:
                 ):
                     pass
             else:
-                for _ in tokens.iter():
+                for _ in tokens.iter(cancel=turn.cancel):
                     if turn.cancel.is_set():
                         break
         except Exception as e:
@@ -687,7 +730,7 @@ class VoiceSession:
             )
             # TTS can fail while the model is still generating. Keep consuming
             # the pipe so the full text reply remains available as fallback.
-            for _ in tokens.iter():
+            for _ in tokens.iter(cancel=turn.cancel):
                 if turn.cancel.is_set():
                     break
 
@@ -702,11 +745,22 @@ class VoiceSession:
         full = "".join(tokens.seen).strip()
         if turn.cancel.is_set():
             if isinstance(turn.reply, brain.StreamingReply):
-                brain.finish_interrupted_turn(turn.reply, turn.heard_text())
+                # Same disk-IO guard as the producer: a diary failure must
+                # not skip the notification or the phase settle below.
+                try:
+                    brain.finish_interrupted_turn(turn.reply, turn.heard_text())
+                except Exception:
+                    log.exception("voice: interrupted-turn commit failed")
             self._notify_interrupted_threadsafe(turn)
+            # A stop/barge with no following speech_start must not leave
+            # server and client stuck in "speaking" forever.
+            self.set_phase_threadsafe("idle", turn=turn)
         else:
             if isinstance(turn.reply, brain.StreamingReply):
-                brain.commit_streamed_turn(turn.reply)
+                try:
+                    brain.commit_streamed_turn(turn.reply)
+                except Exception:
+                    log.exception("voice: streamed-turn commit failed")
             if full:
                 state.add_log("rau", full, turn.turn_id)
                 if not audio_sent:
@@ -748,13 +802,33 @@ class VoiceSession:
         played = min(max(0.0, played), 3_600_000.0)
         turn.set_played_ms(played)
         turn.cancel.set()
+        # A consumer parked in _TokenPipe.iter must die now, not when a
+        # stalled producer's provider timeout fires minutes from now.
+        pipe = turn.token_pipe
+        if pipe is not None:
+            await asyncio.to_thread(pipe.close)
         # Unfired cues belong to a sentence that will now never be spoken. Do
         # this before the browser is told anything else, so no avatar acts out
         # a gesture for text the user cut off.
         choreography.cancel_turn(turn.turn_id, "interrupted")
+        # The browser is told the turn is over before the history commit runs:
+        # the commit does fsync'd diary writes, and those must not stall the
+        # event loop while the user waits for the acknowledgement.
         await self.send(t="cancelled", turn_id=turn.turn_id)
         await self._notify_interrupted(turn)
         BUS.emit("voice_interrupted", played_ms=played)
+        # Commit the interruption to history from here as well: with a stalled
+        # provider stream the worker's own commit can wait out the provider
+        # timeout, and a failure there would lose the note entirely.
+        # finish_interrupted_turn is idempotent, so a later worker commit is
+        # harmless.
+        if isinstance(turn.reply, brain.StreamingReply):
+            try:
+                await asyncio.to_thread(
+                    brain.finish_interrupted_turn, turn.reply, turn.heard_text()
+                )
+            except Exception:
+                log.exception("voice: interrupted-turn commit failed")
 
     async def _notify_interrupted(self, turn: _Turn) -> None:
         if not turn.mark_interrupted_sent():
@@ -785,6 +859,8 @@ class VoiceSession:
         turn = self._active_turn
         if turn is not None:
             turn.cancel.set()
+            if turn.token_pipe is not None:
+                await asyncio.to_thread(turn.token_pipe.close)
             choreography.cancel_turn(turn.turn_id, "closed")
         await self.stop_stt()
         self.closed = True
@@ -811,12 +887,13 @@ def warm_voice() -> None:
     _WARMED.set()
 
     def go() -> None:
+        warmed = True
         try:
             from rau.voice import tts_stream
 
-            tts_stream.warmup()
+            warmed = tts_stream.warmup()
         except Exception:
-            pass
+            warmed = False
         try:
             from rau.providers.registry import chat_for_slot
 
@@ -825,7 +902,11 @@ def warm_voice() -> None:
             if callable(warm):
                 warm()
         except Exception:
-            pass
+            warmed = False
+        if not warmed:
+            # Typically "no API key saved yet" — leave the one attempt
+            # unburned so the next voice connect tries again.
+            _WARMED.clear()
 
     threading.Thread(target=go, daemon=True, name="rau-voice-warm").start()
 
@@ -872,9 +953,18 @@ class _TokenPipe:
                 except queue.Empty:
                     pass
 
-    def iter(self):
+    def iter(self, cancel: Optional[threading.Event] = None):
+        import queue
+
         while True:
-            item = self._q.get()
+            # Poll rather than block forever: a cancelled turn must not park
+            # here until the producer exits (provider timeouts run to minutes).
+            try:
+                item = self._q.get(timeout=0.05)
+            except queue.Empty:
+                if cancel is not None and cancel.is_set():
+                    return
+                continue
             if item is None:
                 return
             yield item

@@ -28,6 +28,7 @@ from rau.events import BUS  # noqa: E402
 from rau.games.kittens import engine as engine_mod  # noqa: E402
 from rau.games.kittens import session, tools  # noqa: E402
 from rau.games.kittens import deck as deck_mod  # noqa: E402
+from rau.games.kittens import view as view_mod  # noqa: E402
 from rau.games.kittens.deck import (  # noqa: E402
     ATTACK,
     EXPLODING_KITTEN,
@@ -141,11 +142,9 @@ class GameHarness(unittest.TestCase):
             moves = game.legal_moves(RAU)
             if not moves:
                 return
-            move = dict(moves[0])
-            if move["move"] == "combo" and "named_card" in move:
-                move["named_card"] = "skip"
-            if move["move"] == "insert_kitten":
-                move["index"] = 0
+            # Copy the move the way the model copies the prompt listing — the
+            # same fill-in the view applies, never a test-only patch.
+            move = view_mod._copiable(moves[0])
             if move["move"] == "give_favor" and "card" not in move and game.hands[RAU]:
                 move["card"] = game.hands[RAU][0]
             if move["move"] == "take_from_discard" and "card" not in move and game.discard:
@@ -202,6 +201,23 @@ class Dealing(GameHarness):
         tools.run_tool("end_kittens", {})
         self.assertFalse(session.active())
         self.assertIsNone(session.state())
+
+    def test_ending_a_live_game_announces_it(self):
+        rec = Recorder("game_ended")
+        tools.run_tool("start_kittens", {})
+        tools.run_tool("end_kittens", {})
+        self.assertIn("game_ended", rec.kinds())
+
+    def test_ending_a_finished_game_still_announces_it(self):
+        # A tab that opened after the result was broadcast only knows the
+        # finished table; clearing it must reach that tab too.
+        rec = Recorder("game_ended")
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.concede(USER)
+        tools.run_tool("end_kittens", {})
+        self.assertIn("game_ended", rec.kinds())
 
 
 class Refusals(GameHarness):
@@ -305,11 +321,9 @@ class ThePump(GameHarness):
             if seat == USER:
                 moves = game.legal_moves(USER)
                 if moves:
-                    move = dict(moves[-1])  # the last legal move is always "draw"
-                    if move["move"] == "insert_kitten":
-                        move["index"] = 0
-                    if move["move"] == "combo" and "named_card" in move:
-                        move["named_card"] = "skip"
+                    # The last legal move is always "draw"; copy it the way the
+                    # model copies the listing, placeholders filled by the view.
+                    move = view_mod._copiable(moves[-1])
                     session.apply_move(USER, move)
             time.sleep(0.05)
         game = session.current()
@@ -466,6 +480,44 @@ class GuaranteedMove(unittest.TestCase):
         self.assertTrue(
             game.current == USER or game.phase == PHASE_OVER,
             "Rau never took the turn after the user defused",
+        )
+
+    def test_fallback_defuses_with_the_placeholder_index(self):
+        """
+        Regression for the defuse wedge: legal_moves lists insert_kitten with a
+        prose range ("0..N"), not an index. With the model down, the guaranteed
+        fallback copied it verbatim, int("0..N") raised, and the pump retried
+        the same guaranteed failure every two seconds forever.
+        """
+        rec = Recorder("game_error")
+        self._player._ask_model = lambda prompt: "not json at all"
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[USER] = [SKIP]
+        game.hands[RAU] = [deck_mod.DEFUSE, SKIP]
+        game.draw = [EXPLODING_KITTEN, ATTACK, FAVOR]
+        game.discard = []
+        game.current = RAU
+        game.turns_to_take = 1
+        game.phase = engine_mod.PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        session.apply_move(RAU, {"move": "draw"})
+        self.assertEqual(game.phase, engine_mod.PHASE_DEFUSE)
+        self.assertEqual(game.awaiting_seat, RAU)
+        self.assertIn("0..", str(game.legal_moves(RAU)), "the placeholder is the point")
+        deadline = time.time() + 8
+        while time.time() < deadline and game.phase == engine_mod.PHASE_DEFUSE:
+            time.sleep(0.05)
+        self.assertNotEqual(
+            game.phase,
+            engine_mod.PHASE_DEFUSE,
+            "the fallback never placed the kitten — the table wedged in awaiting_defuse",
+        )
+        self.assertFalse(
+            [e for e in rec.events if "fallback failed" in str(e.get("error"))],
+            "the guaranteed fallback failed",
         )
 
 

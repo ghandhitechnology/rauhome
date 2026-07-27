@@ -37,8 +37,8 @@ export type VoiceSession = {
 }
 
 /**
- * Mic frames kept before speech is confirmed. The VAD needs 120ms to be sure
- * and up to 260ms to justify an interrupt; replaying this ring means the STT
+ * Mic frames kept before speech is confirmed. The VAD needs 100ms to be sure
+ * and up to 240ms to justify an interrupt; replaying this ring means the STT
  * backend still hears the word from its first consonant.
  */
 const PREROLL_FRAMES = 16
@@ -116,6 +116,8 @@ export const useVoiceSession = ({
   const mutedRef = useRef(false)
   const micRef = useRef(0)
   const outRef = useRef(0)
+  /** The preroll ring lives in the effect; the ref lets stop() reach it. */
+  const heldRef = useRef<ArrayBuffer[]>([])
 
   const applyPhase = useCallback((next: VoicePhase) => {
     phaseRef.current = next
@@ -132,6 +134,7 @@ export const useVoiceSession = ({
     playbackRef.current = playback
 
     const held: ArrayBuffer[] = []
+    heldRef.current = held
     let ws: WebSocket | null = null
     let disposed = false
     let retries = 0
@@ -199,6 +202,9 @@ export const useVoiceSession = ({
         send({ t: 'speech_end' })
         streamingRef.current = false
         held.length = 0
+        // The utterance is over whether or not a final ever arrives — an STT
+        // error stands in for one — so its endpointer patience ends here too.
+        vad.setHangoverScale(1)
       }
     })
 
@@ -236,13 +242,15 @@ export const useVoiceSession = ({
     // never starts leaves `start()` pending rather than rejecting. Without a
     // deadline the UI sits on "connecting…" forever with nothing to act on.
     const watchdog = window.setTimeout(() => {
-      if (!disposed && !wsRef.current) {
-        setError(
-          listen
-            ? 'could not start audio — check microphone access and output device'
-            : 'could not start audio — check the output device',
-        )
-      }
+      if (disposed || wsRef.current) return
+      // A concrete start error (permission denied, no device) says more than
+      // this generic one — fill the silence, never overwrite it.
+      setError((prev) =>
+        prev ||
+        (listen
+          ? 'could not start audio — check microphone access and output device'
+          : 'could not start audio — check the output device'),
+      )
     }, AUDIO_START_TIMEOUT_MS)
 
     const open = async () => {
@@ -366,6 +374,9 @@ export const useVoiceSession = ({
             break
           case 'say':
             setLastSay(msg.text ?? '')
+            // A reply arriving proves the pipeline works again; the banner
+            // for an earlier turn's failure must not outlive it.
+            setError('')
             break
           case 'say_end':
             // A cut-off reply reports only what actually reached the speaker,
@@ -392,6 +403,9 @@ export const useVoiceSession = ({
             break
           case 'error':
             setError(msg.detail ?? 'voice error')
+            // A failed turn never sends the final that would have reset the
+            // endpointer; don't carry its patience into the next utterance.
+            vad.setHangoverScale(1)
             break
         }
       }
@@ -457,6 +471,13 @@ export const useVoiceSession = ({
     const socket = wsRef.current
     if (!value || !socket || socket.readyState !== WebSocket.OPEN) return
     socket.send(JSON.stringify({ t: 'text', text: value }))
+    // A typed message interrupts the same as speech would: the server cancels
+    // the reply on receipt, but only after a round-trip — cut the queued
+    // audio locally, same as stop(), or it plays over the cleared captions.
+    if (phaseRef.current === 'speaking') {
+      mutedRef.current = true
+      void playbackRef.current?.flush()
+    }
     // Typed input is never transcribed, so nothing else will report it.
     setPartial('')
     setFinalText(value)
@@ -474,6 +495,12 @@ export const useVoiceSession = ({
           socket.send(JSON.stringify({ t: 'barge', playedMs }))
         }
       })
+      // The server answers a barge with its own phase update, but don't wait
+      // for it: staying 'speaking' until then keeps swallowing mic frames,
+      // and the abandoned utterance's VAD state and preroll belong to it.
+      applyPhase('idle')
+      vadRef.current?.reset()
+      heldRef.current.length = 0
       return
     }
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -481,6 +508,7 @@ export const useVoiceSession = ({
     }
     streamingRef.current = false
     vadRef.current?.reset()
+    heldRef.current.length = 0
     applyPhase('idle')
   }, [applyPhase])
 

@@ -179,6 +179,12 @@ live.subscribe((event) => {
   }
 })
 
+// Nothing is replayed on reconnect, and the poll only runs while the socket
+// is down — so a hub restart is only ever noticed here.
+live.onStatus((connected) => {
+  if (connected) void gameStore.refresh()
+})
+
 /** Subscribe a component to the table. */
 export function useGame(): {
   table: TableState | null

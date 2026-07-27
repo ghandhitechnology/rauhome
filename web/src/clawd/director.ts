@@ -295,6 +295,23 @@ export class Director {
     this.startleUntil = 0
   }
 
+  /**
+   * Drop a directed goTo where it stands.
+   *
+   * The card-table ritual sends him through the same channel as a human
+   * "Send him to", so when the table goes away mid-walk the destination goes
+   * with it. Re-aiming at centre matters: the room-mode walk always gravitates
+   * to whatever `target` names, and left as `table` it would carry him to a
+   * patch of bare floor and sit him down at it.
+   */
+  cancelDirected() {
+    this.directed = false
+    this.directedUntil = 0
+    this.directedHurry = false
+    this.target = 'centre'
+    this.arrived = true
+  }
+
   /** Poke him — he jumps, then carries on. */
   startle() {
     if (this.rig.play('startle', { force: true, restart: true })) {

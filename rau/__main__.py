@@ -91,6 +91,12 @@ def main(argv: list[str] | None = None) -> None:
             while True:
                 time.sleep(0.5)
         except KeyboardInterrupt:
+            from rau.agent import orchestrator
+
+            # The hub's own shutdown event never fires in this mode (uvicorn
+            # runs on a daemon thread), so cancelling in-flight jobs is up to
+            # us — otherwise exit joins their worker threads and hangs.
+            orchestrator.cancel_all()
             stop_face()
             stop_pet()
             print("\nRau signing off.")
@@ -104,6 +110,11 @@ def main(argv: list[str] | None = None) -> None:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
+            # Same as face mode: the hub's shutdown event never fires here, so
+            # cancel in-flight jobs ourselves or exit joins their threads.
+            from rau.agent import orchestrator
+
+            orchestrator.cancel_all()
             stop_pet()
             print("\nbye")
         return

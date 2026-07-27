@@ -167,6 +167,35 @@ describe('which cards visibly move', () => {
     ).toEqual([{ from: 'playerHand', to: 'discard' }])
   })
 
+  it('flies a Nope from the hand that threw it, not from whose turn it is', () => {
+    const pending = {
+      action_id: 'a1',
+      actor: 'rau' as Seat,
+      kind: 'card' as const,
+      cards: ['attack'] as CardId[],
+      nopes: 0,
+      waiting_on: 'user' as Seat,
+      deadline: 100,
+    }
+    // His Attack is on the pile and the window is on you; your Nope has to
+    // leave *your* fan even though the turn is still his.
+    const prev = tableOf({
+      current: 'rau',
+      your_turn: false,
+      phase: 'nope_window',
+      discard: ['attack'] as CardId[],
+      pending,
+    })
+    const next = tableOf({
+      current: 'rau',
+      your_turn: false,
+      phase: 'nope_window',
+      discard: ['attack', 'nope'] as CardId[],
+      pending: { ...pending, nopes: 1, waiting_on: 'rau' },
+    })
+    expect(diffFlights(prev, next)).toEqual([{ from: 'playerHand', to: 'discard' }])
+  })
+
   it('flies a whole combo, one card per card', () => {
     const next = tableOf({ discard: ['tacocat', 'tacocat'] as CardId[] })
     expect(diffFlights(tableOf({ current: 'rau' }), next)).toHaveLength(2)

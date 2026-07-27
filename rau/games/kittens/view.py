@@ -220,6 +220,24 @@ def _table_lines(game: Game, seat: str) -> List[str]:
     return lines
 
 
+def _copiable(move: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    A listed move with its open choices filled in.
+
+    `legal_moves` marks the two free choices — where the kitten goes back,
+    which card to demand — with prose placeholders ("0..N", "<any card you
+    want…>"). That reads fine but the engine refuses both verbatim, and the
+    model is told to copy. Fill them so anything on the list plays as printed.
+    """
+    move = dict(move)
+    if move.get("move") == "insert_kitten" and not isinstance(move.get("index"), int):
+        move["index"] = 0
+    named = move.get("named_card")
+    if named is not None and named not in deck_mod.ALL_CARDS:
+        move["named_card"] = deck_mod.SKIP
+    return move
+
+
 def prompt_fragment(game: Game, seat: str = RAU) -> str:
     """
     The game as the player half is entitled to see it.
@@ -235,7 +253,7 @@ def prompt_fragment(game: Game, seat: str = RAU) -> str:
     if moves:
         lines.append("")
         lines.append("Legal moves right now — reply with one of these as JSON `move`:")
-        lines.extend(f"- {json.dumps(m)}" for m in moves)
+        lines.extend(f"- {json.dumps(_copiable(m))}" for m in moves)
         lines.append("")
         lines.append(
             "Play to win, and say something while you do it — one short line, in your "

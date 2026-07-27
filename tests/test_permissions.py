@@ -225,10 +225,15 @@ class ReadonlyAllowlistTests(unittest.TestCase):
         for name in ("read_file", "memory_read", "list_skills", "body_choreography"):
             self.assertTrue(is_readonly_allowed(name), name)
 
-    def test_remote_tools_allow_only_lookups(self) -> None:
+    def test_remote_tools_allow_only_payload_free_lookups(self) -> None:
         from rau.permissions import is_readonly_allowed
 
-        self.assertTrue(is_readonly_allowed("composio_gmail_search"))
+        # Search forwards model-written query text to a remote API — an
+        # exfiltration channel, not a lookup — so read-only refuses it.
+        self.assertFalse(is_readonly_allowed("composio_search", {"query": "x"}))
+        self.assertFalse(is_readonly_allowed("composio_gmail_search"))
+        self.assertTrue(is_readonly_allowed("composio_gmail_list"))
+        self.assertTrue(is_readonly_allowed("mcp_calendar_status"))
         self.assertFalse(is_readonly_allowed("composio_gmail_send"))
         self.assertFalse(is_readonly_allowed("mcp_calendar_create_event"))
 
@@ -238,6 +243,66 @@ class ReadonlyAllowlistTests(unittest.TestCase):
         self.assertTrue(is_readonly_allowed("cua_action", {"action": "screenshot"}))
         self.assertFalse(is_readonly_allowed("cua_action", {"action": "click"}))
         self.assertFalse(is_readonly_allowed("cua_action", {"action": "type"}))
+
+    def test_bare_computer_observe_is_refused(self) -> None:
+        from rau.permissions import is_readonly_allowed
+
+        # Without a session_id the call starts a session and seizes the single
+        # machine lease — a mutation read-only mode must not make.
+        self.assertFalse(is_readonly_allowed("computer_observe", {}))
+        self.assertFalse(is_readonly_allowed("computer_observe", {"session_id": " "}))
+        self.assertTrue(is_readonly_allowed("computer_observe", {"session_id": "s1"}))
+
+
+class ExfiltrationGateTests(unittest.TestCase):
+    """The read-secrets-then-search-away chain is broken in every mode."""
+
+    def _with_modes(self, **modes: str):
+        from rau import permissions as perm
+
+        base = dict(perm.DEFAULT_PERMISSIONS)
+        base.update(modes)
+        return mock.patch.object(perm, "get_permissions", return_value=base)
+
+    def test_secret_reads_await_confirmation_in_auto(self) -> None:
+        from rau.permissions import tool_decision
+
+        # Pure classification: none of these paths is ever opened.
+        with self._with_modes(subagents="auto"):
+            self.assertEqual(
+                tool_decision("subagents", "read_file", {"path": ".env"}),
+                "confirm",
+            )
+            self.assertEqual(
+                tool_decision("subagents", "read_file", {"path": "secrets/keys.json"}),
+                "confirm",
+            )
+            self.assertEqual(
+                tool_decision("subagents", "read_file", {"path": "README.md"}),
+                "allow",
+            )
+
+    def test_readonly_denies_search_outright(self) -> None:
+        from rau.permissions import tool_decision
+
+        with self._with_modes(room="readonly", subagents="readonly", heartbeats="readonly"):
+            self.assertEqual(
+                tool_decision("room", "composio_search", {"query": "anything"}),
+                "deny",
+            )
+
+    def test_readonly_denies_bare_observe_through_the_decision_layer(self) -> None:
+        from rau.permissions import tool_decision
+
+        with self._with_modes(room="readonly", subagents="readonly", heartbeats="readonly"):
+            self.assertEqual(
+                tool_decision("room", "computer_observe", {}),
+                "deny",
+            )
+            self.assertEqual(
+                tool_decision("room", "computer_observe", {"session_id": "s1"}),
+                "allow",
+            )
 
 
 if __name__ == "__main__":
