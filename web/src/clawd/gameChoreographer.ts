@@ -73,6 +73,17 @@ const TABLE_GAZE = { x: 0, y: 0.45, speed: 4, wander: 0.4 }
 const GLANCE_GAZE = { x: 0, y: -0.35, speed: 12, wander: 0.15 }
 const GLANCE_HOLD = 0.75
 
+/**
+ * The same shot, approached slowly.
+ *
+ * Used while he is still walking, so the push-in has already begun by the
+ * time he sits: one continuous move instead of a walk, a pause, and a zoom.
+ */
+const APPROACH_CAMERA = { ...GAME_CAMERA, lambda: GAME_CAMERA.lambda * 0.28 }
+
+/** The last of the push, taken while he is on his way into the seat. */
+const SEATING_CAMERA = { ...GAME_CAMERA, lambda: GAME_CAMERA.lambda * 0.6 }
+
 /** How close he has to be before the table fades in around him. */
 const TABLE_NEAR = 14
 /** Past this, the walk is worth hurrying. */
@@ -228,7 +239,18 @@ export class GameChoreographer implements TableChoreo {
       case 'walk':
         // The table arrives with him rather than waiting for him, so he is
         // never walking toward furniture that is not there yet.
-        if (distance < TABLE_NEAR) this.presence = damp(this.presence, 1, 2.4, dt)
+        if (distance < TABLE_NEAR) {
+          this.presence = damp(this.presence, 1, 2.4, dt)
+          // And the camera leaves with him. Held until he was seated, the
+          // push-in was a separate event that began after the walk ended —
+          // one move, then a pause, then another move. Started here it is
+          // the same move: the shot is already closing as he arrives, and
+          // the room dims around a character who is still walking into it.
+          // Slow at this range on purpose, so the arrival is what finishes
+          // the push rather than the push finishing before he does.
+          this.cameraTarget = APPROACH_CAMERA
+          this.dim = damp(this.dim, GAME_DIM * 0.55, 1.6, dt)
+        }
         if (this.director.isArrived) {
           this.rig.play('sit', { force: true, restart: true })
           this.enter('sitting')
@@ -237,6 +259,11 @@ export class GameChoreographer implements TableChoreo {
 
       case 'sitting':
         this.presence = damp(this.presence, 1, 3, dt)
+        this.dim = damp(this.dim, GAME_DIM, 2, dt)
+        // The camera closes the rest of the way as he goes down — quicker
+        // than the approach, still slow enough that it is arriving *with*
+        // him rather than waiting for him with the shot already set.
+        this.cameraTarget = SEATING_CAMERA
         // The walk stops within a deadband of the station, which is fine for
         // standing about and not fine here: his hands are the middle of the
         // shot, so the last unit is closed while he is on his way down.
@@ -244,7 +271,6 @@ export class GameChoreographer implements TableChoreo {
         if (!this.rig.busy) {
           this.rig.play('sitTable', { force: true, restart: true })
           this.rig.setGaze(TABLE_GAZE)
-          this.cameraTarget = GAME_CAMERA
           this.enter('framing')
         }
         break
@@ -252,7 +278,14 @@ export class GameChoreographer implements TableChoreo {
       case 'framing':
         this.presence = damp(this.presence, 1, 3, dt)
         this.dim = damp(this.dim, GAME_DIM, 2.2, dt)
-        if (Math.abs(scene.camera.zoom - GAME_CAMERA.zoom) < 0.06) {
+        // Tighter than the old 0.06: with the push already most of the way
+        // done by the time he sits, a loose threshold would hand the deal a
+        // camera that is still visibly moving.
+        if (Math.abs(scene.camera.zoom - GAME_CAMERA.zoom) < 0.02) {
+          // Back to the canonical shot now the slow approach has done its
+          // work: anything that nudges the camera during the hand should get
+          // the full response, not the walking-in one.
+          this.cameraTarget = GAME_CAMERA
           this.enter('playing')
           this.resolveSummon()
         }

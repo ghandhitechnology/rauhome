@@ -17,7 +17,7 @@ import SlashMenu from '../components/SlashMenu'
 import { ThreadSkeleton } from '../components/PageSkeleton'
 import { api } from '../api'
 import { live } from '../live'
-import { useMode } from '../mode'
+import { useMode, modeListens, modeUsesVoice } from '../mode'
 import { useVoiceSession } from '../voice'
 import {
   filterSlashCommands,
@@ -169,7 +169,8 @@ function useComposerRubberBand(
 
 export default function Conversation() {
   const { mode } = useMode()
-  const voice = useVoiceSession({ enabled: mode === 'voice' })
+  const voiceOn = modeUsesVoice(mode)
+  const voice = useVoiceSession({ enabled: voiceOn, listen: modeListens(mode) })
   const [log, setLog] = useState<any[]>([])
   /** Until the first fetch settles, an empty `log` means "unknown", not "none". */
   const [logLoaded, setLogLoaded] = useState(false)
@@ -210,10 +211,9 @@ export default function Conversation() {
   useComposerRubberBand(threadRef, composeRef)
 
   const voiceTurnActive =
-    mode === 'voice' &&
+    voiceOn &&
     (voice.phase === 'speaking' || voice.phase === 'thinking' || !!voice.spokenText)
   voiceActiveRef.current = voiceTurnActive
-
   async function refresh() {
     // Polls that outlive their interval slot must not stack up or land
     // out of order and flash an older log over a newer one.
@@ -264,21 +264,21 @@ export default function Conversation() {
       const text = typeof event.text === 'string' ? event.text : ''
       switch (event.kind) {
         case 'chat_started':
-          // Voice turns paint from playback; keep the text stream for chat mode.
-          if (voiceActiveRef.current || mode === 'voice') {
+          // Voice/talk turns paint from playback; keep the text stream for chat.
+          if (voiceActiveRef.current || voiceOn) {
             setStreaming(null)
             break
           }
           setStreaming({ turnId, text: '' })
           break
         case 'chat_delta':
-          if (voiceActiveRef.current || mode === 'voice') break
+          if (voiceActiveRef.current || voiceOn) break
           setStreaming((prev) =>
             prev && prev.turnId !== turnId ? prev : { turnId, text },
           )
           break
         case 'chat_done':
-          if (voiceActiveRef.current || mode === 'voice') {
+          if (voiceActiveRef.current || voiceOn) {
             setStreaming(null)
             break
           }
@@ -298,7 +298,7 @@ export default function Conversation() {
           break
       }
     }),
-  [mode])
+  [voiceOn])
 
   const slashDraft = useMemo(() => readSlashDraft(draft), [draft])
   const activeSlash = useMemo(
@@ -321,8 +321,8 @@ export default function Conversation() {
   // still playing, before the reply is logged. Fold the turn into the thread
   // then; nothing else refreshes while the live socket is up.
   useEffect(() => {
-    if (mode === 'voice' && voice.lastTurn) void refresh()
-  }, [mode, voice.lastTurn])
+    if (voiceOn && voice.lastTurn) void refresh()
+  }, [voiceOn, voice.lastTurn])
 
   // The pending echo is a stand-in until the hub's log includes the message.
   // Keeping it past that point re-appends it as a ghost copy the moment the
@@ -345,9 +345,9 @@ export default function Conversation() {
 
   // Same idea for the streamed reply: it hands over to the polled log the
   // moment that log contains it, so the message never appears twice.
-  // In voice mode the bubble tracks the ear (spokenText), not chat_delta.
+  // In voice/talk mode the bubble tracks the ear (spokenText), not chat_delta.
   const liveReply = useMemo(() => {
-    if (mode === 'voice') {
+    if (voiceOn) {
       const heard = voice.spokenText.trim()
       if (!heard) return ''
       const last = log[log.length - 1]
@@ -366,7 +366,7 @@ export default function Conversation() {
     const last = log[log.length - 1]
     if (last && last.role !== 'user' && String(last.text || '').trim() === text) return ''
     return text
-  }, [mode, voice.spokenText, voice.phase, streaming, log])
+  }, [voiceOn, voice.spokenText, voice.phase, streaming, log])
 
   // Track whether the reader is at the bottom; scrolling up to reread must
   // not be yanked back down by the next poll.
@@ -412,9 +412,9 @@ export default function Conversation() {
     // Sending your own message always belongs at the bottom.
     stickRef.current = true
 
-    // Voice mode: same socket as speech so the reply streams as audio and the
+    // Voice/talk: same socket as speech so the reply streams as audio and the
     // live bubble tracks playback, not chat_delta.
-    if (mode === 'voice' && voice.connected) {
+    if (voiceOn && voice.connected) {
       setDraft('')
       setPending({
         role: 'user',
@@ -587,7 +587,7 @@ export default function Conversation() {
         )}
         {(sending ||
           deskWorking ||
-          (mode === 'voice' && voice.phase === 'thinking')) &&
+          (voiceOn && voice.phase === 'thinking')) &&
           !liveReply && (
           <div
             className={`convo-typing${deskWorking ? ' working' : ''}`}
@@ -666,7 +666,11 @@ export default function Conversation() {
         <p className="compose-hint">
           {showSlashMenu
             ? '↑↓ to browse · Tab/Enter to pick · Esc to dismiss'
-            : 'Enter sends · Shift+Enter for a new line · / for commands'}
+            : mode === 'talk'
+              ? 'Talk mode — type in, he answers out loud · Shift+Space cycles modes'
+              : mode === 'voice'
+                ? 'Voice mode — speak or type · Shift+Space cycles modes'
+                : 'Enter sends · Shift+Enter for a new line · / for commands · Shift+Space cycles modes'}
         </p>
       </footer>
       </div>

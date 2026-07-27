@@ -45,23 +45,41 @@ export function useClawdCanvas(
     ro.observe(canvas)
 
     const targetFps = () => {
-      const profile = document.documentElement.dataset.resourceProfile || 'balanced'
-      const active = document.documentElement.dataset.rauActive === 'true'
+      const root = document.documentElement.dataset
+      // A hand of cards is the one thing here you are actually *playing*, and
+      // a card sliding at 30fps under a hand that moves at 120 is the one
+      // place the whole room reads as a cartoon of an interface. It gets the
+      // display's own rate for as long as the table is out, and gives it back
+      // the moment he stands up.
+      if (root.rauTable === 'true') return 60
+      const profile = root.resourceProfile || 'balanced'
+      const active = root.rauActive === 'true'
       return profile === 'performance' ? 60 : active ? 30 : profile === 'eco' ? 15 : 24
     }
 
-    const scheduleFrame = () => {
-      timer = setTimeout(() => {
-        timer = null
-        raf = requestAnimationFrame(frame)
-      }, 1000 / targetFps())
-    }
-
+    /*
+      Paced on rAF alone, not on a timer that then asks for a frame.
+      `setTimeout(1000/fps)` followed by `requestAnimationFrame` costs a
+      timeout *and* a wait for the next vsync, so 60fps asked for 16.7ms and
+      got 33 — every other frame dropped, which is exactly the judder this is
+      meant to avoid. Here every vsync is considered and one is skipped only
+      when the budget for the target rate has not elapsed. The 0.6 slack is a
+      half-ish frame: without it a 16.66ms vsync always lands a hair under a
+      16.67ms budget and every frame is skipped.
+    */
     const frame = (now: number) => {
+      raf = 0
       if (disposed) return
+      const fps = targetFps()
+      const budget = 1000 / fps - 0.6
+      const elapsed = now - last
+      if (elapsed < budget) {
+        scheduleFrame()
+        return
+      }
       // 100ms ceiling: long enough to absorb a hitch, short enough that a
       // restored tab does not fast-forward the simulation.
-      const dt = Math.min(0.1, Math.max(0, (now - last) / 1000))
+      const dt = Math.min(0.1, Math.max(0, elapsed / 1000))
       last = now
       if (!document.hidden) {
         ctx.clearRect(0, 0, width, height)
@@ -69,6 +87,20 @@ export function useClawdCanvas(
       }
       scheduleFrame()
     }
+
+    const scheduleFrame = () => {
+      // A hidden tab stops firing rAF, so the slow path keeps a heartbeat
+      // going: it is how the loop notices it has been un-hidden.
+      if (document.hidden) {
+        timer = setTimeout(() => {
+          timer = null
+          raf = requestAnimationFrame(frame)
+        }, 250)
+        return
+      }
+      raf = requestAnimationFrame(frame)
+    }
+
     scheduleFrame()
 
     const onVisible = () => {

@@ -86,7 +86,14 @@ export type VoiceToolCall = { name: string; args: Record<string, unknown>; ok: b
 /** How the last reply ended. `heard` is populated only when interrupted. */
 export type VoiceTurnEnd = { interrupted: boolean; heard: string; at: number }
 
-export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession => {
+export const useVoiceSession = ({
+  enabled,
+  listen = true,
+}: {
+  enabled: boolean
+  /** When false, keep the voice socket and TTS but do not open the mic. */
+  listen?: boolean
+}): VoiceSession => {
   const [phase, setPhase] = useState<VoicePhase>('idle')
   const [connected, setConnected] = useState(false)
   const [partial, setPartial] = useState('')
@@ -230,14 +237,20 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
     // deadline the UI sits on "connecting…" forever with nothing to act on.
     const watchdog = window.setTimeout(() => {
       if (!disposed && !wsRef.current) {
-        setError('could not start audio — check microphone access and output device')
+        setError(
+          listen
+            ? 'could not start audio — check microphone access and output device'
+            : 'could not start audio — check the output device',
+        )
       }
     }, AUDIO_START_TIMEOUT_MS)
 
     const open = async () => {
       try {
         await playback.start()
-        await capture.start()
+        // Talk mode (listen=false) only needs speakers — skip the mic so we
+        // never ask for permission or stream silence into STT.
+        if (listen) await capture.start()
       } catch (e) {
         if (!disposed) setError(e instanceof Error ? e.message : String(e))
         return
@@ -421,7 +434,7 @@ export const useVoiceSession = ({ enabled }: { enabled: boolean }): VoiceSession
       setBackend('')
       applyPhase('idle')
     }
-  }, [enabled, applyPhase])
+  }, [enabled, listen, applyPhase])
 
   useEffect(() => {
     if (!enabled) return

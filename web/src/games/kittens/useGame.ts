@@ -10,7 +10,7 @@
  * the state that arrives over the socket is already redacted to this seat, so
  * there is nothing here to leak even by accident.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { api } from '../../api'
 import { live } from '../../live'
 import type { CardId } from './art'
@@ -197,20 +197,38 @@ export function useGame(): {
  * that stuttered every time the socket was quiet would read as lag in the game
  * rather than in the network.
  */
-export function useCountdown(deadline: number | null): number {
-  const [left, setLeft] = useState(0)
+/**
+ * A deadline, as a CSS variable on one element.
+ *
+ * A countdown is a number that changes sixty times a second, and routed
+ * through React state that is sixty renders a second for five seconds —
+ * during the one moment of the game where you are being asked to react
+ * quickly. The ring only ever needed a number to draw an arc from, so the
+ * number goes straight onto the node that draws it and React is left out of
+ * it. Anything that needs the value as *content* — a digit counting down —
+ * would want state instead.
+ */
+export function useCountdownVar(
+  deadline: number | null,
+  total: number,
+  name = '--left',
+): RefObject<HTMLElement | null> {
+  const ref = useRef<HTMLElement | null>(null)
   useEffect(() => {
+    const el = ref.current
+    if (!el) return
     if (!deadline) {
-      setLeft(0)
+      el.style.setProperty(name, '0')
       return
     }
     let frame = 0
     const step = () => {
-      setLeft(Math.max(0, deadline * 1000 - Date.now()))
+      const left = Math.max(0, deadline * 1000 - Date.now())
+      el.style.setProperty(name, String(Math.min(1, left / total)))
       frame = requestAnimationFrame(step)
     }
-    frame = requestAnimationFrame(step)
+    step()
     return () => cancelAnimationFrame(frame)
-  }, [deadline])
-  return left
+  }, [deadline, total, name])
+  return ref
 }

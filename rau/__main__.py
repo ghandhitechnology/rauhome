@@ -44,8 +44,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.mode == "launch-agent":
         from rau import launch_agent
 
-        action = getattr(launch_agent, args.launch_action)
-        print(action())
+        if args.launch_action == "install":
+            print(launch_agent.install(no_audio=args.no_audio))
+        else:
+            print(getattr(launch_agent, args.launch_action)())
         return
 
     os.environ.setdefault("RAU_RUNTIME", "1")

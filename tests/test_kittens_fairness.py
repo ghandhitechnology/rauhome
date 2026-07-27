@@ -233,10 +233,10 @@ class ModelPrompt(unittest.TestCase):
         game.current = RAU
         text = view_mod.prompt_fragment(game, RAU)
         self.assertIn("Legal moves right now", text)
-        self.assertIn("play_kittens_card(", text)
+        self.assertIn('"move":', text)
         for move in game.legal_moves(RAU):
             if move["move"] == "play":
-                self.assertIn(f'card="{move["card"]}"', text)
+                self.assertIn(f'"card": "{move["card"]}"', text)
 
     def test_the_fragment_is_empty_of_rules_lecture_when_it_is_not_his_turn(self):
         game = Game(seed=5)

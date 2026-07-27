@@ -20,15 +20,23 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rau.events import BUS  # noqa: E402
 from rau.games.kittens import engine as engine_mod  # noqa: E402
 from rau.games.kittens import session, tools  # noqa: E402
-from rau.games.kittens.deck import EXPLODING_KITTEN  # noqa: E402
-from rau.games.kittens.engine import PHASE_OVER, RAU, USER  # noqa: E402
+from rau.games.kittens import deck as deck_mod  # noqa: E402
+from rau.games.kittens.deck import (  # noqa: E402
+    ATTACK,
+    EXPLODING_KITTEN,
+    FAVOR,
+    SEE_THE_FUTURE,
+    SHUFFLE,
+    SKIP,
+)
+from rau.games.kittens.engine import PHASE_NOPE, PHASE_OVER, RAU, USER  # noqa: E402
 
 
 class Recorder:
@@ -101,12 +109,13 @@ def quiesce() -> None:
     deals, and the shared pump state it touches on the way out makes unrelated
     tests fail intermittently.
     """
+    from rau.games.kittens import pump
+
     session.end("test over")
     deadline = time.time() + 5
-    while session._thinking.is_set() and time.time() < deadline:
+    while pump.thinking().is_set() and time.time() < deadline:
         time.sleep(0.02)
-    session._stalls = 0
-    session._decided.clear()
+    pump.reset_for_deal()
 
 
 class GameHarness(unittest.TestCase):
@@ -117,40 +126,40 @@ class GameHarness(unittest.TestCase):
         self._window = engine_mod.NOPE_WINDOW_MS
         engine_mod.NOPE_WINDOW_MS = 1  # a window nobody has to sit through
         self.turns = 0
-        import rau.face.brain as brain_mod
-        import rau.games.kittens.agent as agent_mod
+        import rau.games.kittens.player as player_mod
 
-        self._real_chat = brain_mod.chat_streaming
-        self._real_nope = agent_mod.decide_nope
-        self._brain = brain_mod
-        self._agent = agent_mod
+        self._player = player_mod
+        self._real_take = player_mod.take_turn
+        self._real_nope = player_mod.decide_nope
 
-        def fake_turn(user_text: str, **kwargs: Any) -> str:
-            """Stand-in for a face turn: play the first thing that is legal."""
+        def fake_take(game: Any) -> None:
+            """Stand-in for the player half: play the first legal move."""
             self.turns += 1
-            game = session.current()
-            if not game:
-                return "no game"
             seat = game.awaiting_seat or game.current
-            moves = game.legal_moves(seat)
+            if seat != RAU:
+                return
+            moves = game.legal_moves(RAU)
             if not moves:
-                return "nothing to do"
+                return
             move = dict(moves[0])
             if move["move"] == "combo" and "named_card" in move:
                 move["named_card"] = "skip"
             if move["move"] == "insert_kitten":
                 move["index"] = 0
-            tools.run_tool("play_kittens_card", move)
-            return "your move"
+            if move["move"] == "give_favor" and "card" not in move and game.hands[RAU]:
+                move["card"] = game.hands[RAU][0]
+            if move["move"] == "take_from_discard" and "card" not in move and game.discard:
+                move["card"] = game.discard[-1]
+            session.apply_move(RAU, move)
 
-        brain_mod.chat_streaming = fake_turn
-        agent_mod.decide_nope = lambda game: False
+        player_mod.take_turn = fake_take
+        player_mod.decide_nope = lambda game: False
 
     def tearDown(self) -> None:
         quiesce()
         engine_mod.NOPE_WINDOW_MS = self._window
-        self._brain.chat_streaming = self._real_chat
-        self._agent.decide_nope = self._real_nope
+        self._player.take_turn = self._real_take
+        self._player.decide_nope = self._real_nope
 
     def settle(self, seconds: float = 6.0) -> None:
         """Let the pump work until the game stops changing or ends."""
@@ -172,7 +181,7 @@ class Dealing(GameHarness):
         self.assertTrue(result["ok"])
         self.assertIn("game_started", rec.kinds())
         state = result["state"]
-        self.assertEqual(state["seat"], USER)
+        self.assertEqual(state["seat"], RAU, "tools return Rau's seat, not the browser's")
         self.assertEqual(len(state["hand"]), 8)
         self.assertEqual(state["hand_counts"], {USER: 8, RAU: 8})
         self.assertEqual(state["current"], USER, "you go first")
@@ -248,7 +257,32 @@ class Context(GameHarness):
             t["function"]["name"]
             for t in brain._tools_for_turn(voice=True, round_idx=0, user_text="let's play")
         }
-        self.assertTrue(tools.TOOL_NAMES <= names, "asking to play must work first time")
+        self.assertIn("start_kittens", names, "asking to play must work first time")
+        self.assertIn("end_kittens", names)
+        self.assertNotIn(
+            "play_kittens_card",
+            names,
+            "the talker must not play cards — that is the player half",
+        )
+
+    def test_face_tools_exclude_play_kittens_card(self):
+        from rau.face import brain
+
+        names = {t["function"]["name"] for t in brain.FACE_TOOLS}
+        self.assertIn("start_kittens", names)
+        self.assertIn("end_kittens", names)
+        self.assertNotIn("play_kittens_card", names)
+
+    def test_talker_fragment_has_no_legal_moves_menu(self):
+        from rau.games.kittens import view as view_mod
+
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        text = view_mod.talker_fragment(game, RAU)
+        self.assertIn("Exploding Kittens on the table", text)
+        self.assertIn("player half makes the moves", text)
+        self.assertNotIn("Legal moves right now", text)
 
 
 class ThePump(GameHarness):
@@ -335,7 +369,9 @@ class HubRoutes(GameHarness):
         client.post("/api/game/kittens")
         response = client.post("/api/game/kittens/move", json={"move": "draw"})
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["ok"])
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["state"]["seat"], USER, "HTTP stays on the human seat")
 
     def test_an_illegal_move_is_a_400_that_explains_itself(self):
         client = self.client()
@@ -363,61 +399,74 @@ class HubRoutes(GameHarness):
         self.assertIsNone(client.get("/api/game/kittens").json()["state"])
 
 
-class Stalling(unittest.TestCase):
-    """A model that talks without playing must not be asked forever."""
+class GuaranteedMove(unittest.TestCase):
+    """A broken player reply must still advance the table — never stall forever."""
 
     def setUp(self) -> None:
         isolate_memory(self)
         self._window = engine_mod.NOPE_WINDOW_MS
         engine_mod.NOPE_WINDOW_MS = 1
-        self.calls = 0
-        import rau.face.brain as brain_mod
-        import rau.games.kittens.agent as agent_mod
+        import rau.games.kittens.player as player_mod
 
-        self._brain, self._agent = brain_mod, agent_mod
-        self._real_chat = brain_mod.chat_streaming
-        self._real_nope = agent_mod.decide_nope
-
-        def mute_turn(user_text: str, **kwargs: Any) -> str:
-            self.calls += 1
-            return "hm."  # says something, touches nothing
-
-        brain_mod.chat_streaming = mute_turn
-        agent_mod.decide_nope = lambda game: False
-        session._stalls = 0
-        session._decided.clear()
+        self._player = player_mod
+        self._real_ask = player_mod._ask_model
+        self._real_nope = player_mod.decide_nope
+        player_mod.decide_nope = lambda game: False
 
     def tearDown(self) -> None:
         quiesce()
         engine_mod.NOPE_WINDOW_MS = self._window
-        self._brain.chat_streaming = self._real_chat
-        self._agent.decide_nope = self._real_nope
+        self._player._ask_model = self._real_ask
+        self._player.decide_nope = self._real_nope
 
-    def test_the_pump_gives_up_instead_of_paying_forever(self):
-        rec = Recorder("game_stalled")
+    def test_garbage_model_reply_still_advances_via_fallback(self):
+        self._player._ask_model = lambda prompt: "hmm I like cats"
         deal_past_the_kitten()
-        session.apply_move(USER, {"move": "draw"})
-        deadline = time.time() + 8
-        while time.time() < deadline and not rec.events:
-            time.sleep(0.05)
-        self.assertTrue(rec.events, "it never noticed he was stuck")
-        settled = self.calls
-        time.sleep(1.0)
-        self.assertEqual(self.calls, settled, "it kept asking after giving up")
-        self.assertLessEqual(settled, session.MAX_STALLS + 1)
-
-    def test_a_human_move_wakes_him_back_up(self):
-        deal_past_the_kitten()
-        session.apply_move(USER, {"move": "draw"})
-        deadline = time.time() + 8
-        while time.time() < deadline and session._stalls < session.MAX_STALLS:
-            time.sleep(0.05)
-        self.assertGreaterEqual(session._stalls, session.MAX_STALLS)
         game = session.current()
         assert game is not None
-        game.current = USER  # your move again
+        before_log = len(game.log)
         session.apply_move(USER, {"move": "draw"})
-        self.assertEqual(session._stalls, 0, "he should be given another chance")
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            game = session.current()
+            if game and (len(game.log) > before_log + 1 or game.current == USER):
+                # Rau acted (log grew) or handed the turn back.
+                if game.current == USER or game.phase == PHASE_OVER:
+                    break
+            time.sleep(0.05)
+        game = session.current()
+        assert game is not None
+        self.assertTrue(
+            game.current == USER or game.phase == PHASE_OVER,
+            "fallback never advanced the turn after a garbage reply",
+        )
+
+    def test_after_user_defuses_rau_still_gets_the_turn(self):
+        """Regression for the explode-handoff stall: player always moves."""
+        self._player._ask_model = lambda prompt: "not json at all"
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[USER] = [deck_mod.DEFUSE, SKIP]
+        game.hands[RAU] = [SKIP, SKIP]
+        game.draw = [EXPLODING_KITTEN, ATTACK, FAVOR]
+        game.discard = []
+        game.current = USER
+        game.turns_to_take = 1
+        game.phase = engine_mod.PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        session.apply_move(USER, {"move": "draw"})
+        self.assertEqual(game.phase, engine_mod.PHASE_DEFUSE)
+        session.apply_move(USER, {"move": "insert_kitten", "index": 0})
+        self.assertEqual(game.current, RAU, "defusing still ends your turn")
+        deadline = time.time() + 8
+        while time.time() < deadline and game.current == RAU and game.phase != PHASE_OVER:
+            time.sleep(0.05)
+        self.assertTrue(
+            game.current == USER or game.phase == PHASE_OVER,
+            "Rau never took the turn after the user defused",
+        )
 
 
 class Redaction(GameHarness):
@@ -436,6 +485,116 @@ class Redaction(GameHarness):
         payload = rec.events[0]["state"]
         self.assertNotIn("hands", payload)
         self.assertNotIn("draw", payload)
+
+    def test_a_human_move_still_returns_the_user_seat(self):
+        tools.run_tool("start_kittens", {})
+        result = session.apply_move(USER, {"move": "draw"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"]["seat"], USER)
+
+
+class ToolObservation(GameHarness):
+    """
+    What the model sees in tool results: his seat, his peeks, never yours.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Do not let the pump spend his hand while these tests drive tools directly.
+        self._player.take_turn = lambda game: None
+
+    def _rig_rau_see_the_future(self, top: List[str], *, user_hand: Optional[List[str]] = None) -> None:
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[USER] = list(user_hand) if user_hand is not None else [SKIP]
+        game.hands[RAU] = [SEE_THE_FUTURE, SKIP]
+        game.draw = list(top)
+        game.discard = []
+        game.current = RAU
+        game.turns_to_take = 1
+        game.phase = engine_mod.PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        game.known_top = {USER: [], RAU: []}
+
+    def test_tool_state_never_carries_the_human_hand(self):
+        import json
+
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        canary = "beard_cat"
+        filler = "tacocat"
+        game.hands[USER] = [canary] * 8
+        game.hands[RAU] = [filler] * 8
+        game.draw = [c for c in game.draw if c != canary]
+        refused = tools.run_tool("start_kittens", {})
+        self.assertFalse(refused["ok"])
+        payload = json.dumps(refused["state"])
+        self.assertNotIn(canary, payload)
+        self.assertEqual(refused["state"]["seat"], RAU)
+        self.assertNotIn(canary, refused["state"]["hand"])
+
+    def test_see_the_future_pending_does_not_name_the_deck(self):
+        # Hold the Nope window open: the human must actually hold a Nope, or the
+        # engine closes the window immediately (they could not have Noped).
+        engine_mod.NOPE_WINDOW_MS = 60_000
+        top = [SKIP, ATTACK, FAVOR, SHUFFLE]
+        self._rig_rau_see_the_future(top, user_hand=[deck_mod.NOPE, SKIP])
+        result = tools.run_tool(
+            "play_kittens_card", {"move": "play", "card": SEE_THE_FUTURE}
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"]["seat"], RAU)
+        self.assertEqual(result["state"]["phase"], PHASE_NOPE)
+        self.assertEqual(result["state"]["known_top"], [])
+        self.assertIn("Waiting to see if they Nope it", result["summary"])
+        for card in top[:3]:
+            self.assertNotIn(deck_mod.label(card), result["summary"])
+
+    def test_see_the_future_resolved_names_the_peek(self):
+        # No Nope in the human hand → the window closes at once and the peek lands
+        # in the same tool result that played the card.
+        top = [SKIP, ATTACK, FAVOR, SHUFFLE]
+        self._rig_rau_see_the_future(top, user_hand=[SKIP])
+        result = tools.run_tool(
+            "play_kittens_card", {"move": "play", "card": SEE_THE_FUTURE}
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"]["seat"], RAU)
+        self.assertEqual(result["state"]["known_top"], top[:3])
+        for card in top[:3]:
+            self.assertIn(deck_mod.label(card), result["summary"])
+
+        # A later move still carries the peek in state and reminds in prose.
+        next_move = tools.run_tool(
+            "play_kittens_card", {"move": "play", "card": SKIP}
+        )
+        self.assertTrue(next_move["ok"])
+        self.assertEqual(next_move["state"]["seat"], RAU)
+        self.assertEqual(next_move["state"]["known_top"], top[:3])
+        for card in top[:3]:
+            self.assertIn(deck_mod.label(card), next_move["summary"])
+
+    def test_draw_names_the_card_he_got(self):
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[USER] = [SKIP]
+        game.hands[RAU] = [SKIP]
+        game.draw = [ATTACK, FAVOR, SHUFFLE]
+        game.discard = []
+        game.current = RAU
+        game.turns_to_take = 1
+        game.phase = engine_mod.PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        result = tools.run_tool("play_kittens_card", {"move": "draw"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"]["seat"], RAU)
+        self.assertIn(deck_mod.label(ATTACK), result["summary"])
+        self.assertIn(ATTACK, result["state"]["hand"])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 {
   "face": {
     "provider": "openrouter",
-    "model": "z-ai/glm-5.2",
+    "model": "x-ai/grok-4.5",
     "max_tokens": 4090,
     "temperature": 0.9,
     "effort": "high"
@@ -11,6 +11,13 @@
     "model": "deepseek-v4-pro",
     "max_tokens": 4096,
     "temperature": 0.3,
+    "effort": "high"
+  },
+  "player": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "max_tokens": 400,
+    "temperature": 0.6,
     "effort": "high"
   },
   "dream": {

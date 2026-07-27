@@ -15,10 +15,13 @@ LABEL = "com.rau.harness"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 
 
-def definition() -> Dict[str, Any]:
+def definition(no_audio: bool = False) -> Dict[str, Any]:
+    argv = [sys.executable, "-m", "rau", "all"]
+    if no_audio:
+        argv.append("--no-audio")
     return {
         "Label": LABEL,
-        "ProgramArguments": [sys.executable, "-m", "rau", "all"],
+        "ProgramArguments": argv,
         "WorkingDirectory": str(ROOT),
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
@@ -58,7 +61,7 @@ def status() -> Dict[str, Any]:
     }
 
 
-def install() -> Dict[str, Any]:
+def install(no_audio: bool = False) -> Dict[str, Any]:
     if sys.platform != "darwin":
         raise RuntimeError("LaunchAgent installation is available only on macOS")
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +71,7 @@ def install() -> Dict[str, Any]:
     )
     try:
         with os.fdopen(fd, "wb") as handle:
-            plistlib.dump(definition(), handle, sort_keys=True)
+            plistlib.dump(definition(no_audio), handle, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, PLIST_PATH)

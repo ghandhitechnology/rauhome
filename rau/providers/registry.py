@@ -25,7 +25,7 @@ log = logging.getLogger("rau.providers.registry")
 
 
 EFFORT_LEVELS = ("low", "medium", "high", "max")
-CHAT_SLOTS = ("face", "subagent", "dream")
+CHAT_SLOTS = ("face", "subagent", "player", "dream")
 TTS_EFFECTS = ("none", "robot", "childlike")
 STT_PROVIDERS = ("auto", "deepgram", "elevenlabs", "openai", "local")
 
@@ -45,6 +45,13 @@ def _default_models() -> Dict[str, Any]:
             "max_tokens": 4096,
             "temperature": 0.3,
             "effort": "medium",
+        },
+        "player": {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "max_tokens": 400,
+            "temperature": 0.6,
+            "effort": "high",
         },
         "dream": {
             "provider": "openrouter",
