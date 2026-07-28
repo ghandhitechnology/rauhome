@@ -136,6 +136,7 @@ def test_http_tts_boundary_receives_normalized_text() -> None:
         synth_sentence(
             "Travel 5 km/s at 25°C.",
             client=_Client(),
+            provider="elevenlabs",
             voice_id="voice",
             model="model",
         )

@@ -85,6 +85,24 @@ Robotic, Grandfather, Girlfriend, and Childlike presets; both providers expose
 the voices available to the user's own key — see
 **Settings → Voice / Hearing** and [SETUP.md](SETUP.md).
 
+### What the voice actually reads
+
+The transcript keeps Rau's original text; only the copy sent to the synthesiser
+is normalised, so `25 km/s` stays compact on screen while the voice says the
+whole thing. Which normaliser runs depends on the script:
+
+- **English** (`rau/voice/pronunciation.py`) expands units, currency, formulas
+  and abbreviations — "25 kilometers per second".
+- **Korean** (`rau/voice/korean/`) does the opposite, and runs the moment a
+  sentence contains any Hangul. A Korean voice can only read Hangul, so every
+  Latin word, acronym, unit symbol and chemical formula is turned into it:
+  `25°C` → 섭씨 25도, `60 km/h` → 시속 60킬로미터, `H2O` → 물, `Google` → 구글,
+  `kimchi` → 김치, `3개` → 세 개, `3시` → 세 시. Roughly 7,900 settled readings
+  across brands, places, people, science, medicine, technology and romanised
+  Korean back it; anything missing goes through a rule-based transliterator, so
+  the voice is never handed a character it cannot pronounce. Particles are
+  corrected to match the new sound — `H2O와` becomes 물과, not 물와.
+
 ### Always-available skills
 
 Skills live in `skills/*/SKILL.md` and are always injectable. In talk:

@@ -456,6 +456,7 @@ class TtsCleanupTests(unittest.TestCase):
         audio = synth_sentence(
             "hello",
             client=Client(),
+            provider="elevenlabs",
             voice_id="voice",
             model="model",
             cancel=cancel,

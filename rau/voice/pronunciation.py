@@ -8,13 +8,22 @@ second".
 Rules intentionally require numeric or formula context. Blind replacements such
 as ``m -> meters`` corrupt ordinary words, and expanding ``He`` as helium would
 turn a very common English pronoun into a chemistry lesson.
+
+Text containing Hangul is handed to :mod:`rau.voice.korean` instead, which has
+the opposite job: a Korean voice needs everything turned *into* Hangul.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Callable, Dict, Match, Tuple
+from typing import Dict, Match, Tuple
+
+from rau.voice.verbatim import protect as _protect
+
+#: Any Hangul at all means the sentence is Korean and belongs to the Korean
+#: normalizer, even when most of its characters are Latin.
+_KOREAN = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣ]")
 
 
 @dataclass(frozen=True)
@@ -205,11 +214,6 @@ _MEASUREMENT = re.compile(
     rf"(?P<unit>{_UNIT_TOKEN})(?P<exp>{_EXPONENT})(?![\w/])"
 )
 
-_PROTECTED = re.compile(
-    r"```[\s\S]*?```|`[^`\n]+`|https?://[^\s<>()]+|www\.[^\s<>()]+|"
-    r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"
-)
-
 
 def _is_one(number: str) -> bool:
     try:
@@ -385,33 +389,19 @@ _ABBREVIATIONS: Tuple[Tuple[re.Pattern[str], str], ...] = (
 )
 
 
-def _protect(text: str) -> Tuple[str, Callable[[str], str]]:
-    values: Dict[str, str] = {}
-
-    def stash(match: Match[str]) -> str:
-        raw = match.group(0)
-        if raw.startswith("```"):
-            raw = raw[3:-3]
-        elif raw.startswith("`"):
-            raw = raw[1:-1]
-        marker = f"\ue000{chr(0xE100 + len(values))}\ue001"
-        values[marker] = raw
-        return marker
-
-    protected = _PROTECTED.sub(stash, text)
-
-    def restore(value: str) -> str:
-        for marker, raw in values.items():
-            value = value.replace(marker, raw)
-        return value
-
-    return protected, restore
-
-
 def normalize_for_tts(text: str) -> str:
-    """Return a speakable copy of everyday written notation."""
+    """Return a speakable copy of everyday written notation.
+
+    Korean text takes a different path entirely: see
+    :func:`rau.voice.korean.normalize_korean_for_tts`. The import is deferred so
+    an English-only install never pays for the lexicon.
+    """
     if not isinstance(text, str) or not text:
         return text
+    if _KOREAN.search(text):
+        from rau.voice.korean import normalize_korean_for_tts
+
+        return normalize_korean_for_tts(text)
     value, restore = _protect(text)
 
     # Compact financial notation must be claimed before ``5m`` can look like

@@ -347,6 +347,9 @@ def _client(provider: str = DEFAULT_TTS_PROVIDER):
 def warmup() -> bool:
     """Touch the client and fire a tiny synth so the first real speak is warm."""
     try:
+        # Building the Korean lexicon and its phrase matcher costs ~30 ms once.
+        # Paying it here keeps it off the first Korean sentence of a reply.
+        normalize_for_tts("워밍업 warm 25°C")
         for _ in synth_sentence("warm"):
             break
         return True
