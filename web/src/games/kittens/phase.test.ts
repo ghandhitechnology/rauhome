@@ -39,6 +39,9 @@ function fakeChoreo() {
       })
     },
     observe: () => {},
+    settle: () => {
+      calls.push('settle')
+    },
   }
   return {
     choreo,

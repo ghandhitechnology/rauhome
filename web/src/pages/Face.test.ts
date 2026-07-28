@@ -30,6 +30,9 @@ function fakeChoreo() {
       return Promise.resolve()
     },
     observe: () => {},
+    settle: () => {
+      calls.push('settle')
+    },
   }
   return { choreo, calls }
 }

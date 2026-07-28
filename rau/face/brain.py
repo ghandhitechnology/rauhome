@@ -31,6 +31,19 @@ from rau.skills.loader import skills_public
 from rau.skills.runtime import prepare_turn, use_skill_tool
 from rau import state
 
+# Chess is an optional extra: the rules come from `python-chess`, which a default
+# install does not have. Kittens is hand-written and always there, so it is
+# imported plainly above — this one cannot be, because a missing wheel would take
+# the whole face down with it and cost him every conversation, not just the game.
+# Absent simply means he has no board, which `binary.py` already treats as an
+# ordinary state of the world rather than a fault.
+try:
+    from rau.games.chess import session as chess_session
+    from rau.games.chess import tools as chess_tools
+except ImportError:  # pragma: no cover — exercised by the no-extra install
+    chess_session = None
+    chess_tools = None
+
 FACE_TOOLS = [
     {
         "type": "function",
@@ -215,6 +228,20 @@ FACE_TOOLS = [
     kittens_tools.END_GAME_TOOL,
 ]
 
+if chess_tools is not None:
+    # Set the board up, clear it, and the two things that are decisions rather
+    # than moves. The moves themselves are Stockfish's and arrive through the
+    # pump, so `chess_move` here can only resign or settle a draw. Offered only
+    # when there is something to play on: a tool he cannot honour is worse than
+    # no tool, because he will promise a game and then fail to produce one.
+    FACE_TOOLS.extend(
+        [
+            chess_tools.START_GAME_TOOL,
+            chess_tools.CHESS_MOVE_TOOL,
+            chess_tools.END_GAME_TOOL,
+        ]
+    )
+
 #: The face model is chosen for latency, so its window is held far below what
 #: the model would accept: a 100k-token prompt makes the face slow and
 #: expensive long before it makes it forgetful.
@@ -253,6 +280,11 @@ VOICE_SLIM_TOOL_NAMES = frozenset(
         # half's job, not the talker's — so play_kittens_card stays off this set.
         "start_kittens",
         "end_kittens",
+        # Same rule for the board: he may set it up or put it away on round 0.
+        # Playing it is the pump's job, and resigning is rare enough to wait
+        # for a turn where he is not also deciding whether to speak.
+        "start_chess",
+        "end_chess",
     }
 )
 _DEEP_WORK_MARKERS = (
@@ -620,6 +652,11 @@ def _system_prompt(extra: str = "", *, voice: bool = False) -> str:
     game = kittens.prompt_fragment()
     if game:
         parts.append("\n" + game)
+    # Only one game is ever on the table, so at most one of these is non-empty.
+    if chess_session is not None:
+        board = chess_session.prompt_fragment()
+        if board:
+            parts.append("\n" + board)
     if voice:
         parts.append("\n" + VOICE_TOOL_OPENER)
     if extra:
@@ -660,6 +697,11 @@ def _run_face_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         # A game of cards moves cards. Nothing here touches the filesystem, the
         # network, or anything a confirmation would be protecting.
         return kittens_tools.run_tool(name, args)
+    if chess_tools is not None and name in chess_tools.TOOL_NAMES:
+        # Likewise a board. The one thing here that is irreversible — resigning
+        # — is irreversible inside a game he is playing for fun, which is not
+        # the kind of irreversible the confirmation gate exists for.
+        return chess_tools.run_tool(name, args)
     if name == "browse_web":
         # Reads the open web, so it is gated like the other outward-facing
         # tools rather than treated as a local visual like the room ones.
@@ -809,6 +851,9 @@ def _record_tool_round(
             "body_choreography": "Planning movement",
             "start_kittens": "Dealing a game",
             "end_kittens": "Clearing the table",
+            "start_chess": "Setting the board up",
+            "chess_move": "Making a decision at the board",
+            "end_chess": "Putting the board away",
             "show_panel": "Making something to look at",
             "list_panels": "Looking at the wall",
             "update_panel": "Changing a panel",
@@ -897,18 +942,26 @@ def _call_face(provider, slot, messages):
 
 
 def _journal_table_chat(user_text: str, reply: str) -> None:
-    """While a hand is on, both halves need to see the banter."""
-    if not kittens.active():
-        return
-    from rau.games.kittens import journal as kittens_journal
+    """While a game is on, both halves need to see the banter."""
+    if kittens.active():
+        from rau.games.kittens import journal as kittens_journal
 
-    kittens_journal.record("user", "user_chat", user_text)
-    kittens_journal.record("rau", "rau_chat", reply)
-    # He has just answered them properly. Hold the proactive table talk back
-    # for a beat so the next thing they hear is not him talking over himself.
-    from rau.games.kittens import banter as kittens_banter
+        kittens_journal.record("user", "user_chat", user_text)
+        kittens_journal.record("rau", "rau_chat", reply)
+        # He has just answered them properly. Hold the proactive table talk back
+        # for a beat so the next thing they hear is not him talking over himself.
+        from rau.games.kittens import banter as kittens_banter
 
-    kittens_banter.note_user_chat()
+        kittens_banter.note_user_chat()
+
+    if chess_session is not None and chess_session.active():
+        from rau.games.chess import journal as chess_journal
+
+        chess_journal.record("user", "user_chat", user_text)
+        chess_journal.record("rau", "rau_chat", reply)
+        from rau.games.chess import banter as chess_banter
+
+        chess_banter.note_user_chat()
 
 
 def chat(

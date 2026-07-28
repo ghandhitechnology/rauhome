@@ -13,6 +13,7 @@
 
 import { useEffect, useState } from 'react'
 import { gameBridge, type GameResult } from '../../clawd/gameBridge'
+import { KITTENS_SURFACE } from '../../clawd/gameTableLayer'
 import { gameStore } from './useGame'
 
 export type TablePhase =
@@ -82,7 +83,7 @@ class PhaseStore {
     if (this.phase !== 'idle') return
     this.lastError = ''
     this.set('summoning')
-    gameBridge.active = true
+    gameBridge.activate(KITTENS_SURFACE)
 
     const dealt = gameStore.deal().then(
       () => true,
@@ -116,7 +117,7 @@ class PhaseStore {
    * where the last room had him.
    */
   adopt(): void {
-    gameBridge.active = true
+    gameBridge.activate(KITTENS_SURFACE)
     gameBridge.choreography?.seatInstantly()
     if (this.phase === 'idle') this.set('playing')
   }
@@ -130,7 +131,7 @@ class PhaseStore {
   async arrive(): Promise<void> {
     if (this.phase !== 'idle') return
     this.set('summoning')
-    gameBridge.active = true
+    gameBridge.activate(KITTENS_SURFACE)
     await (gameBridge.choreography?.summon() ?? Promise.resolve())
     if (this.get() !== 'summoning') return
     this.set('dealing')
@@ -156,13 +157,23 @@ class PhaseStore {
     if (this.phase === 'dealing') this.set('playing')
   }
 
-  /** Give the room back. */
+  /**
+   * Give the room back.
+   *
+   * Only if it is still this table's to give. The server puts the cards away
+   * when the board comes out, and the chess side has its table up before this
+   * one has finished standing away from it — so an unconditional handback here
+   * would take down a surface that now belongs to the other game, and leave a
+   * board of pieces floating over an empty room.
+   */
   async end(opts: { fast?: boolean; result?: GameResult } = {}): Promise<void> {
     if (this.phase === 'idle' || this.phase === 'ending') return
     this.set('ending')
     await (gameBridge.choreography?.dismiss(opts) ?? Promise.resolve())
-    gameBridge.active = false
-    gameBridge.hoverPoint = null
+    if (gameBridge.surface === KITTENS_SURFACE) {
+      gameBridge.activate(null)
+      gameBridge.hoverPoint = null
+    }
     this.set('idle')
   }
 

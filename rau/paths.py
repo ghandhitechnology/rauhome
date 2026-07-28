@@ -14,6 +14,10 @@ ACTIVE_GOAL = GOALS_DIR / "active.json"
 PRESENCE_FILE = MEMORIES_DIR / "presence.json"
 #: Running record of games played, so beating him once means something later.
 GAMES_FILE = MEMORIES_DIR / "games.json"
+#: Per-game state that has to outlive the process. A dealt hand of Exploding
+#: Kittens is not worth restoring; a chess position is the entire game, so it is
+#: written here after every move and picked up again on boot.
+GAMES_DIR = MEMORIES_DIR / "games"
 CONTROL_DB = MEMORIES_DIR / "control.db"
 CONFIG_DIR = ROOT / "config"
 SKILLS_DIR = ROOT / "skills"
@@ -37,6 +41,7 @@ def ensure_dirs() -> None:
         IDENTITY_DIR,
         IDENTITY_EXAMPLES,
         MEMORIES_DIR,
+        GAMES_DIR,
         DIARY_DIR,
         TRACES_DIR,
         DAILY_DIR,

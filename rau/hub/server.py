@@ -242,6 +242,18 @@ async def _startup() -> None:
         if current_profile()["dream_enabled"]:
             start_dreamer()
         start_heartbeat()
+    # A game of chess outlives the process that was hosting it. He restarts to
+    # dream, or the machine sleeps, and an hour of play would otherwise be gone
+    # — so an unfinished board is picked back up before anyone asks for it.
+    # Failing to is not worth refusing to boot over.
+    try:
+        from rau.games.chess import session as chess_session
+
+        if chess_session.resume() is not None:
+            print("Picked the chess game back up.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"Could not resume the chess game: {exc}")
+
     settings = load_settings()
     port = int(settings.get("hub_port") or 8765)
     # The pet is a client, so it needs an address it can dial. A wildcard bind
@@ -276,6 +288,16 @@ async def _shutdown() -> None:
     SCHEDULER.stop()
     stop_pet()
     PI_SUPERVISOR.stop()
+    # Stockfish is a subprocess on its own event-loop thread; without this it
+    # outlives the hub that opened it.
+    try:
+        from rau.games.chess import engine as chess_engine
+
+        chess_engine.close()
+    except Exception:
+        # Shutdown is not the place to raise about a process that is going away
+        # anyway.
+        pass
 
 
 @app.get("/api/status")
@@ -1201,6 +1223,75 @@ def api_kittens_move(body: Dict[str, Any]):
     from rau.games.kittens.engine import USER
 
     result = kittens.apply_move(USER, body or {})
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@app.get("/api/game/chess")
+def api_chess_state():
+    """
+    The board as it stands.
+
+    Nothing here is redacted, because chess has nothing to hide: both players
+    are looking at the same position. The client is still told rather than
+    asked — it never works out what is legal, it sends a move and finds out.
+    """
+    from rau.games.chess import session as chess_session
+
+    return {"ok": True, "state": chess_session.state(), "record": chess_session.tally()}
+
+
+@app.post("/api/game/chess")
+def api_chess_start(body: Optional[Dict[str, Any]] = None):
+    """
+    Set the board up.
+
+    An unfinished game on disk is preferred to a new one: walking away from a
+    game and coming back to a fresh position would be worse than useless, it
+    would be a small betrayal. `resume` returns None when there is nothing to
+    come back to.
+    """
+    from rau.games.chess import session as chess_session
+
+    if chess_session.active():
+        return {"ok": True, "state": chess_session.state()}
+    # `resume` treats any game already in memory as the thing to hand back,
+    # including a finished one — which is right for the boot path it was written
+    # for and wrong here. A board someone is looking at the end of is the exact
+    # moment they press play again, so only reach for the disk when the table is
+    # genuinely empty.
+    if chess_session.current() is None:
+        resumed = chess_session.resume()
+        if resumed is not None:
+            return {"ok": True, "state": resumed, "resumed": True}
+    # None when the page expressed no preference, which is the common case and
+    # the one that alternates: he takes the other colour from last game.
+    colour = (body or {}).get("rau_color")
+    return {"ok": True, "state": chess_session.start(rau_color=str(colour) if colour else None)}
+
+
+@app.delete("/api/game/chess")
+def api_chess_end():
+    from rau.games.chess import session as chess_session
+
+    return chess_session.end("cleared from the table")
+
+
+@app.post("/api/game/chess/move")
+def api_chess_move(body: Dict[str, Any]):
+    """
+    Your move.
+
+    Applied synchronously, so a refusal comes back on this call rather than as
+    a surprise a second later — the piece has to snap back to where it started
+    while your hand is still on it. His reply is not part of this response: he
+    takes his time over it, and the taking of time is the point.
+    """
+    from rau.games.chess import session as chess_session
+    from rau.games.chess.board import USER
+
+    result = chess_session.apply_move(USER, body or {})
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return result

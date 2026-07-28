@@ -143,11 +143,27 @@ def run_doctor() -> Dict[str, Any]:
             required=False,
         )
     )
+    # Not required: without it he simply declines a game of chess, which is a
+    # sentence rather than a fault. Reported so that "he won't play me" has an
+    # answer that is not guesswork.
+    try:
+        from rau.games.chess import binary as chess_binary
+
+        engine = chess_binary.probe()
+        detail = str(engine.get("detail") or "stockfish not found")
+        if engine.get("ok") and engine.get("path"):
+            detail = f"{detail} at {engine['path']}"
+        checks.append(_check("chess engine", bool(engine.get("ok")), detail, required=False))
+    except Exception as exc:
+        checks.append(_check("chess engine", False, str(exc), required=False))
+
     missing_extras = [
         name
         for name in ("faster_whisper", "silero_vad", "Quartz", "ApplicationServices")
         if importlib.util.find_spec(name) is None
     ]
+    if importlib.util.find_spec("chess") is None:
+        missing_extras.append("chess")
     return {
         "ok": all(check["ok"] for check in checks if check["required"]),
         "checks": checks,

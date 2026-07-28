@@ -29,10 +29,17 @@ import { panelStore, type PanelSummary } from '../panels'
 
 import { gameStore, useGame } from '../games/kittens/useGame'
 import { phaseStore, usePhase } from '../games/kittens/phase'
+import {
+  gameStore as chessStore,
+  phaseStore as chessPhaseStore,
+  useGame as useChess,
+  usePhase as useChessPhase,
+} from '../games/chess/useGame'
 import { gameBridge } from '../clawd/gameBridge'
 import FaceComposer from './FaceComposer'
 
 const GameTable = lazy(() => import('../games/kittens/GameTable'))
+const ChessTable = lazy(() => import('../games/chess/GameTable'))
 import {
   IDLE_FACE_STREAM,
   bubbleSpeechFromStream,
@@ -141,9 +148,15 @@ export default function Face() {
   // table itself, because the room needs to know before deciding to mount it.
   const { table: game } = useGame()
   const tablePhase = usePhase()
+  // The other table. Only one of the two is ever out — the server puts the
+  // cards away when the pieces come out — but the room has to know about both
+  // to decide which one to mount and whether it is free to offer either.
+  const { table: chess } = useChess()
+  const chessPhase = useChessPhase()
   const [composerOpen, setComposerOpen] = useState(false)
   /** Whether the first look at the server has come back yet. */
   const gameSeeded = useRef(false)
+  const chessSeeded = useRef(false)
 
   /*
     A game survives a reload, and it survives you walking off to another route
@@ -172,6 +185,22 @@ export default function Face() {
     if (!game || tablePhase !== 'idle' || !gameSeeded.current) return
     void phaseStore.arrive()
   }, [game, tablePhase])
+
+  /* The same two questions again, for the board. Kept as their own pair rather
+     than folded into the ones above: the two games have separate stores, and a
+     single effect asking about both would have to decide what it meant for one
+     to answer before the other. */
+  useEffect(() => {
+    void chessStore.refresh().then(() => {
+      if (chessStore.get() && chessPhaseStore.get() === 'idle') chessPhaseStore.adopt()
+      chessSeeded.current = true
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!chess || chessPhase !== 'idle' || !chessSeeded.current) return
+    void chessPhaseStore.arrive()
+  }, [chess, chessPhase])
 
   // The tier is resolved once and held in the module, so a second tab changing
   // it would otherwise leave this one showing a choice it is no longer making.
@@ -531,7 +560,10 @@ export default function Face() {
   /** The mic is open. Talk mode uses the voice socket but never listens. */
   const listening = modeListens(mode)
   /** A hand is actually on — the exit ritual gives the composer back early. */
-  const inGame = tablePhase === 'dealing' || tablePhase === 'playing'
+  const inGame =
+    tablePhase === 'dealing' || tablePhase === 'playing' || chessPhase === 'playing'
+  /** Neither table is out, so either one can be offered. There is only one. */
+  const roomFree = tablePhase === 'idle' && !game && chessPhase === 'idle' && !chess
 
   return (
     <div className={`face ${isVoice ? 'voice-mode' : ''}`}>
@@ -600,6 +632,13 @@ export default function Face() {
         </Suspense>
       )}
 
+      {/* The board, on the same terms and for the same reasons. */}
+      {(chess || chessPhase !== 'idle') && (
+        <Suspense fallback={null}>
+          <ChessTable />
+        </Suspense>
+      )}
+
       <header className="face-top">
         <div className="face-top-left">
           <Link to="/" className="face-back" aria-label="Back to talk">
@@ -654,27 +693,43 @@ export default function Face() {
             <em>⇧␣</em>
           </span>
           {/*
-            Dealing without asking him. He can still start a game himself with
-            `start_kittens` — this is the shortcut for when you already know you
-            want one and would rather not type a sentence about it.
+            Starting a game without asking him. He can still deal or set up the
+            board himself — `start_kittens`, `start_chess` — and these are the
+            shortcuts for when you already know which one you want and would
+            rather not type a sentence about it.
 
-            Hidden from the moment it is pressed until the room is his again:
-            the table carries its own Leave, so a second control here would
-            only be a way to lose a game you were in the middle of.
+            Both disappear from the moment either is pressed until the room is
+            his again: there is one table, each game carries its own Leave, and
+            a second control up here would only be a way to lose a game you
+            were in the middle of.
           */}
-          {tablePhase === 'idle' && !game && (
-            <button
-              className="face-toggle face-play"
-              onClick={() => {
-                setActivityOpen(false)
-                setPanel(false)
-                setComposerOpen(false)
-                void phaseStore.begin()
-              }}
-              title="Deal a hand of Exploding Kittens"
-            >
-              Play
-            </button>
+          {roomFree && (
+            <>
+              <button
+                className="face-toggle face-play"
+                onClick={() => {
+                  setActivityOpen(false)
+                  setPanel(false)
+                  setComposerOpen(false)
+                  void chessPhaseStore.begin()
+                }}
+                title="Set the chess board up"
+              >
+                Chess
+              </button>
+              <button
+                className="face-toggle face-play"
+                onClick={() => {
+                  setActivityOpen(false)
+                  setPanel(false)
+                  setComposerOpen(false)
+                  void phaseStore.begin()
+                }}
+                title="Deal a hand of Exploding Kittens"
+              >
+                Play
+              </button>
+            </>
           )}
           <button
             className={`face-toggle ${panel ? 'on' : ''}`}

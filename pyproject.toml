@@ -25,6 +25,11 @@ computer-use = [
   "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
 ]
 pi = []
+#: Rules, FEN/SAN and the UCI wrapper. The strength itself is Stockfish, which
+#: is a binary rather than a wheel — `scripts/setup.sh --chess` fetches it.
+chess = [
+  "chess>=1.11",
+]
 all = [
   "numpy>=1.26",
   "sounddevice>=0.5",
@@ -34,6 +39,7 @@ all = [
   "pedalboard>=0.9",
   "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
   "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
+  "chess>=1.11",
 ]
 
 [tool.setuptools.packages.find]

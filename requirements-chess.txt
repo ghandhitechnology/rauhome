@@ -1,0 +1,4 @@
+-r requirements.txt
+# Rules, FEN/SAN and the UCI wrapper. The strength itself is Stockfish, a binary
+# rather than a wheel — `scripts/setup.sh --chess` fetches that.
+chess>=1.11

@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { Director, EMPTY_SIGNALS } from './director'
 import { GameChoreographer, type ChoreoState } from './gameChoreographer'
-import { GAME_CAMERA, GAME_DIM } from './gameTableLayer'
+import { GAME_CAMERA, GAME_DIM, KITTENS_GAME } from './gameTableLayer'
 import { ClawdRig } from './rig'
 import { station } from './room'
 import { Scene } from './scene'
@@ -22,7 +22,7 @@ function harness() {
   const director = new Director(rig, 'room')
   const scene = new Scene()
   scene.layout(1440, 900, 1, {})
-  const choreo = new GameChoreographer(rig, director)
+  const choreo = new GameChoreographer({ rig, director }, KITTENS_GAME)
 
   /** One frame, in the order `ClawdRoom` runs them. */
   const step = (seconds: number) => {

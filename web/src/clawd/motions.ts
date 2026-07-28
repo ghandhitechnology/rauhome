@@ -11,6 +11,7 @@ import { WALK_SPEED } from './gait'
 import { defineMotion, type Motion } from './motion'
 import { LIFE_MOTIONS, LIFE_ONE_SHOTS } from './motionsLife'
 import { GAME_MOTIONS, GAME_ONE_SHOTS } from './motionsGame'
+import { CHESS_MOTIONS, CHESS_ONE_SHOTS } from './motionsChess'
 
 export { WALK_SPEED }
 
@@ -1174,6 +1175,8 @@ export const MOTIONS = {
   ...LIFE_MOTIONS,
   // The card table: the seated pose and the beats of a hand.
   ...GAME_MOTIONS,
+  // The same seat, across a chess board: hesitation, and committing to it.
+  ...CHESS_MOTIONS,
 } satisfies Record<string, Motion>
 
 export type MotionName = keyof typeof MOTIONS
@@ -1191,4 +1194,5 @@ export const ONE_SHOTS: MotionName[] = [
   'stretch',
   ...LIFE_ONE_SHOTS,
   ...GAME_ONE_SHOTS,
+  ...CHESS_ONE_SHOTS,
 ]
