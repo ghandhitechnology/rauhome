@@ -748,10 +748,10 @@ _CHAR_KEYCODES: Dict[str, int] = {
     **{c: code for c, code in zip("abcdefghijklmnopqrstuvwxyz", [
         0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17,
         32, 9, 13, 7, 16, 6,
-    ])},
+    ], strict=True)},
     **{str(d): code for d, code in zip("0123456789", [
         29, 18, 19, 20, 21, 23, 22, 26, 28, 25,
-    ])},
+    ], strict=True)},
 }
 
 
@@ -816,9 +816,9 @@ def _key(key: str) -> Tuple[bool, str]:
             return False, f"key chord requires Quartz: {exc}"
         # keystroke "tab" would type the literal letters t-a-b; named keys
         # go through key code, single characters through keystroke.
-        keycode = _KEYCODES.get(primary)
-        if keycode is not None:
-            script = f'tell application "System Events" to key code {keycode}'
+        fallback_keycode = _KEYCODES.get(primary)
+        if fallback_keycode is not None:
+            script = f'tell application "System Events" to key code {fallback_keycode}'
         elif len(primary) == 1:
             script = f'tell application "System Events" to keystroke {_apple_string(primary)}'
         else:

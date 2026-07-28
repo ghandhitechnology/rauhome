@@ -196,7 +196,7 @@ class PiSidecar:
                             if malformed > 16:
                                 raise PiSidecarError(
                                     f"too many malformed events for run {run_id}"
-                                )
+                                ) from None
                             continue
                         if not isinstance(event, dict):
                             malformed += 1

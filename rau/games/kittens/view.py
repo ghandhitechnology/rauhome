@@ -30,7 +30,6 @@ import json
 from typing import Any, Dict, List
 
 from rau.games.kittens import deck as deck_mod
-from rau.games.kittens.deck import EXPLODING_KITTEN
 from rau.games.kittens.engine import (
     BLOCKING_PHASES,
     PHASE_DEFUSE,

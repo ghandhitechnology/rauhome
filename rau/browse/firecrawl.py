@@ -65,7 +65,10 @@ class FirecrawlBrowser(BrowseProvider):
         if not isinstance(data, dict):
             raise BrowseError("Firecrawl returned no page data", code="bad_response")
 
-        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        metadata_value = data.get("metadata")
+        metadata: Dict[str, Any] = (
+            metadata_value if isinstance(metadata_value, dict) else {}
+        )
         text = str(data.get("markdown") or data.get("summary") or "").strip()
         if not text:
             raise BrowseError("that page came back empty", code="empty_page")

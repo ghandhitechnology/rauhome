@@ -243,12 +243,12 @@ def _act(game_id: str, live: ChessGame, choice: "MoveChoice", plan: "ThinkPlan")
         # a draw offer is actually made across a real board. The move can
         # have ended the game or been abandoned mid-delay, so the offer only
         # goes out if the same game is still quietly in play.
-        live = session.current()
+        current = session.current()
         if (
-            live is not None
-            and live.game_id == game_id
-            and live.phase == PHASE_PLAYING
-            and live.offer is None
+            current is not None
+            and current.game_id == game_id
+            and current.phase == PHASE_PLAYING
+            and current.offer is None
         ):
             if session.apply_move(RAU, {"move": "offer_draw"}).get("ok"):
                 with _lock:

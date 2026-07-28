@@ -189,6 +189,16 @@ export type VoiceStatus = {
   tts: { voice_id: string; preset: string; effect: string }
 }
 
+export type HealthStatus = {
+  ok: boolean
+  timestamp: number
+  listening: boolean
+  face_busy: boolean
+  hard_task: { state?: string } | null
+  confirm: unknown
+  scheduler: { running: boolean; [key: string]: unknown }
+}
+
 export type SetupState = {
   identity_ready: boolean
   brains_ready: boolean
@@ -253,6 +263,7 @@ export type Permissions = {
 
 export const api = {
   status: () => req<any>('/api/status'),
+  health: () => req<HealthStatus>('/api/health'),
   getPet: () =>
     req<{ visible: boolean; face_open: boolean; user_hidden: boolean }>('/api/pet'),
   setPetVisibility: (body: {

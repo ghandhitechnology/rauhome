@@ -280,6 +280,34 @@ class SchedulerTests(unittest.TestCase):
             self.store.get_schedule_run(run["id"])["state"], "cancelled"
         )
 
+    def test_once_wall_time_uses_the_schedule_timezone(self):
+        schedule = self.scheduler.create(
+            {
+                "name": "New York morning",
+                "goal": "send the morning brief",
+                "trigger": {"kind": "once", "at": "2026-01-15T09:30"},
+                "timezone": "America/New_York",
+            },
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp(),
+        )
+        expected = datetime(
+            2026, 1, 15, 9, 30, tzinfo=ZoneInfo("America/New_York")
+        ).timestamp()
+        self.assertEqual(schedule["next_run_at"], expected)
+        self.assertEqual(schedule["trigger"]["at"], expected)
+
+    def test_once_wall_time_rejects_a_nonexistent_dst_time(self):
+        with self.assertRaisesRegex(ValueError, "not a real local time"):
+            self.scheduler.create(
+                {
+                    "name": "missing hour",
+                    "goal": "run later",
+                    "trigger": {"kind": "once", "at": "2025-03-09T02:30"},
+                    "timezone": "America/New_York",
+                },
+                now=datetime(2025, 3, 1, tzinfo=timezone.utc).timestamp(),
+            )
+
     def test_cron_dst_repeated_minute_has_one_nominal_key(self):
         spec = CronSpec.parse("30 1 * * *")
         start = datetime(2025, 11, 2, 0, 0, tzinfo=timezone.utc).timestamp()

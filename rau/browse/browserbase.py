@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from rau.browse.base import (
     BrowseError,

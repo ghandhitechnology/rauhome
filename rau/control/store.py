@@ -397,6 +397,8 @@ class ControlStore:
                 """,
                 (kind, entity_type, entity_id, _json(payload), created or time.time()),
             )
+            if cur.lastrowid is None:
+                raise RuntimeError("control event insert returned no row id")
             return int(cur.lastrowid)
 
     def create_activity_span(self, span: Dict[str, Any]) -> Dict[str, Any]:

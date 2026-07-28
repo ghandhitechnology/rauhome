@@ -9,7 +9,6 @@ import signal
 import subprocess
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from rau.paths import ROOT
@@ -75,7 +74,7 @@ _PI_PROVIDER_ENV: Dict[str, Tuple[str, ...]] = {
 
 def _sidecar_env() -> Dict[str, str]:
     """Environment for a spawned sidecar: no credentials it does not need."""
-    env = {
+    env: Dict[str, str] = {
         key: value
         for key, value in os.environ.items()
         if not key.upper().endswith(_SENSITIVE_ENV_SUFFIXES)
@@ -90,9 +89,9 @@ def _sidecar_env() -> Dict[str, str]:
         os.environ.get("PI_PROVIDER") or load_settings().get("pi_provider") or ""
     ).strip()
     for key in _PI_PROVIDER_ENV.get(provider, ()):
-        value = os.environ.get(key)
-        if value is not None:
-            env[key] = value
+        credential_value = os.environ.get(key)
+        if credential_value is not None:
+            env[key] = credential_value
     return env
 
 

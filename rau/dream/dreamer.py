@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from rau.events import BUS
 from rau.identity import store as identity_store
@@ -18,7 +18,7 @@ _stop = threading.Event()
 #: One dream at a time — the nightly tick and a manual /api/dream/run both
 #: spend a paid provider call and rewrite soul.md.
 _run_lock = threading.Lock()
-_timer_state = {
+_timer_state: Dict[str, Any] = {
     "last_day": "",
     "failure_day": "",
     "failures": 0,

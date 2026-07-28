@@ -37,6 +37,8 @@ from rau import state
 # the whole face down with it and cost him every conversation, not just the game.
 # Absent simply means he has no board, which `binary.py` already treats as an
 # ordinary state of the world rather than a fault.
+chess_session: Any
+chess_tools: Any
 try:
     from rau.games.chess import session as chess_session
     from rau.games.chess import tools as chess_tools
@@ -530,7 +532,7 @@ def _fold_history(snapshot: List[Message], budget: int) -> None:
         with _history_lock:
             prefix = _history[: len(snapshot)]
             if len(prefix) == len(snapshot) and all(
-                a is b for a, b in zip(prefix, snapshot)
+                a is b for a, b in zip(prefix, snapshot, strict=True)
             ):
                 _history[: len(snapshot)] = folded
     finally:

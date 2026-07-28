@@ -349,7 +349,7 @@ export default function Face() {
 
   const refresh = useCallback(async () => {
     try {
-      const [log, emo, status] = await Promise.all([api.log(), api.emotion(), api.status()])
+      const [log, emo, status] = await Promise.all([api.log(), api.emotion(), api.health()])
       const entries: any[] = log.log || []
       // Newest assistant line drives the speech bubble in chat mode only.
       // Voice mode already captions from playback; dumping the full log line
@@ -413,7 +413,7 @@ export default function Face() {
     } catch {
       /* hub down — Clawd keeps pottering about regardless */
     }
-  }, [mode, voiceOn])
+  }, [voiceOn])
 
   // A voice turn settles with say_end, which the hub sends only after both
   // sides of the exchange are in its log — chat_done arrives while TTS is
@@ -513,7 +513,7 @@ export default function Face() {
         await refresh()
       }
     },
-    [mode, voiceOn, voice, refresh],
+    [voiceOn, voice, refresh],
   )
 
   // Escape closes the director panel; Enter focuses the input.

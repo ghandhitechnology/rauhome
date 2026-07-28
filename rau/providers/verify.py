@@ -130,7 +130,10 @@ def _verify_firecrawl(key: str) -> Dict[str, Any]:
         "https://api.firecrawl.dev/v2/team/credit-usage",
         {"Authorization": f"Bearer {key}", "Accept": "application/json"},
     )
-    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    if not isinstance(body, dict):
+        raise RuntimeError("Firecrawl returned an unexpected credit response")
+    nested = body.get("data")
+    data: Dict[str, Any] = nested if isinstance(nested, dict) else body
     remaining = data.get("remainingCredits")
     if remaining is None:
         remaining = data.get("remaining_credits")

@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- SVG definitions and their shared id helpers form one print plate */
 /* ─────────────────────────────────────────────────────────────
    Exploding Kittens — shared print plate
 

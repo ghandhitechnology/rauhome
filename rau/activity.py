@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from rau.control import control_store
@@ -327,7 +327,7 @@ class ActivityManager:
         job_id: Optional[str] = None,
         after_seq: int = 0,
         limit: int = 200,
-    ) -> list[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         return control_store.list_activity(
             turn_id=turn_id,
             job_id=job_id,
@@ -335,7 +335,7 @@ class ActivityManager:
             limit=limit,
         )
 
-    def active(self, *, limit: int = 200) -> list[Dict[str, Any]]:
+    def active(self, *, limit: int = 200) -> List[Dict[str, Any]]:
         return control_store.list_activity(active_only=True, limit=limit)
 
     def purge(self, *, retention_days: int = 7) -> int:

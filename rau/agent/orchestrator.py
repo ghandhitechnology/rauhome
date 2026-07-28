@@ -8,6 +8,7 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Dict, Iterable, List, Optional
 
 from rau.agent.compaction import maybe_compact, provider_summarizer
@@ -889,7 +890,8 @@ def _job_thread(job: Job) -> None:
                     )
                     result = get_executor(step.executor).start(
                         step,
-                        runner=lambda: _invoke_step_runner(
+                        runner=partial(
+                            _invoke_step_runner,
                             runner,
                             job,
                             step.goal,
@@ -1349,7 +1351,7 @@ def _run_subagent(
         for step in range(max_steps):
             # Cancellation already wrote the cancelled state and its events.
             if job.cancel.is_set():
-                return
+                return ""
             while job.paused.is_set() and not job.cancel.wait(0.2):
                 pass
             if job.cancel.is_set():
@@ -1442,7 +1444,7 @@ def _run_subagent(
 
             for tc in result.tool_calls:
                 if job.cancel.is_set():
-                    return
+                    return ""
                 while job.paused.is_set() and not job.cancel.wait(0.2):
                     pass
                 if job.cancel.is_set():
@@ -1543,7 +1545,7 @@ def _run_subagent(
                     },
                 )
                 if job.cancel.is_set():
-                    return
+                    return ""
                 if tool_result.get("finished"):
                     completion = tool_result.get("completion")
                     validation_error = _completion_validation_error(completion)
@@ -1598,7 +1600,7 @@ def _run_subagent(
             break
 
         if job.cancel.is_set():
-            return
+            return ""
 
         if exhausted:
             raise RuntimeError(f"subagent step budget of {max_steps} exhausted")
@@ -1938,7 +1940,7 @@ def _run_pi_subagent(
                 with _lock:
                     job.turns_used -= max_turns - spent
         if job.cancel.is_set() or result.state == "cancelled":
-            return
+            return ""
         if not result.ok:
             raise RuntimeError(result.error or result.result or "Pi worker failed")
         summary = result.result.strip()
