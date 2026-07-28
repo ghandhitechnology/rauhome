@@ -11,15 +11,19 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
  * Shift+Space rotates through these in order.
  */
 export type Mode = 'chat' | 'voice' | 'talk'
+export type VoiceLatencyProfile = 'normal' | 'hyper'
 
 export const MODES: readonly Mode[] = ['chat', 'voice', 'talk'] as const
 
 const MODE_KEY = 'rau.mode'
+const VOICE_LATENCY_KEY = 'rau.voice.latency'
 
 type ModeContextValue = {
   mode: Mode
   setMode: (mode: Mode) => void
   toggleMode: () => void
+  voiceLatency: VoiceLatencyProfile
+  setVoiceLatency: (profile: VoiceLatencyProfile) => void
 }
 
 const ModeContext = createContext<ModeContextValue | null>(null)
@@ -42,6 +46,15 @@ export function modeListens(mode: Mode): boolean {
   return mode === 'voice'
 }
 
+/** Hyper is a microphone voice policy; typed Talk always stays Normal. */
+export function modeSupportsHyper(mode: Mode): boolean {
+  return mode === 'voice'
+}
+
+export function normalizeVoiceLatency(value: unknown): VoiceLatencyProfile {
+  return value === 'hyper' ? 'hyper' : 'normal'
+}
+
 export function modeLabel(mode: Mode): string {
   if (mode === 'voice') return 'voice'
   if (mode === 'talk') return 'talk'
@@ -59,8 +72,17 @@ function loadMode(): Mode {
   }
 }
 
+function loadVoiceLatency(): VoiceLatencyProfile {
+  try {
+    return normalizeVoiceLatency(localStorage.getItem(VOICE_LATENCY_KEY))
+  } catch {
+    return 'normal'
+  }
+}
+
 export function ModeProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<Mode>(loadMode)
+  const [voiceLatency, setVoiceLatency] = useState<VoiceLatencyProfile>(loadVoiceLatency)
 
   useEffect(() => {
     try {
@@ -70,8 +92,19 @@ export function ModeProvider({ children }: { children: ReactNode }) {
     }
   }, [mode])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(VOICE_LATENCY_KEY, voiceLatency)
+    } catch {
+      /* the latency profile still holds for this session */
+    }
+  }, [voiceLatency])
+
   const toggleMode = useCallback(() => setMode((m) => nextMode(m)), [])
-  const value = useMemo<ModeContextValue>(() => ({ mode, setMode, toggleMode }), [mode, toggleMode])
+  const value = useMemo<ModeContextValue>(
+    () => ({ mode, setMode, toggleMode, voiceLatency, setVoiceLatency }),
+    [mode, toggleMode, voiceLatency],
+  )
 
   return <ModeContext value={value}>{children}</ModeContext>
 }

@@ -1150,6 +1150,17 @@ def api_chat(body: ChatIn):
     try:
         # The broadcast lives inside chat_streaming; nothing extra to do here.
         reply = str(brain.chat_streaming(text, on_token=lambda _t: None, turn_id=turn_id))
+    except brain.Cancelled as cancelled:
+        # Newest user turn wins. Let an already-started tool settle internally,
+        # retain only the interrupted history marker, and never enqueue stale
+        # text/TTS after the replacement request.
+        brain.finish_interrupted_turn(cancelled, cancelled.generated)
+        return {
+            "ok": True,
+            "reply": "",
+            "turn_id": turn_id,
+            "interrupted": True,
+        }
     except Exception:
         # The raw exception can carry provider URLs, keys, or internals — log
         # it, but answer in-voice without the detail.
@@ -1364,7 +1375,14 @@ async def ws_voice(ws: WebSocket):
     from rau.voice.session import VoiceSession, session_info, warm_voice
 
     await ws.accept()
-    session = VoiceSession(ws.send_json, ws.send_bytes)
+    requested_profile = str(ws.query_params.get("profile") or "normal").lower()
+    if requested_profile not in ("normal", "hyper"):
+        requested_profile = "normal"
+    session = VoiceSession(
+        ws.send_json,
+        ws.send_bytes,
+        profile=requested_profile,
+    )
     # In the background: first-turn latency is most visible, so warm TTS/LLM
     # clients before the user speaks rather than on the first reply.
     warm_voice()
@@ -1374,7 +1392,7 @@ async def ws_voice(ws: WebSocket):
     state.acquire_browser_voice()
 
     try:
-        await ws.send_json({"t": "hello", **session_info()})
+        await ws.send_json({"t": "hello", **session_info(session.profile)})
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
@@ -1433,6 +1451,30 @@ async def ws_voice(ws: WebSocket):
                         await session.begin_turn(text)
                 elif kind == "stop":
                     await session.stop()
+                elif kind == "profile":
+                    profile = cmd.get("profile")
+                    if not isinstance(profile, str):
+                        raise ValueError("profile must be a string")
+                    session.set_profile(profile.lower())
+                    await session.send(t="profile", profile=session.profile)
+                elif kind == "latency_report":
+                    turn_id = cmd.get("turn_id")
+                    value = cmd.get("eou_to_playback_ms")
+                    profile = cmd.get("profile")
+                    if not isinstance(turn_id, str):
+                        raise ValueError("turn_id must be a string")
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                    ):
+                        raise ValueError("eou_to_playback_ms must be a number")
+                    if not isinstance(profile, str):
+                        raise ValueError("profile must be a string")
+                    session.record_latency_report(
+                        turn_id=turn_id,
+                        eou_to_playback_ms=float(value),
+                        profile=profile.lower(),
+                    )
                 else:
                     raise ValueError("unknown voice command")
             except (TypeError, ValueError) as e:

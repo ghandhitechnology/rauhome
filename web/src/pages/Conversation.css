@@ -464,3 +464,25 @@
   font-size: 0.74rem;
   color: var(--faint);
 }
+.compose-actions .hyper-toggle {
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 0.34rem 0.58rem;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.compose-actions .hyper-toggle.on {
+  color: var(--accent);
+  border-color: var(--accent-a40);
+  background: var(--accent-a12);
+}
+
+.compose-actions .hyper-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}

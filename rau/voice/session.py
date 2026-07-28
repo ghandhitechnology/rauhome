@@ -28,7 +28,14 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from rau.events import BUS
 from rau.face import brain, choreography
 from rau.voice.stt import SAMPLE_RATE, get_stt_provider, resolve_stt
-from rau.voice.tts_stream import SR, SentenceTiming, pcm_duration_ms, speak_stream
+from rau.voice.tts_stream import (
+    RealtimeTtsSession,
+    SR,
+    SentenceTiming,
+    pcm_duration_ms,
+    speak_realtime_stream,
+    speak_stream,
+)
 from rau import state
 
 log = logging.getLogger("rau.voice.session")
@@ -56,6 +63,13 @@ HESITATIONS_ENABLED = False
 REACTION_AFTER_SEC = 0.45
 #: Bound LLM→TTS so a stalled consumer backpressures the model producer.
 TOKEN_PIPE_MAXSIZE = 32
+LATENCY_PROFILES = frozenset({"normal", "hyper"})
+VOICE_CAPABILITIES = (
+    "latency_profile",
+    "latency_metrics",
+    "deepgram_speech_final",
+    "tts_multi_context",
+)
 
 
 @dataclass
@@ -130,11 +144,16 @@ class _Turn:
     #: Monotonic time when the final transcript was accepted (TTFT start).
     transcript_at: float = 0.0
     first_audio_at: float = 0.0
+    llm_request_at: float = 0.0
+    first_token_at: float = 0.0
+    tts_request_at: float = 0.0
+    first_tts_byte_at: float = 0.0
     #: Set once a hesitation has been played for this turn, so the real reply
     #: never arrives behind a second one.
     reacted: bool = False
     #: Logged once when first PCM leaves for the browser.
     ttft_logged: bool = False
+    browser_latency_reported: bool = False
     thread: Optional[threading.Thread] = None
     producer: Optional[threading.Thread] = None
     reply: Any = None
@@ -189,7 +208,7 @@ class _Turn:
 class VoiceSession:
     """Owns one browser voice connection."""
 
-    def __init__(self, send_json, send_bytes) -> None:
+    def __init__(self, send_json, send_bytes, *, profile: str = "normal") -> None:
         self._send_json = send_json
         self._send_bytes = send_bytes
         self.loop = asyncio.get_running_loop()
@@ -207,6 +226,16 @@ class VoiceSession:
         self._active_turn: Optional[_Turn] = None
         self.phase = "idle"  # idle | listening | thinking | speaking
         self.closed = False
+        self.profile = profile if profile in LATENCY_PROFILES else "normal"
+        self._realtime_tts = RealtimeTtsSession()
+
+    def set_profile(self, profile: str) -> None:
+        """Change latency policy between turns; an in-flight turn is immutable."""
+        if profile not in LATENCY_PROFILES:
+            raise ValueError("profile must be normal or hyper")
+        if self.phase != "idle":
+            raise ValueError("profile can only change while voice is idle")
+        self.profile = profile
 
     # ── plumbing ─────────────────────────────────────────────────────
 
@@ -279,7 +308,10 @@ class VoiceSession:
                 return
         if phase != self.phase:
             self.phase = phase
-            await self.send(t="phase", phase=phase)
+            payload: Dict[str, Any] = {"t": "phase", "phase": phase}
+            if turn is not None and turn.turn_id:
+                payload["turn_id"] = turn.turn_id
+            await self.send(**payload)
 
     def set_phase_threadsafe(self, phase: str, *, turn: _Turn) -> None:
         self._schedule(self.set_phase(phase, turn=turn))
@@ -292,6 +324,14 @@ class VoiceSession:
         overlaps with them speaking rather than adding latency afterwards.
         """
         await self.stop_stt()
+        if self.profile == "hyper":
+            # Refresh a stale provider pool in parallel with STT/user speech,
+            # never on the endpoint-to-first-token critical path.
+            threading.Thread(
+                target=self._warm_hyper_connections,
+                daemon=True,
+                name="rau-voice-provider-warm",
+            ).start()
 
         # Checked after stop_stt, not before: the STT tail can be inside the
         # commit lock starting a fresh turn while stop_stt waits for it, and a
@@ -314,6 +354,13 @@ class VoiceSession:
             self._run_stt(mic, epoch), name="rau-voice-stt"
         )
         await self.set_phase("listening")
+
+    def _warm_hyper_connections(self) -> None:
+        _warm_hyper_provider()
+        try:
+            self._realtime_tts.warm()
+        except Exception:
+            pass
 
     def feed(self, pcm: bytes) -> Optional[str]:
         """Queue one PCM16 frame; return a client-safe validation error."""
@@ -424,18 +471,29 @@ class VoiceSession:
             provider = get_stt_provider()
             async for tr in provider.stream(frames()):
                 text = str(getattr(tr, "text", "") or "").strip()
+                speech_final = bool(getattr(tr, "speech_final", False))
                 if not text:
+                    if self.profile == "hyper" and speech_final and final_parts:
+                        mic.closed = True
+                        if self._mic is mic:
+                            self._mic = None
+                        await self.send(t="endpoint")
+                        break
                     continue
                 text = text[:MAX_TRANSCRIPT_CHARS]
                 if tr.final:
                     latest_partial = ""
                     committed = " ".join(final_parts).strip()
-                    if text == committed or (final_parts and text == final_parts[-1]):
-                        continue
-                    if committed and text.startswith(committed):
-                        final_parts = [text]
-                    else:
-                        final_parts.append(text)
+                    duplicate = (
+                        text == committed
+                        or (final_parts and text == final_parts[-1])
+                        or bool(committed and committed.startswith(text))
+                    )
+                    if not duplicate:
+                        if committed and text.startswith(committed):
+                            final_parts = [text]
+                        else:
+                            final_parts.append(text)
                     await self.send(
                         t="partial", text=" ".join(final_parts)[:MAX_TRANSCRIPT_CHARS]
                     )
@@ -444,6 +502,12 @@ class VoiceSession:
                     prefix = " ".join(final_parts).strip()
                     partial = f"{prefix} {text}".strip()[:MAX_TRANSCRIPT_CHARS]
                     await self.send(t="partial", text=partial)
+                if self.profile == "hyper" and speech_final:
+                    mic.closed = True
+                    if self._mic is mic:
+                        self._mic = None
+                    await self.send(t="endpoint")
+                    break
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -546,10 +610,77 @@ class VoiceSession:
             turn.ttft_logged = True
             ms = (turn.first_audio_at - turn.transcript_at) * 1000.0
         log.info(
-            "voice_ttft_ms=%.0f turn=%s chars=%d",
+            "voice_ttft_ms=%.0f endpoint_to_llm_request_ms=%.0f "
+            "llm_first_token_ms=%.0f endpoint_to_tts_request_ms=%.0f "
+            "tts_first_byte_ms=%.0f server_first_ws_audio_ms=%.0f "
+            "profile=%s turn=%s chars=%d",
             ms,
+            (
+                (turn.llm_request_at - turn.transcript_at) * 1000.0
+                if turn.llm_request_at
+                else -1.0
+            ),
+            (
+                (turn.first_token_at - turn.llm_request_at) * 1000.0
+                if turn.first_token_at and turn.llm_request_at
+                else -1.0
+            ),
+            (
+                (turn.tts_request_at - turn.transcript_at) * 1000.0
+                if turn.tts_request_at
+                else -1.0
+            ),
+            (
+                (turn.first_tts_byte_at - turn.tts_request_at) * 1000.0
+                if turn.first_tts_byte_at and turn.tts_request_at
+                else -1.0
+            ),
+            ms,
+            self.profile,
             turn.turn_id or turn.ident,
             len(turn.text),
+        )
+
+    def record_latency_report(
+        self,
+        *,
+        turn_id: str,
+        eou_to_playback_ms: float,
+        profile: str,
+    ) -> None:
+        """Record the browser-clock end-to-end measurement without transcript text."""
+        if not turn_id or len(turn_id) > 128:
+            raise ValueError("turn_id is invalid")
+        if profile not in LATENCY_PROFILES:
+            raise ValueError("profile must be normal or hyper")
+        if profile != self.profile:
+            raise ValueError("latency report profile does not match session")
+        value = float(eou_to_playback_ms)
+        if not math.isfinite(value) or not 0 <= value <= 300_000:
+            raise ValueError("eou_to_playback_ms is invalid")
+        turn = self._active_turn
+        if turn is None or turn.turn_id != turn_id:
+            raise ValueError("latency report turn is not active")
+        with turn.lock:
+            if turn.browser_latency_reported:
+                raise ValueError("latency report already recorded")
+            turn.browser_latency_reported = True
+        from rau.providers.registry import get_slot
+
+        face = get_slot("face")
+        tts = get_slot("tts")
+        stt, _ = resolve_stt()
+        log.info(
+            "voice_eou_to_playback_ms=%.0f profile=%s turn=%s provider=%s "
+            "model=%s stt=%s tts_model=%s effect=%s",
+            value,
+            profile,
+            turn_id,
+            face.get("provider") or "",
+            face.get("model") or "",
+            stt,
+            tts.get("model") or "",
+            tts.get("effect") or "none",
         )
 
     def _turn_body(self, turn: _Turn) -> None:
@@ -561,9 +692,12 @@ class VoiceSession:
 
         def produce() -> None:
             def on_token(token: str) -> None:
+                if token and not turn.first_token_at:
+                    turn.first_token_at = time.monotonic()
                 tokens.put(token, cancel=turn.cancel)
 
             try:
+                turn.llm_request_at = time.monotonic()
                 turn.reply = brain.chat_streaming(
                     turn.text,
                     on_token=on_token,
@@ -578,6 +712,7 @@ class VoiceSession:
                     defer_diary=True,
                     turn_id=turn.turn_id,
                     voice=True,
+                    latency_profile=self.profile,
                 )
             except brain.Cancelled as cancelled:
                 # Commits the interruption to history — real disk IO, so it
@@ -614,7 +749,13 @@ class VoiceSession:
         turn.producer.start()
 
         def on_sentence(sentence: str) -> None:
-            turn.pending_sentence = sentence
+            with turn.lock:
+                turn.pending_sentence = sentence
+                # Hyper's buffered effect path can send alignment before PCM
+                # so captions are ready for the first audible sample. At
+                # sentence start the current queued duration is exactly that
+                # sentence's offset in the reply timeline.
+                turn.sentence_start_ms = turn.utterance.total_ms
 
         def on_audio(pcm: bytes) -> None:
             if turn.cancel.is_set() or not self._is_current(turn):
@@ -639,6 +780,8 @@ class VoiceSession:
                 turn.reacted = True
                 if not turn.first_audio_at:
                     turn.first_audio_at = time.monotonic()
+                if not turn.first_tts_byte_at:
+                    turn.first_tts_byte_at = turn.first_audio_at
                 chunk = turn.utterance.add(sentence, pcm)
                 # Chunks of one sentence merge into a single timeline item, so
                 # this stays the sentence's own start however many PCM
@@ -709,14 +852,28 @@ class VoiceSession:
         tts_failed = False
         try:
             # Brief pre-speech lag (imperfect timing). Cancel during wait skips TTS.
-            cancelled_during_lag = turn.cancel.wait(PRE_SPEECH_LAG_SEC)
+            lag = 0.0 if self.profile == "hyper" else PRE_SPEECH_LAG_SEC
+            cancelled_during_lag = turn.cancel.wait(lag)
             if not cancelled_during_lag:
-                for _ in speak_stream(
+                turn.tts_request_at = time.monotonic()
+                speaker = (
+                    speak_realtime_stream
+                    if self.profile == "hyper"
+                    else speak_stream
+                )
+                speaker_options: Dict[str, Any] = {}
+                if self.profile == "hyper":
+                    speaker_options = {
+                        "session": self._realtime_tts,
+                        "context_id": turn.turn_id or f"turn-{turn.ident}",
+                    }
+                for _ in speaker(
                     tokens.iter(cancel=turn.cancel),
                     on_audio=tracked_audio,
                     on_sentence=on_sentence,
                     on_timing=on_timing,
                     cancel=turn.cancel,
+                    **speaker_options,
                 ):
                     pass
             else:
@@ -802,6 +959,12 @@ class VoiceSession:
         played = min(max(0.0, played), 3_600_000.0)
         turn.set_played_ms(played)
         turn.cancel.set()
+        if turn.turn_id:
+            # Multi-context TTS makes cancellation turn-scoped; keep the warm
+            # session socket for the user's follow-up.
+            await asyncio.to_thread(
+                self._realtime_tts.close_context, turn.turn_id
+            )
         # A consumer parked in _TokenPipe.iter must die now, not when a
         # stalled producer's provider timeout fires minutes from now.
         pipe = turn.token_pipe
@@ -863,6 +1026,7 @@ class VoiceSession:
                 await asyncio.to_thread(turn.token_pipe.close)
             choreography.cancel_turn(turn.turn_id, "closed")
         await self.stop_stt()
+        await asyncio.to_thread(self._realtime_tts.close)
         self.closed = True
         if turn is not None:
             workers = [turn.thread, turn.producer]
@@ -909,6 +1073,19 @@ def warm_voice() -> None:
             _WARMED.clear()
 
     threading.Thread(target=go, daemon=True, name="rau-voice-warm").start()
+
+
+def _warm_hyper_provider() -> None:
+    """Best-effort warm of the configured model provider's pooled transport."""
+    try:
+        from rau.providers.registry import chat_for_slot
+
+        provider, _slot = chat_for_slot("face")
+        warm = getattr(provider, "warm_hyper", None)
+        if callable(warm):
+            warm()
+    except Exception:
+        pass
 
 
 def warm_reactions() -> None:
@@ -970,7 +1147,7 @@ class _TokenPipe:
             yield item
 
 
-def session_info() -> Dict[str, Any]:
+def session_info(profile: str = "normal") -> Dict[str, Any]:
     provider, slot = resolve_stt()
     return {
         "stt": provider,
@@ -978,4 +1155,6 @@ def session_info() -> Dict[str, Any]:
         "sample_rate_in": 16000,
         "sample_rate_out": SR,
         "started": time.time(),
+        "profile": profile if profile in LATENCY_PROFILES else "normal",
+        "capabilities": list(VOICE_CAPABILITIES),
     }

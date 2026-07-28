@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { spokenSentence, spokenSoFar, type AlignedSentence } from './alignment'
+import {
+  spokenSentence,
+  spokenSentenceSoFar,
+  spokenSoFar,
+  type AlignedSentence,
+} from './alignment'
 
 /** "Hi." at 100ms per character, starting at `offsetMs`. */
 function sentence(text: string, offsetMs: number, perChar = 100): AlignedSentence {
@@ -97,5 +102,33 @@ describe('spokenSentence', () => {
 
   it('reports nothing with no alignment yet', () => {
     expect(spokenSentence([], 400)).toBe('')
+  })
+})
+
+describe('spokenSentenceSoFar', () => {
+  const first = sentence('Hello.', 0)
+  const second = sentence('Bye.', 600)
+  const reply = [first, second]
+
+  it('streams only the audible prefix of the current sentence', () => {
+    expect(spokenSentenceSoFar(reply, 0)).toBe('')
+    expect(spokenSentenceSoFar(reply, 150)).toBe('He')
+    expect(spokenSentenceSoFar(reply, 350)).toBe('Hell')
+    expect(spokenSentenceSoFar(reply, 599)).toBe('Hello.')
+  })
+
+  it('starts over progressively when playback enters the next sentence', () => {
+    expect(spokenSentenceSoFar(reply, 600)).toBe('Hello.')
+    expect(spokenSentenceSoFar(reply, 650)).toBe('B')
+    expect(spokenSentenceSoFar(reply, 850)).toBe('Bye')
+    expect(spokenSentenceSoFar(reply, 1_000)).toBe('Bye.')
+  })
+
+  it('does not invent progress without character timing', () => {
+    const blank: AlignedSentence[] = [
+      { turnId: 'turn_1', text: 'Hello.', offsetMs: 0, durationMs: 600, charMs: [] },
+    ]
+    expect(spokenSentenceSoFar(blank, 300)).toBe('')
+    expect(spokenSentenceSoFar(blank, 600)).toBe('Hello.')
   })
 })

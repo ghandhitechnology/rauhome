@@ -231,6 +231,8 @@ export class PiRun {
 		this.timeoutTimer = undefined;
 		this.env = undefined;
 		this.toolPhases = new Map();
+		this.toolCalls = new Map();
+		this.toolLedger = { artifacts: [], mutations: [], verification: [] };
 		this.closed = false;
 		this.structuredResult = undefined;
 		this.sessionPath = "";
@@ -365,7 +367,58 @@ export class PiRun {
 				return undefined;
 			});
 
-			const message = await this.harness.prompt(this.goal);
+			let message = await this.harness.prompt(this.goal);
+			// Some providers end a turn with prose even though the task is only
+			// planned or partially inspected. Keep the same harness/session
+			// alive and explicitly resume it instead of treating that first
+			// answer as job completion.
+			if (this.options.provider !== "faux") {
+				for (
+					let recovery = 0;
+					recovery < 2 &&
+					ACTIVE_STATES.has(this.state) &&
+					!this.structuredResult &&
+					!["aborted", "error", "length"].includes(message.stopReason);
+					recovery += 1
+				) {
+					this.setState("running", `recovering autonomous loop ${recovery + 1}/2`);
+					this.emit("recovery", {
+						reason: "provider stopped without finish",
+						attempt: recovery + 1,
+					});
+					message = await this.harness.prompt(
+						"You stopped without completing the Deep Work contract. Continue autonomously in the same session: use tools to inspect or act, verify the real outcome, and call finish. Do not return another plan or status update.",
+					);
+				}
+				// Preserve useful work if a provider cannot or will not call the
+				// finish tool after two explicit recoveries. The result remains
+				// visibly marked as inferred instead of crashing the whole job.
+				if (
+					!this.structuredResult &&
+					!["aborted", "error", "length"].includes(message.stopReason)
+				) {
+					const summary = contentText(message.content).trim();
+					if (summary) {
+						this.structuredResult = {
+							outcome: "completed",
+							summary,
+							artifacts: [...new Set(this.toolLedger.artifacts)],
+							mutations: [...new Set(this.toolLedger.mutations)],
+							verification: [...new Set(this.toolLedger.verification)],
+							blockers: [],
+							remaining_risks: [
+								"Provider ended without calling the structured finish tool after two recovery turns",
+							],
+							tool_backed_verification:
+								this.toolLedger.mutations.length === 0 ||
+								this.toolLedger.verification.length > 0,
+						};
+						this.emit("warning", {
+							message: "completion contract inferred from final provider text",
+						});
+					}
+				}
+			}
 			this.settle(message);
 		} catch (error) {
 			this.fail(error);
@@ -378,6 +431,7 @@ export class PiRun {
 				this.emit("warning", { message: `environment cleanup failed: ${String(error)}` });
 			}
 			this.toolPhases.clear();
+			this.toolCalls.clear();
 			this.closed = true;
 			for (const listener of [...this.listeners]) {
 				this.notify(listener, { seq: ++this.seq, type: "close", ts: Date.now() });
@@ -417,6 +471,14 @@ export class PiRun {
 						? input[field].filter((value) => typeof value === "string").slice(0, 100)
 						: [];
 				}
+				for (const field of ["artifacts", "mutations", "verification"]) {
+					completion[field] = [
+						...new Set([...completion[field], ...this.toolLedger[field]]),
+					].slice(0, 100);
+				}
+				completion.tool_backed_verification =
+					this.toolLedger.mutations.length === 0 ||
+					this.toolLedger.verification.length > 0;
 				this.structuredResult = completion;
 				return {
 					content: [{ type: "text", text: "Structured completion recorded." }],
@@ -457,6 +519,10 @@ export class PiRun {
 		if (event.type === "tool_execution_start") {
 			const gated = this.options.confirmTools.includes(event.toolName);
 			this.toolPhases.set(event.toolCallId, gated ? "preflight" : "running");
+			this.toolCalls.set(event.toolCallId, {
+				tool: event.toolName,
+				args: event.args && typeof event.args === "object" ? event.args : {},
+			});
 			if (gated) {
 				this.emit("tool", {
 					phase: "preflight",
@@ -477,7 +543,23 @@ export class PiRun {
 		}
 		if (event.type === "tool_execution_end") {
 			const phase = this.toolPhases.get(event.toolCallId);
+			const call = this.toolCalls.get(event.toolCallId);
 			this.toolPhases.delete(event.toolCallId);
+			this.toolCalls.delete(event.toolCallId);
+			if (!event.isError && call) {
+				const path = typeof call.args.path === "string" ? call.args.path : "";
+				if (["write", "edit"].includes(call.tool)) {
+					if (path) this.toolLedger.artifacts.push(path);
+					this.toolLedger.mutations.push(`${call.tool}: ${path || "workspace file"}`);
+					this.toolLedger.verification = [];
+				} else if (call.tool !== "finish") {
+					this.toolLedger.verification.push(
+						call.tool === "bash"
+							? "bash command completed successfully"
+							: `${call.tool}: ${path || "completed successfully"}`,
+					);
+				}
+			}
 			this.emit("tool", {
 				phase: phase === "blocked" ? "blocked" : "end",
 				tool: event.toolName,

@@ -438,6 +438,29 @@
   border-color: var(--accent-a40);
 }
 
+.hyper-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 0.4rem 0.68rem;
+  background: rgba(12, 10, 10, 0.5);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.hyper-toggle.on {
+  color: var(--accent);
+  border-color: var(--accent-a40);
+  box-shadow: 0 0 12px var(--accent-a12);
+}
+
+.hyper-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .mode-dot {
   width: 6px;
   height: 6px;

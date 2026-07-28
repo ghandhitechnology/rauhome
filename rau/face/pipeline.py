@@ -373,6 +373,10 @@ def start_face(*, with_audio: bool = True) -> None:
 
             try:
                 reply = brain.chat(text)
+            except brain.Cancelled:
+                # A newer typed/voice turn owns the foreground now. The stale
+                # local turn must not enqueue speech or an error apology.
+                continue
             except Exception as e:
                 reply = f"I hit a snag thinking: {e}"
             print(f"Rau: {reply}")

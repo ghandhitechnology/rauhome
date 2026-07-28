@@ -32,6 +32,12 @@ def main(argv: list[str] | None = None) -> None:
         default="status",
     )
     parser.add_argument("--no-audio", action="store_true", help="Start face without mic loop")
+    parser.add_argument(
+        "--service-mode",
+        choices=["all", "hub", "text"],
+        default="all",
+        help="Mode used by the installed macOS LaunchAgent",
+    )
     args = parser.parse_args(argv)
 
     if args.mode == "doctor":
@@ -45,7 +51,7 @@ def main(argv: list[str] | None = None) -> None:
         from rau import launch_agent
 
         if args.launch_action == "install":
-            print(launch_agent.install(no_audio=args.no_audio))
+            print(launch_agent.install(mode=args.service_mode, no_audio=args.no_audio))
         else:
             print(getattr(launch_agent, args.launch_action)())
         return

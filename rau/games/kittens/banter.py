@@ -128,7 +128,7 @@ def _ask(prompt: str) -> str:
         # the same line every hand.
         temperature=0.95,
     )
-    return str(getattr(result, "text", "") or "")
+    return str(result.content or "")
 
 
 def _clean(text: str) -> str:

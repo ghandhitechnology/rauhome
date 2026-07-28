@@ -6,13 +6,14 @@ import os
 import secrets
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
 from rau.paths import ROOT
-from rau.pi.client import PiSidecar
+from rau.pi.client import DEFAULT_BASE_URL, PiSidecar
 from rau.providers.registry import load_settings
 
 #: Mirrors rau.agent.tools._shell_env: the sidecar runs model-authored tools, so
@@ -72,7 +73,7 @@ _PI_PROVIDER_ENV: Dict[str, Tuple[str, ...]] = {
 }
 
 
-def _sidecar_env() -> Dict[str, str]:
+def _sidecar_env(provider_override: str = "") -> Dict[str, str]:
     """Environment for a spawned sidecar: no credentials it does not need."""
     env: Dict[str, str] = {
         key: value
@@ -86,7 +87,10 @@ def _sidecar_env() -> Dict[str, str]:
         if key.startswith("PI_SIDECAR_"):
             env[key] = value
     provider = str(
-        os.environ.get("PI_PROVIDER") or load_settings().get("pi_provider") or ""
+        provider_override
+        or os.environ.get("PI_PROVIDER")
+        or load_settings().get("pi_provider")
+        or ""
     ).strip()
     for key in _PI_PROVIDER_ENV.get(provider, ()):
         credential_value = os.environ.get(key)
@@ -99,6 +103,7 @@ class PiSupervisor:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._process: Optional[subprocess.Popen] = None
+        self._base_url = DEFAULT_BASE_URL
         self._last_used = 0.0
         self._registered = False
 
@@ -108,8 +113,16 @@ class PiSupervisor:
             return env.strip().lower() in {"1", "true", "yes", "on"}
         return bool(load_settings().get("pi_executor_enabled", False))
 
+    def installed(self) -> bool:
+        """Whether this checkout can start the optional harness without setup."""
+        return bool(
+            shutil.which("node")
+            and (ROOT / "pi-sidecar" / "src" / "server.mjs").is_file()
+            and (ROOT / "pi-sidecar" / "node_modules").is_dir()
+        )
+
     def health(self) -> Dict[str, Any]:
-        client = PiSidecar()
+        client = PiSidecar(base_url=self._base_url)
         try:
             health = client.health()
             return {"ok": bool(health.get("ok")), **health}
@@ -120,10 +133,12 @@ class PiSupervisor:
                 "error": str(exc)[:500],
             }
 
-    def ensure_running(self, *, timeout: float = 8.0) -> PiSidecar:
+    def ensure_running(
+        self, *, timeout: float = 8.0, provider: str = ""
+    ) -> PiSidecar:
         if not self.enabled():
             raise RuntimeError("Pi executor is disabled")
-        client = PiSidecar()
+        client = PiSidecar(base_url=self._base_url)
         if client.available():
             with self._lock:
                 self._last_used = time.time()
@@ -137,7 +152,7 @@ class PiSupervisor:
                     raise RuntimeError(
                         "Pi sidecar is not installed; run setup for the optional Pi worker"
                     )
-                child_env = _sidecar_env()
+                child_env = _sidecar_env(provider)
                 # A spawned sidecar gets a fresh bearer token so no other local
                 # process can drive it or approve its own confirms — loopback
                 # alone is not authentication. Publishing it in the hub env is
@@ -148,6 +163,19 @@ class PiSupervisor:
                 token = secrets.token_urlsafe(32)
                 child_env["PI_SIDECAR_TOKEN"] = token
                 os.environ["PI_SIDECAR_TOKEN"] = token
+                configured_port = str(child_env.get("PI_SIDECAR_PORT") or "").strip()
+                if configured_port:
+                    port = int(configured_port)
+                else:
+                    # 8791 is intentionally only a default. Other companion
+                    # apps commonly occupy nearby development ports; binding
+                    # an ephemeral loopback port makes the supervised process
+                    # private and removes a startup collision from every job.
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                        probe.bind(("127.0.0.1", 0))
+                        port = int(probe.getsockname()[1])
+                    child_env["PI_SIDECAR_PORT"] = str(port)
+                self._base_url = f"http://127.0.0.1:{port}"
                 self._process = subprocess.Popen(
                     [node, str(entry)],
                     cwd=str(ROOT / "pi-sidecar"),
@@ -161,7 +189,7 @@ class PiSupervisor:
                     self._registered = True
         # Constructed after the spawn lock so the client picks up the token a
         # concurrent spawner may have just published in the environment.
-        client = PiSidecar()
+        client = PiSidecar(base_url=self._base_url)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if client.available():
@@ -194,6 +222,7 @@ class PiSupervisor:
         with self._lock:
             proc = self._process
             self._process = None
+            self._base_url = DEFAULT_BASE_URL
         if proc is None or proc.poll() is not None:
             return
         try:

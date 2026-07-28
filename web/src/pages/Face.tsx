@@ -20,7 +20,7 @@ import {
   tierIsAutomatic,
   type QualityTier,
 } from '../clawd/quality'
-import { useMode, modeLabel, modeListens, modeUsesVoice } from '../mode'
+import { useMode, modeLabel, modeListens, modeSupportsHyper, modeUsesVoice } from '../mode'
 import { useVoiceSession } from '../voice'
 import { api } from '../api'
 import { live } from '../live'
@@ -225,9 +225,13 @@ export default function Face() {
   /** Stamp `lastReplyAt` once per streamed turn so celebrate does not retrigger. */
   const streamStampRef = useRef('')
 
-  const { mode } = useMode()
+  const { mode, voiceLatency, setVoiceLatency } = useMode()
   const voiceOn = modeUsesVoice(mode)
-  const voice = useVoiceSession({ enabled: voiceOn, listen: modeListens(mode) })
+  const voice = useVoiceSession({
+    enabled: voiceOn,
+    listen: modeListens(mode),
+    profile: mode === 'voice' ? voiceLatency : 'normal',
+  })
   const [stream, setStream] = useState<FaceStream>(IDLE_FACE_STREAM)
   const streamRef = useRef(stream)
   streamRef.current = stream
@@ -310,8 +314,12 @@ export default function Face() {
     // full-reply dump.
     const speaking = voice.phase === 'speaking'
     const heard = speaking ? voice.spokenSentence || voice.spokenText : ''
-    const fresh = !!heard && heard !== spokenRef.current
-    if (fresh) spokenRef.current = heard
+    const previous = spokenRef.current
+    // Character-level growth is one sentence beat, not a stream of brand-new
+    // replies. Stamp only the first audible prefix (and the first prefix of a
+    // new sentence), while still updating the bubble on every prefix.
+    const fresh = !!heard && (!previous || !heard.startsWith(previous))
+    if (heard) spokenRef.current = heard
     if (!speaking && voice.phase !== 'thinking') spokenRef.current = ''
     setSignals((s) => ({
       ...s,
@@ -692,6 +700,25 @@ export default function Face() {
             {modeLabel(mode)}
             <em>⇧␣</em>
           </span>
+          {modeSupportsHyper(mode) && (
+            <button
+              type="button"
+              className={`hyper-toggle ${voiceLatency === 'hyper' ? 'on' : ''}`}
+              aria-label="Hyper-low-latency voice"
+              aria-pressed={voiceLatency === 'hyper'}
+              disabled={voice.phase !== 'idle'}
+              title={
+                voice.phase === 'idle'
+                  ? 'Use the same voice model and features with the lowest-latency pipeline'
+                  : 'Hyper can be changed after the current voice turn'
+              }
+              onClick={() =>
+                setVoiceLatency(voiceLatency === 'hyper' ? 'normal' : 'hyper')
+              }
+            >
+              ⚡ Hyper
+            </button>
+          )}
           {/*
             Starting a game without asking him. He can still deal or set up the
             board himself — `start_kittens`, `start_chess` — and these are the

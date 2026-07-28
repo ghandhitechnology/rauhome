@@ -19,6 +19,7 @@ from rau.games.kittens import journal, player, session, tools  # noqa: E402
 from rau.games.kittens import view as view_mod  # noqa: E402
 from rau.games.kittens.deck import ATTACK, DEFUSE, EXPLODING_KITTEN, SKIP  # noqa: E402
 from rau.games.kittens.engine import PHASE_DEFUSE, PHASE_PLAYING, RAU, USER, Game  # noqa: E402
+from rau.providers.base import ChatResult  # noqa: E402
 from tests.test_kittens_session import isolate_memory, quiesce  # noqa: E402
 
 
@@ -135,6 +136,45 @@ class TakeTurn(unittest.TestCase):
         self.assertIn("watching you", text)
         self.assertIn("drew", text.lower())
 
+    def test_provider_content_is_used_instead_of_draw_fallback(self):
+        """A real ChatResult must reach the parser rather than look empty."""
+
+        class Provider:
+            def chat(self, *args, **kwargs):
+                return ChatResult(
+                    content=(
+                        '{"move": {"move": "play", "card": "skip"}, '
+                        '"say": "skipping this one."}'
+                    )
+                )
+
+        with patch(
+            "rau.providers.registry.chat_for_slot",
+            return_value=(
+                Provider(),
+                {
+                    "model": "test-player",
+                    "max_tokens": 100,
+                    "temperature": 0,
+                },
+            ),
+        ):
+            tools.run_tool("start_kittens", {})
+            game = session.current()
+            assert game is not None
+            game.hands[RAU] = [SKIP]
+            game.hands[USER] = [SKIP]
+            game.draw = [ATTACK, SKIP]
+            game.current = RAU
+            game.phase = PHASE_PLAYING
+            game.pending = None
+            game.awaiting_seat = None
+            self._real_take(game)
+
+        self.assertNotIn(SKIP, game.hands[RAU])
+        self.assertIn(SKIP, game.discard)
+        self.assertNotIn(ATTACK, game.hands[RAU], "the draw fallback ran")
+
 
 class FallbackMove(unittest.TestCase):
     """The guaranteed move must actually be guaranteed — placeholders are not playable."""
@@ -246,6 +286,25 @@ class JournalShared(unittest.TestCase):
 
 
 class NopeReflex(unittest.TestCase):
+    def test_provider_content_can_pass_on_an_attack(self):
+        """PASS in ChatResult.content must override the aggressive reflex."""
+
+        class Provider:
+            def chat(self, *args, **kwargs):
+                return ChatResult(content="PASS")
+
+        game = Game(seed=1)
+        game.hands[RAU] = ["nope", SKIP]
+        game.hands[USER] = [ATTACK]
+        game.current = USER
+        game.phase = PHASE_PLAYING
+        game.play(USER, ATTACK)
+        with patch(
+            "rau.providers.registry.chat_for_slot",
+            return_value=(Provider(), {"model": "test-player"}),
+        ):
+            self.assertFalse(player.decide_nope(game))
+
     def test_timeout_falls_back_to_reflex_on_attack(self):
         game = Game(seed=1)
         game.hands[RAU] = ["nope", SKIP]

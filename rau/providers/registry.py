@@ -97,7 +97,10 @@ def _default_settings() -> Dict[str, Any]:
         "presence_backoff_after_misses": 2,
         "hard_task_progress_interval_sec": 25,
         "resource_profile": "balanced",
-        "pi_executor_enabled": False,
+        # Prefer the supervised AgentHarness for coding work when its optional
+        # sidecar is installed. Executor selection still falls back to the
+        # native harness when Node/the sidecar dependencies are absent.
+        "pi_executor_enabled": True,
         "trace_ttl_days": 7,
         "face_history_turns": 24,
         "permissions": {

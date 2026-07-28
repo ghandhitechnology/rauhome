@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { bodyController } from '../clawd/body'
-import { spokenSentence, spokenSoFar, type AlignedSentence } from './alignment'
+import { spokenSentenceSoFar, spokenSoFar, type AlignedSentence } from './alignment'
 import { classifyEndpoint, ENDPOINT_SCALE } from './endpoint'
 import { FRAME_MS, MicCapture } from './capture'
 import { TtsPlayback } from './playback'
+import { negotiateVoiceCapabilities } from './protocol'
 import { Vad } from './vad'
+import type { VoiceLatencyProfile } from '../mode'
 
 export type VoicePhase = 'idle' | 'listening' | 'thinking' | 'speaking'
 
@@ -20,7 +22,7 @@ export type VoiceSession = {
   lastSay: string
   /** Cumulative text actually heard so far this reply. */
   spokenText: string
-  /** Sentence currently reaching the speaker. */
+  /** Audible prefix of the sentence currently reaching the speaker. */
   spokenSentence: string
   micLevel: number
   outLevel: number
@@ -31,6 +33,8 @@ export type VoiceSession = {
   tools: VoiceToolCall[]
   /** STT backend the session resolved to, which may differ from the config. */
   backend: string
+  /** Latency profile accepted by the current server-side voice session. */
+  profile: VoiceLatencyProfile
   sendText: (text: string) => void
   /** Shut Rau up / abandon the utterance in progress. */
   stop: () => void
@@ -71,6 +75,9 @@ type ServerMessage = {
   /** hello: which STT backend the session actually resolved to. */
   stt?: string
   model?: string
+  profile?: VoiceLatencyProfile
+  /** hello: optional commands/features supported by this hub version. */
+  capabilities?: string[]
   /** say_align / say / say_end: which reply this frame belongs to. */
   turn_id?: string
   /** say_align: where this sentence starts in the reply's audio timeline. */
@@ -89,10 +96,13 @@ export type VoiceTurnEnd = { interrupted: boolean; heard: string; at: number }
 export const useVoiceSession = ({
   enabled,
   listen = true,
+  profile = 'normal',
 }: {
   enabled: boolean
   /** When false, keep the voice socket and TTS but do not open the mic. */
   listen?: boolean
+  /** Hyper is intentionally only effective when the microphone is enabled. */
+  profile?: VoiceLatencyProfile
 }): VoiceSession => {
   const [phase, setPhase] = useState<VoicePhase>('idle')
   const [connected, setConnected] = useState(false)
@@ -106,6 +116,9 @@ export const useVoiceSession = ({
   const [lastTurn, setLastTurn] = useState<VoiceTurnEnd | null>(null)
   const [tools, setTools] = useState<VoiceToolCall[]>([])
   const [backend, setBackend] = useState('')
+  const [acceptedProfile, setAcceptedProfile] = useState<VoiceLatencyProfile>('normal')
+  const acceptedProfileRef = useRef<VoiceLatencyProfile>('normal')
+  const [supportsProfileCommand, setSupportsProfileCommand] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const playbackRef = useRef<TtsPlayback | null>(null)
@@ -118,6 +131,13 @@ export const useVoiceSession = ({
   const outRef = useRef(0)
   /** The preroll ring lives in the effect; the ref lets stop() reach it. */
   const heldRef = useRef<ArrayBuffer[]>([])
+  const profileRef = useRef<VoiceLatencyProfile>(profile)
+  profileRef.current = profile
+  const lastVoiceAtRef = useRef(0)
+  const endpointAtRef = useRef(0)
+  const currentTurnIdRef = useRef('')
+  const reportedLatencyTurnRef = useRef('')
+  const latencyMetricsSupportedRef = useRef(false)
 
   const applyPhase = useCallback((next: VoicePhase) => {
     phaseRef.current = next
@@ -177,6 +197,7 @@ export const useVoiceSession = ({
       if (!ws || ws.readyState !== WebSocket.OPEN) return
 
       const event = vad.push(level, FRAME_MS)
+      if (vad.voicePresent) lastVoiceAtRef.current = performance.now()
       held.push(pcm)
       if (!bargingRef.current) {
         while (held.length > PREROLL_FRAMES) held.shift()
@@ -199,6 +220,7 @@ export const useVoiceSession = ({
       }
       if (streamingRef.current) drain()
       if (event === 'end') {
+        endpointAtRef.current = lastVoiceAtRef.current || performance.now()
         send({ t: 'speech_end' })
         streamingRef.current = false
         held.length = 0
@@ -221,11 +243,29 @@ export const useVoiceSession = ({
       setSpokenSentenceState('')
     }
 
+    playback.onStarted(() => {
+      if (!latencyMetricsSupportedRef.current) return
+      const latencyTurn = currentTurnIdRef.current
+      if (
+        latencyTurn &&
+        reportedLatencyTurnRef.current !== latencyTurn &&
+        endpointAtRef.current > 0
+      ) {
+        reportedLatencyTurnRef.current = latencyTurn
+        send({
+          t: 'latency_report',
+          turn_id: latencyTurn,
+          eou_to_playback_ms: Math.max(0, performance.now() - endpointAtRef.current),
+          profile: acceptedProfileRef.current,
+        })
+      }
+    })
+
     playback.onLevel((level, playedMs, idle) => {
       outRef.current = idle ? 0 : level
       if (!aligned.length) return
       const spoken = spokenSoFar(aligned, playedMs)
-      const sentence = spokenSentence(aligned, playedMs)
+      const sentence = spokenSentenceSoFar(aligned, playedMs)
       if (sentence !== reportedSentence) {
         reportedSentence = sentence
         setSpokenSentenceState(sentence)
@@ -271,7 +311,10 @@ export const useVoiceSession = ({
     const connect = () => {
       if (disposed) return
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const socket = new WebSocket(`${proto}://${window.location.host}/ws/voice`)
+      const selectedProfile = listen ? profileRef.current : 'normal'
+      const socket = new WebSocket(
+        `${proto}://${window.location.host}/ws/voice?profile=${encodeURIComponent(selectedProfile)}`,
+      )
       socket.binaryType = 'arraybuffer'
       ws = socket
       wsRef.current = socket
@@ -328,6 +371,7 @@ export const useVoiceSession = ({
             // The server measures barge offsets from the start of each reply,
             // so the played-time counter restarts with the turn.
             if (next === 'thinking') {
+              currentTurnIdRef.current = msg.turn_id ?? ''
               playback.reset()
               // Timings describe one reply's audio timeline; carrying them
               // into the next one would place every phrase in the wrong place.
@@ -372,6 +416,16 @@ export const useVoiceSession = ({
             // it off early or leave a long silence after a plain question.
             vad.setHangoverScale(1)
             break
+          case 'endpoint':
+            endpointAtRef.current = lastVoiceAtRef.current || performance.now()
+            streamingRef.current = false
+            held.length = 0
+            vad.reset()
+            break
+          case 'profile':
+            acceptedProfileRef.current = msg.profile === 'hyper' ? 'hyper' : 'normal'
+            setAcceptedProfile(acceptedProfileRef.current)
+            break
           case 'say':
             setLastSay(msg.text ?? '')
             // A reply arriving proves the pipeline works again; the banner
@@ -400,6 +454,13 @@ export const useVoiceSession = ({
             break
           case 'hello':
             setBackend(msg.stt ?? '')
+            {
+              const negotiated = negotiateVoiceCapabilities(msg)
+              latencyMetricsSupportedRef.current = negotiated.latencyMetrics
+              setSupportsProfileCommand(negotiated.profileCommand)
+            }
+            acceptedProfileRef.current = msg.profile === 'hyper' ? 'hyper' : 'normal'
+            setAcceptedProfile(acceptedProfileRef.current)
             break
           case 'error':
             setError(msg.detail ?? 'voice error')
@@ -418,6 +479,7 @@ export const useVoiceSession = ({
       if (retryTimer != null) window.clearTimeout(retryTimer)
       capture.onFrame(null)
       playback.onLevel(null)
+      playback.onStarted(null)
 
       const socket = ws
       ws = null
@@ -446,9 +508,24 @@ export const useVoiceSession = ({
       // Both describe the connection that just went away, not the next one.
       setTools([])
       setBackend('')
+      setAcceptedProfile('normal')
+      acceptedProfileRef.current = 'normal'
+      currentTurnIdRef.current = ''
+      reportedLatencyTurnRef.current = ''
+      latencyMetricsSupportedRef.current = false
+      setSupportsProfileCommand(false)
+      endpointAtRef.current = 0
+      lastVoiceAtRef.current = 0
       applyPhase('idle')
     }
   }, [enabled, listen, applyPhase])
+
+  useEffect(() => {
+    if (!enabled || !listen || !supportsProfileCommand || phase !== 'idle') return
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    socket.send(JSON.stringify({ t: 'profile', profile }))
+  }, [enabled, listen, phase, profile, supportsProfileCommand])
 
   useEffect(() => {
     if (!enabled) return
@@ -526,6 +603,7 @@ export const useVoiceSession = ({
     lastTurn,
     tools,
     backend,
+    profile: acceptedProfile,
     sendText,
     stop,
   }

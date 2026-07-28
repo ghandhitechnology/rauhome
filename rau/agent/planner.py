@@ -112,6 +112,38 @@ def build_plan(
         return plan
 
     effect = effect_for_goal(goal)
+    if executor == "pi":
+        # Pi already owns a long-lived AgentHarness loop with its own
+        # inspect/act/recover cycle and durable JSONL transcript. Splitting it
+        # into three plan nodes would throw that session away between phases,
+        # reducing a real agent back into disconnected one-shot prompts.
+        autonomous = _step(
+            job_id,
+            0,
+            "Execute and verify autonomously",
+            (
+                "Take ownership of this bounded goal end to end. Inspect the "
+                "real workspace, implement the work, run relevant verification, "
+                "recover from failures, and return the structured completion "
+                f"contract.\n\nOverall goal: {goal}"
+            ),
+            executor=executor,
+            effect=effect,
+            retry_budget=2,
+        )
+        plan = AgentPlan(
+            goal=goal,
+            steps=[autonomous],
+            capabilities=list(autonomous.capabilities),
+            expected_evidence=[
+                "structured completion summary",
+                "tool-backed verification evidence",
+            ],
+            budget=dict(budget or {}),
+        )
+        plan.validate(max_steps=INITIAL_STEP_LIMIT)
+        return plan
+
     inspect = _step(
         job_id,
         0,

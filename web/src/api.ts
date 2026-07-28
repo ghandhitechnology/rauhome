@@ -453,7 +453,7 @@ export const api = {
       body: '{}',
     }),
   chat: (text: string) =>
-    req<{ ok: boolean; reply: string; turn_id: string }>('/api/chat', {
+    req<{ ok: boolean; reply: string; turn_id: string; interrupted?: boolean }>('/api/chat', {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),

@@ -7,6 +7,7 @@ import numpy as np
 
 from rau.env import get_secret
 from rau.providers.registry import get_slot
+from rau.voice.pronunciation import normalize_for_tts
 
 SR = 24000
 _client = None
@@ -27,6 +28,9 @@ def _client_el():
 def tts(text: str) -> Optional[Tuple[np.ndarray, int]]:
     if not text or not text.strip():
         return None
+    spoken = normalize_for_tts(text)
+    if not spoken:
+        return None
     slot = get_slot("tts")
     voice_id = slot.get("voice_id") or "TX3LPaxmHKxFdv7VOQHJ"
     model = slot.get("model") or "eleven_flash_v2_5"
@@ -34,7 +38,7 @@ def tts(text: str) -> Optional[Tuple[np.ndarray, int]]:
         c = _client_el()
         gen = c.text_to_speech.convert(
             voice_id=voice_id,
-            text=text.strip(),
+            text=spoken,
             model_id=model,
             output_format="pcm_24000",
         )

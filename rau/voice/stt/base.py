@@ -20,6 +20,8 @@ class Transcript:
     text: str
     #: False for interim guesses that may still change, True once settled.
     final: bool = False
+    #: Provider-detected end of the complete utterance, not merely one stable segment.
+    speech_final: bool = False
     confidence: Optional[float] = None
 
 

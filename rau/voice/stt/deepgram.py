@@ -125,11 +125,13 @@ class DeepgramStt(SttProvider):
                             ((msg.get("channel") or {}).get("alternatives") or [{}])[0]
                         )
                         text = (alt.get("transcript") or "").strip()
-                        if not text:
+                        speech_final = bool(msg.get("speech_final"))
+                        if not text and not speech_final:
                             continue
                         yield Transcript(
                             text=text,
                             final=bool(msg.get("is_final")),
+                            speech_final=speech_final,
                             confidence=alt.get("confidence"),
                         )
                 finally:

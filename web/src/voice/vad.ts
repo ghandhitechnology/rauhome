@@ -38,6 +38,7 @@ export class Vad {
   private silenceMs = 0
   private active = false
   private hangoverScale = 1
+  private present = false
 
   constructor(opts: VadOptions = {}) {
     this.opts = { ...DEFAULTS, ...opts }
@@ -48,6 +49,7 @@ export class Vad {
     this.silenceMs = 0
     this.active = false
     this.hangoverScale = 1
+    this.present = false
   }
 
   /**
@@ -76,6 +78,11 @@ export class Vad {
     return this.speechMs
   }
 
+  /** Whether the most recent frame contained voice energy, excluding hangover. */
+  get voicePresent() {
+    return this.present
+  }
+
   /**
    * Feed one level sample.
    * Returns 'start' / 'end' on a transition, otherwise null.
@@ -92,6 +99,7 @@ export class Vad {
     // like "st-op", restarting the hangover mid-syllable. Staying in costs
     // less evidence than getting in, which is how the ear works too.
     const loud = level > (this.active ? enter * 0.62 : enter)
+    this.present = loud
 
     if (loud) {
       this.speechMs += dtMs

@@ -59,3 +59,29 @@ export function spokenSentence(sentences: AlignedSentence[], playedMs: number): 
   }
   return current
 }
+
+/**
+ * The audible prefix of the sentence currently reaching the speaker.
+ *
+ * Unlike `spokenSentence`, this does not expose a sentence in full at its
+ * first sample. Face uses it for a genuinely streaming speech bubble while
+ * Conversation continues to use the cumulative `spokenSoFar` reply.
+ */
+export function spokenSentenceSoFar(
+  sentences: AlignedSentence[],
+  playedMs: number,
+): string {
+  let current: AlignedSentence | null = null
+  for (const sentence of sentences) {
+    if (playedMs <= sentence.offsetMs) break
+    current = sentence
+  }
+  if (!current) return ''
+  if (playedMs >= current.offsetMs + current.durationMs) return current.text
+  if (!current.charMs.length) return ''
+
+  const local = playedMs - current.offsetMs
+  let count = 0
+  while (count < current.charMs.length && current.charMs[count] <= local) count++
+  return current.text.slice(0, count)
+}

@@ -127,6 +127,11 @@ class CircuitBreakerProvider(ChatProvider):
         if callable(warm):
             warm()
 
+    def warm_hyper(self) -> None:
+        warm = getattr(self.inner, "warm_hyper", None)
+        if callable(warm):
+            warm()
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             return {
