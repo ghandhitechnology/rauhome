@@ -19,6 +19,11 @@ from rau.providers.base import (
     messages_to_openai,
     parse_tool_calls_openai,
 )
+from rau.providers.pooled_http import (
+    PooledLineResponse,
+    PooledStatusError,
+    make_client,
+)
 
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -159,6 +164,7 @@ class OpenAICompatProvider(ChatProvider):
         self.default_headers = default_headers or {}
         # Shared opener so warm + turns reuse the same handler stack.
         self._opener = urllib.request.build_opener()
+        self._pooled_client = None
 
     def _key(self) -> str:
         return get_secret(self.api_key_env)
@@ -186,7 +192,44 @@ class OpenAICompatProvider(ChatProvider):
             # Warmth is nicety; a failed probe must never block voice connect.
             pass
 
-    def _open(self, req: urllib.request.Request, timeout: float):
+    def warm_hyper(self) -> None:
+        """Refresh the persistent Hyper connection while the user is speaking."""
+        key = self._key()
+        if not key:
+            return
+        try:
+            if self._pooled_client is None:
+                self._pooled_client = make_client()
+            self._pooled_client.get(
+                f"{self.base_url}/models",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    **self.default_headers,
+                },
+                timeout=8,
+            )
+        except Exception:
+            pass
+
+    def _open(
+        self,
+        req: urllib.request.Request,
+        timeout: float,
+        *,
+        pooled: bool = False,
+    ):
+        if pooled:
+            if self._pooled_client is None:
+                self._pooled_client = make_client()
+            headers = {key: value for key, value in req.header_items()}
+            return PooledLineResponse(
+                self._pooled_client,
+                method=req.get_method(),
+                url=req.full_url,
+                headers=headers,
+                content=req.data,
+                timeout=timeout,
+            )
         try:
             # Retain the warm shared opener in production while respecting
             # test/integration transports that replace urllib.request.urlopen.
@@ -369,6 +412,7 @@ class OpenAICompatProvider(ChatProvider):
         temperature: float = 0.7,
         tools: Optional[List[Dict[str, Any]]] = None,
         effort: Optional[str] = None,
+        latency_profile: str = "normal",
     ) -> Generator[Any, None, None]:
         """Stream prose and tool calls together over SSE."""
         key = self._key()
@@ -385,6 +429,14 @@ class OpenAICompatProvider(ChatProvider):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if self.name == "openrouter" and latency_profile == "hyper":
+            # Same model and parameters, routed to the serving endpoint with
+            # the best current time-to-first-token among compatible providers.
+            payload["provider"] = {
+                "sort": {"by": "latency", "partition": "model"},
+                "require_parameters": True,
+                "allow_fallbacks": True,
+            }
         from rau.providers.reasoning import apply_reasoning_payload
 
         apply_reasoning_payload(payload, self.name, model, effort)
@@ -411,7 +463,12 @@ class OpenAICompatProvider(ChatProvider):
         finish_reason: Optional[str] = None
 
         try:
-            with self._open(req, timeout=120) as resp:
+            stream = (
+                self._open(req, timeout=120, pooled=True)
+                if latency_profile == "hyper"
+                else self._open(req, timeout=120)
+            )
+            with stream as resp:
                 for raw in _stream_lines(resp, self.name):
                     line = raw.decode("utf-8", errors="ignore").strip()
                     if not line.startswith("data:"):
@@ -504,6 +561,21 @@ class OpenAICompatProvider(ChatProvider):
                 yield StreamDone(result)
                 return
             raise
+        except PooledStatusError as e:
+            if e.status in (400, 404, 415, 501):
+                result = self.chat(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tools=tools,
+                    effort=effort,
+                )
+                if result.content:
+                    yield TextDelta(result.content)
+                yield StreamDone(result)
+                return
+            raise RuntimeError(f"{self.name} HTTP {e.status}: {e.detail}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
         except OSError as e:

@@ -19,7 +19,12 @@ from rau.events import BUS
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, append_trace
 from rau.providers.base import Message, tool_result_images, tool_result_text
-from rau.providers.registry import chat_for_slot, load_settings
+from rau.providers.registry import (
+    chat_for_slot,
+    get_provider,
+    get_slot,
+    load_settings,
+)
 from rau import state
 
 DEFAULT_MAX_PARALLEL_JOBS = 3
@@ -95,6 +100,16 @@ class Job:
     #: Set while this job is blocked on the user; None the rest of the time.
     confirm_id: Optional[str] = None
     thread: Optional[_WorkerHandle] = None
+    #: Native Deep Work keeps one conversation across inspect/execute/verify
+    #: plan nodes. These are deliberately process-local; the durable plan and
+    #: Pi JSONL session remain the restart boundary.
+    harness_messages: List[Message] = field(default_factory=list, repr=False)
+    harness_routes: List[tuple[Any, Dict[str, Any]]] = field(
+        default_factory=list, repr=False
+    )
+    harness_route_index: int = 0
+    harness_tool_count: int = 0
+    harness_recoveries: int = 0
 
 
 _lock = threading.RLock()
@@ -1255,6 +1270,8 @@ def _step_verification_error(
         return str(completion.get("summary") or outcome)
     mutations = completion.get("mutations") or []
     verification = completion.get("verification") or []
+    if mutations and completion.get("tool_backed_verification") is False:
+        return "mutations have no tool-backed post-mutation verification"
     if step.effect_class != "read" and mutations and not verification:
         return "mutations have no verification evidence"
     return ""
@@ -1281,6 +1298,114 @@ def _natural_tool_label(name: str, arguments: Dict[str, Any]) -> str:
     if name == "read_file" and arguments.get("path"):
         return f"Reading {str(arguments['path']).rsplit('/', 1)[-1]}"
     return labels.get(name, name.replace("_", " ").capitalize())
+
+
+def _provider_name(provider: Any, slot: Dict[str, Any]) -> str:
+    inner = getattr(provider, "inner", provider)
+    return str(
+        slot.get("provider")
+        or getattr(inner, "name", "")
+        or getattr(provider, "name", "")
+    ).strip()
+
+
+def _provider_available(provider: Any) -> bool:
+    inner = getattr(provider, "inner", provider)
+    available = getattr(inner, "available", None)
+    if not callable(available):
+        return True
+    try:
+        return bool(available())
+    except Exception:
+        return False
+
+
+def _openrouter_model(provider_name: str, model: str) -> str:
+    """Translate a direct-provider model id to OpenRouter's namespaced id."""
+    clean = str(model or "").strip()
+    if not clean or provider_name == "openrouter" or "/" in clean:
+        return clean
+    prefixes = {
+        "deepseek": "deepseek",
+        "kimi": "moonshotai",
+        "moonshot": "moonshotai",
+        "kimi_code": "moonshotai",
+        "kimi-code": "moonshotai",
+        "kimi_coding": "moonshotai",
+        "codex": "openai",
+        "openai": "openai",
+    }
+    prefix = prefixes.get(provider_name)
+    return f"{prefix}/{clean}" if prefix else clean
+
+
+def _subagent_routes() -> List[tuple[Any, Dict[str, Any]]]:
+    """Return quality-preserving provider routes for one autonomous run.
+
+    The configured route stays first when it is usable. If its direct API key
+    is absent, OpenRouter gets the same model id before any different model is
+    considered. A final configured OpenRouter face model keeps Deep Work alive
+    when a stale/retired worker model is the thing that failed.
+    """
+    primary, primary_slot = chat_for_slot("subagent")
+    primary_slot = dict(primary_slot)
+    primary_name = _provider_name(primary, primary_slot)
+    routes: List[tuple[Any, Dict[str, Any]]] = []
+
+    if _provider_available(primary):
+        routes.append((primary, primary_slot))
+
+    try:
+        openrouter = get_provider("openrouter")
+    except Exception:
+        openrouter = None
+    if openrouter is not None and _provider_available(openrouter):
+        same_model = _openrouter_model(
+            primary_name, str(primary_slot.get("model") or "")
+        )
+        if same_model:
+            routed_slot = {
+                **primary_slot,
+                "provider": "openrouter",
+                "model": same_model,
+            }
+            if not any(
+                _provider_name(provider, slot) == "openrouter"
+                and slot.get("model") == same_model
+                for provider, slot in routes
+            ):
+                routes.append((openrouter, routed_slot))
+
+        face = get_slot("face")
+        face_model = str(face.get("model") or "").strip()
+        if face.get("provider") == "openrouter" and face_model:
+            if not any(
+                _provider_name(provider, slot) == "openrouter"
+                and slot.get("model") == face_model
+                for provider, slot in routes
+            ):
+                routes.append((openrouter, dict(face)))
+
+    # Preserve the old clear provider error when no configured route is
+    # actually available; an empty list would fail with an opaque index error.
+    if not routes:
+        routes.append((primary, primary_slot))
+    return routes
+
+
+def _set_harness_diagnostics(job: Job, provider: Any, slot: Dict[str, Any]) -> None:
+    state.update_job(
+        job.id,
+        harness={
+            "backend": "native",
+            "provider": _provider_name(provider, slot),
+            "model": str(slot.get("model") or ""),
+            "turns": job.turns_used,
+            "tools": job.harness_tool_count,
+            "recoveries": job.harness_recoveries,
+            "session": "persistent",
+        },
+    )
 
 
 def _run_subagent(
@@ -1314,23 +1439,50 @@ def _run_subagent(
     deadline = job.deadline_monotonic or (time.monotonic() + max_runtime)
 
     try:
-        provider, slot = chat_for_slot("subagent")
+        if not job.harness_routes:
+            job.harness_routes = _subagent_routes()
+            job.harness_route_index = 0
+        provider, slot = job.harness_routes[job.harness_route_index]
         from rau.agent.executors import tools_for_goal
 
-        step_tools = tools_for_goal(goal)
-        soul = load_soul()
-        messages = [
-            Message(
-                role="system",
-                content=(
-                    soul
-                    + "\n\nYou are Rau's silent inner worker. Never address the user directly "
-                    "as a separate character. Use tools to accomplish the goal. "
-                    "Call finish(summary) when done. Prefer memory_write for lasting notes."
-                ),
-            ),
-            Message(role="user", content=f"Hard task goal:\n{goal}"),
-        ]
+        # Keep the toolbelt and the conversation scoped to the overall task,
+        # not just this planner phase. A phrase like "make it work" still needs
+        # filesystem diagnostics, and the execute phase must retain what the
+        # inspect phase actually saw rather than receiving only a prose recap.
+        step_tools = tools_for_goal(f"{job.goal}\n{goal}")
+        if not job.harness_messages:
+            soul = load_soul()
+            job.harness_messages.extend(
+                [
+                    Message(
+                        role="system",
+                        content=(
+                            soul
+                            + "\n\nYou are Rau's autonomous Deep Work agent. "
+                            "Work silently and persist until the bounded goal is actually "
+                            "complete. Inspect the real environment, use tools, make only "
+                            "authorized changes, test the result, recover from tool errors, "
+                            "and do not stop at a plan or a description. Preserve unrelated "
+                            "work. Before ending each phase, call finish with a truthful "
+                            "structured outcome, artifacts, mutations, verification, "
+                            "blockers, and remaining risks. Never address the user as a "
+                            "separate character."
+                        ),
+                    ),
+                    Message(
+                        role="user",
+                        content=f"Overall Deep Work goal:\n{job.goal}",
+                    ),
+                ]
+            )
+        messages = job.harness_messages
+        phase = (
+            f"Current plan phase: {getattr(job.step, 'title', '') or 'Execute'}\n"
+            f"{goal}\n\nContinue in the same working session. Do not merely "
+            "tell me what could be done; use the available tools and finish "
+            "with evidence."
+        )
+        messages.append(Message(role="user", content=phase))
         if dependency_results:
             messages.append(
                 Message(
@@ -1348,6 +1500,11 @@ def _run_subagent(
         final_summary = ""
         summarize = provider_summarizer("dream")
         exhausted = True
+        premature_answers = 0
+        saw_finish_attempt = False
+        actual_artifacts: List[str] = []
+        actual_mutations: List[str] = []
+        actual_verification: List[str] = []
         for step in range(max_steps):
             # Cancellation already wrote the cancelled state and its events.
             if job.cancel.is_set():
@@ -1370,42 +1527,69 @@ def _run_subagent(
             # into a briefing rather than dropped — a run that forgets what it
             # was asked to do is worse than one that ran out of room.
             messages = maybe_compact(messages, summarize, budget=budget)
+            job.harness_messages = messages
 
-            max_tokens = int(slot.get("max_tokens") or 4096)
             from rau.agent.executors import routed_effort
             from rau.resources import profile_policy
 
-            effort = routed_effort(
-                goal,
-                configured=str(slot.get("effort") or "medium"),
-                attempt=int(job.budget.get("attempt") or 1),
-                profile=job.resource_profile,
-            )
             worker_limit = int(
                 profile_policy(job.resource_profile)["worker_max_tokens"]
             )
-            max_tokens = min(max_tokens, worker_limit)
-            if job.resource_profile == "eco":
-                max_tokens = min(max_tokens, 2048)
-            elif job.resource_profile == "performance":
-                max_tokens = min(8192, max(max_tokens, 4096))
-            with _lock:
-                aggregate_turns = max(
-                    1, min(64, int(job.budget.get("max_turns") or 24))
+            while True:
+                max_tokens = min(int(slot.get("max_tokens") or 4096), worker_limit)
+                if job.resource_profile == "eco":
+                    max_tokens = min(max_tokens, 2048)
+                elif job.resource_profile == "performance":
+                    max_tokens = min(8192, max(max_tokens, 4096))
+                effort = routed_effort(
+                    goal,
+                    configured=str(slot.get("effort") or "medium"),
+                    attempt=int(job.budget.get("attempt") or 1),
+                    profile=job.resource_profile,
                 )
-                if job.turns_used >= aggregate_turns:
-                    raise RuntimeError(
-                        f"aggregate provider turn budget of {aggregate_turns} exhausted"
+                with _lock:
+                    aggregate_turns = max(
+                        1, min(64, int(job.budget.get("max_turns") or 24))
                     )
-                job.turns_used += 1
-            result = provider.chat(
-                messages,
-                model=slot.get("model") or "openai/gpt-5.6-sol",
-                max_tokens=max_tokens,
-                temperature=float(slot.get("temperature") or 0.3),
-                tools=step_tools,
-                effort=effort,
-            )
+                    if job.turns_used >= aggregate_turns:
+                        raise RuntimeError(
+                            f"aggregate provider turn budget of {aggregate_turns} exhausted"
+                        )
+                    job.turns_used += 1
+                _set_harness_diagnostics(job, provider, slot)
+                try:
+                    result = provider.chat(
+                        messages,
+                        model=slot.get("model") or "openai/gpt-5.6-sol",
+                        max_tokens=max_tokens,
+                        temperature=float(slot.get("temperature") or 0.3),
+                        tools=step_tools,
+                        effort=effort,
+                    )
+                    break
+                except Exception as exc:
+                    if job.harness_route_index + 1 >= len(job.harness_routes):
+                        raise
+                    old_name = _provider_name(provider, slot) or "configured provider"
+                    job.harness_route_index += 1
+                    job.harness_recoveries += 1
+                    provider, slot = job.harness_routes[job.harness_route_index]
+                    next_name = _provider_name(provider, slot) or "fallback provider"
+                    progress = (
+                        f"{old_name} failed; continuing with {next_name} "
+                        f"({str(slot.get('model') or '')})"
+                    )
+                    _emit_progress(job, progress)
+                    state.update_job(job.id, progress=progress)
+                    append_trace(
+                        "provider_failover",
+                        {
+                            "job_id": job.id,
+                            "from": old_name,
+                            "to": next_name,
+                            "error": str(exc)[:500],
+                        },
+                    )
             if result.reasoning:
                 reasoning_span = ACTIVITY.start(
                     "reasoning",
@@ -1434,11 +1618,43 @@ def _run_subagent(
                 )
 
             if not result.tool_calls:
-                # no tools — treat content as summary if present
+                if not result.content:
+                    raise RuntimeError("provider returned an empty response")
+                # Models occasionally answer the task instead of doing it.
+                # Give the same session a concrete recovery turn before
+                # accepting prose, while retaining the legacy escape hatch
+                # after a rejected finish contract.
+                if not saw_finish_attempt and premature_answers < 2:
+                    premature_answers += 1
+                    job.harness_recoveries += 1
+                    messages.append(
+                        Message(
+                            role="user",
+                            content=(
+                                "That was a status/answer, not completion. Continue "
+                                "autonomously now: inspect or act with tools, verify "
+                                "the outcome, then call finish with the structured "
+                                "completion contract."
+                            ),
+                        )
+                    )
+                    _emit_progress(job, "Agent resumed after a premature answer")
+                    continue
                 if result.content:
                     final_summary = result.content
-                else:
-                    raise RuntimeError("provider returned an empty response")
+                    job.completion = {
+                        "outcome": "completed",
+                        "summary": final_summary,
+                        "artifacts": list(dict.fromkeys(actual_artifacts)),
+                        "mutations": list(dict.fromkeys(actual_mutations)),
+                        "verification": list(dict.fromkeys(actual_verification)),
+                        "tool_backed_verification": bool(actual_verification)
+                        or not bool(actual_mutations),
+                        "blockers": [],
+                        "remaining_risks": [
+                            "Provider ended without calling the structured finish tool"
+                        ],
+                    }
                 exhausted = False
                 break
 
@@ -1530,6 +1746,19 @@ def _run_subagent(
                         job, tc.id, tc.name, arguments, needs
                     )
                 typed_result = adapt_result(tc.name, tool_result)
+                job.harness_tool_count += 1
+                actual_artifacts.extend(typed_result.artifacts)
+                if typed_result.mutations:
+                    # Evidence from before a mutation cannot verify the state
+                    # after it. A mutating tool may still emit its own atomic
+                    # postcondition evidence below.
+                    actual_verification.clear()
+                actual_mutations.extend(typed_result.mutations)
+                actual_verification.extend(
+                    str(item.get("detail") or item.get("path") or item)
+                    for item in typed_result.evidence
+                )
+                _set_harness_diagnostics(job, provider, slot)
                 ACTIVITY.finish(
                     tool_span["id"],
                     status="completed" if typed_result.ok else "failed",
@@ -1547,7 +1776,46 @@ def _run_subagent(
                 if job.cancel.is_set():
                     return ""
                 if tool_result.get("finished"):
+                    saw_finish_attempt = True
                     completion = tool_result.get("completion")
+                    if isinstance(completion, dict):
+                        completion = {
+                            **completion,
+                            "artifacts": list(
+                                dict.fromkeys(
+                                    [
+                                        *list(completion.get("artifacts") or []),
+                                        *actual_artifacts,
+                                    ]
+                                )
+                            ),
+                            "mutations": list(
+                                dict.fromkeys(
+                                    [
+                                        *list(completion.get("mutations") or []),
+                                        *actual_mutations,
+                                    ]
+                                )
+                            ),
+                            "verification": list(
+                                dict.fromkeys(
+                                    [
+                                        *list(completion.get("verification") or []),
+                                        *actual_verification,
+                                    ]
+                                )
+                            ),
+                            "tool_backed_verification": bool(
+                                actual_verification
+                            )
+                            or not bool(
+                                [
+                                    *list(completion.get("mutations") or []),
+                                    *actual_mutations,
+                                ]
+                            ),
+                        }
+                        tool_result["completion"] = completion
                     validation_error = _completion_validation_error(completion)
                     if validation_error:
                         tool_result = {
@@ -1590,7 +1858,42 @@ def _run_subagent(
                     final_summary = str(tool_result.get("summary") or "")
                     completion = tool_result.get("completion")
                     if isinstance(completion, dict):
-                        job.completion = dict(completion)
+                        job.completion = {
+                            **dict(completion),
+                            "artifacts": list(
+                                dict.fromkeys(
+                                    [
+                                        *list(completion.get("artifacts") or []),
+                                        *actual_artifacts,
+                                    ]
+                                )
+                            ),
+                            "mutations": list(
+                                dict.fromkeys(
+                                    [
+                                        *list(completion.get("mutations") or []),
+                                        *actual_mutations,
+                                    ]
+                                )
+                            ),
+                            "verification": list(
+                                dict.fromkeys(
+                                    [
+                                        *list(completion.get("verification") or []),
+                                        *actual_verification,
+                                    ]
+                                )
+                            ),
+                            "tool_backed_verification": bool(
+                                actual_verification
+                            )
+                            or not bool(
+                                [
+                                    *list(completion.get("mutations") or []),
+                                    *actual_mutations,
+                                ]
+                            ),
+                        }
                     if not final_summary.strip():
                         raise RuntimeError("finish requires a non-empty summary")
                     exhausted = False
@@ -1744,6 +2047,8 @@ def _completion_validation_error(completion: Any) -> str:
         raise RuntimeError(detail or summary)
     mutations = completion.get("mutations") or []
     verification = completion.get("verification") or []
+    if mutations and completion.get("tool_backed_verification") is False:
+        return "mutations have no tool-backed post-mutation verification"
     if mutations and not verification:
         return "mutations were reported without verification evidence"
     return ""
@@ -1821,11 +2126,10 @@ def _run_pi_subagent(
     finalize: bool = True,
 ) -> str:
     """Project a supervised Pi run onto Rau's durable job lifecycle."""
-    import os
-
     from rau.paths import ROOT
-    from rau.pi import ConfirmRequest, RunSpec
+    from rau.pi import ConfirmRequest, RunSpec, pi_skill
     from rau.pi.supervisor import PI_SUPERVISOR
+    from rau.skills.loader import all_skills
 
     goal = step_goal or job.goal
     if dependency_results:
@@ -1834,7 +2138,6 @@ def _run_pi_subagent(
             for step_id, summary in dependency_results.items()
         )
     try:
-        client = PI_SUPERVISOR.ensure_running()
         settings = load_settings()
         pi_provider = str(
             os.environ.get("PI_PROVIDER")
@@ -1847,8 +2150,42 @@ def _run_pi_subagent(
             or ""
         ).strip()
         if not pi_provider or not pi_model:
-            raise RuntimeError(
-                "Pi executor requires PI_PROVIDER and PI_MODEL (or matching settings)"
+            route_provider, route_slot = _subagent_routes()[0]
+            pi_provider = _provider_name(route_provider, route_slot)
+            pi_model = str(route_slot.get("model") or "").strip()
+        pi_aliases = {
+            "codex": "openai",
+            "kimi_code": "kimi-coding",
+            "kimi-code": "kimi-coding",
+            "kimi_coding": "kimi-coding",
+        }
+        pi_provider = pi_aliases.get(pi_provider, pi_provider)
+        if not pi_provider or not pi_model:
+            raise RuntimeError("Deep Work has no configured provider/model route")
+
+        try:
+            try:
+                client = PI_SUPERVISOR.ensure_running(provider=pi_provider)
+            except TypeError as type_error:
+                # Compatibility for test doubles and older embedders whose
+                # supervisor predates provider-scoped credential forwarding.
+                if "unexpected keyword argument" not in str(type_error):
+                    raise
+                client = PI_SUPERVISOR.ensure_running()
+        except Exception as exc:
+            # No tool has run yet, so falling back here cannot duplicate an
+            # effect. Once a Pi run starts, its own durable/idempotent lifecycle
+            # remains authoritative and errors are not replayed elsewhere.
+            job.harness_recoveries += 1
+            _emit_progress(
+                job,
+                f"AgentHarness unavailable; continuing with native agent: {exc}",
+            )
+            return _run_subagent(
+                job,
+                step_goal=step_goal,
+                dependency_results=dependency_results,
+                finalize=finalize,
             )
 
         def progress(line: str) -> None:
@@ -1906,10 +2243,15 @@ def _run_pi_subagent(
             model=pi_model,
             system_prompt=(
                 load_soul()
-                + "\n\nYou are Rau's silent coding worker. Complete the goal, "
-                "verify it, then report outcome, artifacts, mutations, verification, "
-                "blockers, and remaining risks."
+                + "\n\nYou are Rau's autonomous Deep Work coding agent. Own the "
+                "bounded task end to end: inspect the real workspace, implement "
+                "authorized changes, run tests or other concrete verification, "
+                "recover from failures, and preserve unrelated work. Do not stop "
+                "at a plan or status update. Before ending, call finish with "
+                "outcome, artifacts, mutations, verification, blockers, and "
+                "remaining risks."
             ),
+            skills=[pi_skill(skill) for skill in all_skills()],
             max_turns=max_turns,
             run_timeout_ms=runtime_ms,
             # Sent as-is: scheduled runs keep their 24h window, and the
@@ -1923,6 +2265,17 @@ def _run_pi_subagent(
             cancel=job.cancel,
         )
         PI_SUPERVISOR.touch()
+        state.update_job(
+            job.id,
+            harness={
+                "backend": "pi",
+                "provider": pi_provider,
+                "model": pi_model,
+                "turns": job.turns_used,
+                "session": result.session_path or "durable-jsonl",
+                "structured_completion": bool(result.completion),
+            },
+        )
         # The reservation above charged this run the whole remaining aggregate
         # budget so no second plan node could oversubscribe it. Now that the
         # run has settled, hand back what it did not spend — otherwise every

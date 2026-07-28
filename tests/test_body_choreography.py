@@ -17,6 +17,7 @@ import threading
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -631,6 +632,35 @@ class ChatEndpointTests(unittest.TestCase):
         self.assertEqual(captured["turn_id"], result["turn_id"])
         self.assertEqual(captured["text"], "hello")
 
+    def test_a_superseded_http_turn_never_logs_or_speaks_a_stale_reply(self) -> None:
+        from rau.face import brain
+        from rau.hub import server
+
+        cancelled = brain.Cancelled(
+            generated="old partial",
+            user_text="old question",
+            turn_id="turn_old",
+        )
+        logs: List[Tuple[Any, ...]] = []
+        controls: List[Dict[str, Any]] = []
+        with (
+            mock.patch.object(brain, "chat_streaming", side_effect=cancelled),
+            mock.patch.object(brain, "finish_interrupted_turn") as finish,
+            mock.patch.object(server.state, "add_log", side_effect=lambda *a: logs.append(a)),
+            mock.patch.object(
+                server.state,
+                "push_control",
+                side_effect=lambda item: controls.append(item),
+            ),
+        ):
+            result = server.api_chat(server.ChatIn(text="old question"))
+
+        self.assertTrue(result["interrupted"])
+        self.assertEqual(result["reply"], "")
+        finish.assert_called_once_with(cancelled, "old partial")
+        self.assertEqual([item[0] for item in logs], ["user"])
+        self.assertEqual(controls, [])
+
 
 class VoiceTimingTests(unittest.TestCase):
     """Character timestamps, and what happens when they are not available."""
@@ -893,15 +923,15 @@ class VoiceSessionChoreographyTests(unittest.IsolatedAsyncioTestCase):
             # One sentence of 1000 samples, then a second one after it.
             pcm = b"\x00\x00" * 1000
             captured["on_sentence"]("First one.")
-            captured["on_audio"](pcm)
             captured["on_timing"](
                 SentenceTiming("First one.", [0.0, 10.0], 41.6)
             )
-            captured["on_sentence"]("Second one.")
             captured["on_audio"](pcm)
+            captured["on_sentence"]("Second one.")
             captured["on_timing"](
                 SentenceTiming("Second one.", [0.0, 12.0], 41.6)
             )
+            captured["on_audio"](pcm)
             await _settle(
                 lambda: len([f for f in sent if f.get("t") == "say_align"]) >= 2
             )

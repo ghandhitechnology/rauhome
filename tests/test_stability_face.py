@@ -1,7 +1,7 @@
 """
 Regression tests for the face-brain stability sweep.
 
-Covers: the six-round tool loop closing in prose instead of trailing off into
+Covers: the bounded tool loop closing in prose instead of trailing off into
 "one sec" narration, a barge-in keeping a record of the tools that already ran
 (with the interruption note riding as a user parenthetical, never system), the
 interruption note surviving a provider error that lands together with the
@@ -9,9 +9,9 @@ barge, the deferred diary write happening exactly once, table talk being
 journaled when playback drains rather than when generation ends, a leading
 mood tag never reaching the listener, per-turn skill prompts accumulating
 instead of replacing each other, the compaction flag surviving a thread that
-cannot start, a concurrent face turn getting a clear busy answer, the card
-table being a place the model can send Rau, and the retired entry points
-staying gone.
+cannot start, newest-turn-wins foreground preemption, stale tool-result
+quarantine, the card table being a place the model can send Rau, and the
+retired entry points staying gone.
 
 Run: python -m unittest tests.test_stability_face -v
 """
@@ -92,9 +92,7 @@ class BrainTurnTests(unittest.TestCase):
     def install(self, provider: ScriptedProvider) -> None:
         brain.chat_for_slot = lambda _slot: (provider, {"model": "fake"})
 
-    def test_the_last_tool_round_is_forced_to_close_in_prose(self) -> None:
-        # F1: five rounds of tool calls used to leave the reply as nothing but
-        # the "one sec" narration spoken before each call.
+    def test_the_tool_loop_closes_when_the_provider_returns_prose(self) -> None:
         provider = ScriptedProvider(
             [tool_round(f"call_{i}", "list_skills", "One sec— ") for i in range(5)]
             + [{"deltas": ["Done — the list is above."], "content": "Done — the list is above."}]
@@ -105,9 +103,140 @@ class BrainTurnTests(unittest.TestCase):
 
         self.assertEqual(len(provider.calls), 6)
         self.assertIsNotNone(provider.calls[0]["tools"])
-        # The closing round leaves the model no way to call another tool.
-        self.assertIsNone(provider.calls[-1]["tools"])
         self.assertIn("Done — the list is above.", str(reply))
+
+    def test_a_foreground_turn_can_run_twenty_tools_then_must_close(self) -> None:
+        provider = ScriptedProvider(
+            [
+                tool_round(f"call_{index}", "list_skills", "")
+                for index in range(brain.MAX_FACE_TOOL_CALLS)
+            ]
+            + [{"deltas": ["All twenty checks are done."], "content": "All twenty checks are done."}]
+        )
+        self.install(provider)
+        ran: List[str] = []
+
+        reply = brain.chat_streaming(
+            "check everything",
+            on_token=lambda _t: None,
+            on_tool=lambda name, _args, _result: ran.append(name),
+        )
+
+        self.assertEqual(len(ran), brain.MAX_FACE_TOOL_CALLS)
+        self.assertEqual(
+            len(provider.calls),
+            brain.MAX_FACE_TOOL_CALLS + 1,
+        )
+        self.assertIsNone(provider.calls[-1]["tools"])
+        self.assertEqual(str(reply), "All twenty checks are done.")
+        history_reply = [
+            message.content
+            for message in brain.snapshot_history()
+            if message.role == "assistant"
+        ][-1]
+        self.assertIn("Internal continuity note, not spoken", history_reply)
+        self.assertIn("20 tool calls completed", history_reply)
+        self.assertNotIn("Internal continuity note", str(reply))
+
+    def test_a_provider_batch_cannot_execute_past_the_twenty_call_budget(self) -> None:
+        requested = [
+            ToolCall(id=f"batch_{index}", name="list_skills", arguments={})
+            for index in range(brain.MAX_FACE_TOOL_CALLS + 3)
+        ]
+        second_messages: List[Message] = []
+
+        class BatchProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def stream_turn(self, messages, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    yield StreamDone(ChatResult(content="", tool_calls=requested))
+                    return
+                second_messages.extend(messages)
+                yield TextDelta("Budgeted work complete.")
+                yield StreamDone(ChatResult(content="Budgeted work complete."))
+
+        provider = BatchProvider()
+        self.install(provider)
+        executed: List[str] = []
+        spoken: List[str] = []
+        with mock.patch.object(
+            brain,
+            "_run_face_tool",
+            side_effect=lambda name, _args: executed.append(name)
+            or {"ok": True, "summary": "done"},
+        ):
+            reply = brain.chat_streaming(
+                "run a large batch",
+                on_token=spoken.append,
+                voice=True,
+            )
+
+        self.assertEqual(len(executed), brain.MAX_FACE_TOOL_CALLS)
+        # Every requested call is paired for provider protocol validity; the
+        # three over budget explicitly say they were not executed.
+        tool_results = [m for m in second_messages if m.role == "tool"]
+        self.assertEqual(len(tool_results), brain.MAX_FACE_TOOL_CALLS + 3)
+        self.assertEqual(
+            sum("not executed" in m.content for m in tool_results),
+            3,
+        )
+        progress = "".join(spoken)
+        for count in (4, 8, 12, 16, 20):
+            self.assertIn(f"I’ve completed {count} checks", progress)
+        self.assertTrue(str(reply).endswith("Budgeted work complete."))
+
+    def test_voice_synthesizes_specific_checkins_when_provider_says_nothing(self) -> None:
+        provider = ScriptedProvider(
+            [tool_round(f"call_{index}", "list_skills", "") for index in range(5)]
+            + [{"deltas": ["I’m done."], "content": "I’m done."}]
+        )
+        self.install(provider)
+        tokens: List[str] = []
+
+        reply = brain.chat_streaming(
+            "check the available abilities",
+            on_token=tokens.append,
+            voice=True,
+        )
+
+        spoken = "".join(tokens)
+        self.assertIn("I’m starting by checking available skills.", spoken)
+        self.assertIn("I’ve completed 4 checks", spoken)
+        self.assertEqual(str(reply).split()[-2:], ["I’m", "done."])
+
+    def test_observable_summary_exists_without_provider_reasoning(self) -> None:
+        provider = ScriptedProvider(
+            [{"deltas": ["Direct answer."], "content": "Direct answer."}]
+        )
+        self.install(provider)
+        activity = mock.Mock()
+        activity.start.side_effect = [
+            {"id": "response"},
+            {"id": "approach"},
+        ]
+
+        with mock.patch.object(brain, "ACTIVITY", activity):
+            reply = brain.chat_streaming("simple question", on_token=lambda _t: None)
+
+        self.assertEqual(str(reply), "Direct answer.")
+        approach_call = next(
+            call
+            for call in activity.start.call_args_list
+            if len(call.args) > 1 and call.args[1] == "Approach summary"
+        )
+        self.assertFalse(
+            approach_call.kwargs["details"]["provider_reasoning_available"]
+        )
+        finishes = [call.kwargs for call in activity.finish.call_args_list]
+        summary = next(
+            item["summary"]
+            for item in finishes
+            if "observable actions" in item.get("summary", "")
+        )
+        self.assertIn("no tool calls were needed", summary.lower())
 
     def test_a_barge_in_keeps_the_tools_that_ran_and_a_user_role_note(self) -> None:
         # F2 + F3 + F4: executed tools leave a one-line marker, the note is a
@@ -332,35 +461,129 @@ class BrainTurnTests(unittest.TestCase):
         )
         brain._compacting.release()
 
-    def test_a_second_face_turn_gets_a_clear_busy_answer(self) -> None:
-        # F12: two concurrent turns would braid their replies into one history.
-        provider = ScriptedProvider([{"deltas": ["hi"], "content": "hi"}])
-        self.install(provider)
-        acquired = brain._face_turn_lock.acquire(blocking=False)
-        self.assertTrue(acquired, "turn lock held by a previous test?")
-        try:
-            tokens: List[str] = []
-            out = brain.chat_streaming("hello", on_token=tokens.append)
-            self.assertEqual(str(out), brain.BUSY_REPLY)
-            self.assertEqual("".join(tokens), brain.BUSY_REPLY)
-            self.assertEqual(brain.chat("hello"), brain.BUSY_REPLY)
-        finally:
-            brain._face_turn_lock.release()
-        self.assertEqual(provider.calls, [], "a busy turn must not reach the provider")
-        self.assertEqual(self.diary, [])
-        # Once the first turn is done the next one runs normally again.
-        reply = brain.chat_streaming("hello", on_token=lambda _t: None)
-        self.assertEqual(str(reply), "hi")
+    def test_a_new_user_turn_preempts_a_blocked_stream_immediately(self) -> None:
+        old_started = threading.Event()
+        release_old = threading.Event()
+
+        class BlockingProvider:
+            def stream_turn(self, messages, **kwargs):
+                prompt = [m.content for m in messages if m.role == "user"][-1]
+                if prompt == "old":
+                    yield TextDelta("old partial")
+                    old_started.set()
+                    release_old.wait(timeout=5)
+                    yield StreamDone(ChatResult(content="old partial stale"))
+                    return
+                yield TextDelta("new answer")
+                yield StreamDone(ChatResult(content="new answer"))
+
+        self.install(BlockingProvider())
+        old_error: List[Exception] = []
+        old_playback_cancel = threading.Event()
+
+        def run_old() -> None:
+            try:
+                brain.chat_streaming(
+                    "old",
+                    on_token=lambda _t: None,
+                    cancel=old_playback_cancel,
+                )
+            except Exception as exc:
+                old_error.append(exc)
+
+        thread = threading.Thread(target=run_old)
+        thread.start()
+        self.assertTrue(old_started.wait(timeout=2))
+
+        started = time.monotonic()
+        reply = brain.chat_streaming("new", on_token=lambda _t: None)
+        elapsed = time.monotonic() - started
+        self.assertEqual(str(reply), "new answer")
+        self.assertLess(elapsed, 1.0, "new turn waited on the stale provider")
+        self.assertTrue(
+            old_playback_cancel.is_set(),
+            "cross-surface preemption must stop stale voice playback too",
+        )
+
+        release_old.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(old_error), 1)
+        self.assertIsInstance(old_error[0], brain.Cancelled)
+        brain.finish_interrupted_turn(old_error[0], "old partial")
+        history = [(m.role, m.content) for m in brain.snapshot_history()]
+        self.assertIn(("assistant", "new answer"), history)
+        self.assertNotIn(("assistant", "old partial stale"), history)
+
+    def test_an_inflight_tool_settles_but_its_stale_callback_is_hidden(self) -> None:
+        tool_started = threading.Event()
+        release_tool = threading.Event()
+        callbacks: List[str] = []
+
+        class ToolProvider:
+            def stream_turn(self, messages, **kwargs):
+                prompt = [m.content for m in messages if m.role == "user"][-1]
+                if prompt == "old":
+                    yield StreamDone(
+                        ChatResult(
+                            content="",
+                            tool_calls=[
+                                ToolCall(
+                                    id="call_old",
+                                    name="start_hard_task",
+                                    arguments={"goal": "keep running"},
+                                )
+                            ],
+                        )
+                    )
+                    return
+                yield TextDelta("priority answer")
+                yield StreamDone(ChatResult(content="priority answer"))
+
+        def slow_tool(_name, _args):
+            tool_started.set()
+            release_tool.wait(timeout=5)
+            return {"ok": True, "summary": "subagent launched"}
+
+        self.install(ToolProvider())
+        old_error: List[Exception] = []
+
+        def run_old() -> None:
+            try:
+                brain.chat_streaming(
+                    "old",
+                    on_token=lambda _t: None,
+                    on_tool=lambda name, _args, _result: callbacks.append(name),
+                )
+            except Exception as exc:
+                old_error.append(exc)
+
+        with mock.patch.object(brain, "_run_face_tool", side_effect=slow_tool):
+            thread = threading.Thread(target=run_old)
+            thread.start()
+            self.assertTrue(tool_started.wait(timeout=2))
+            reply = brain.chat_streaming("new", on_token=lambda _t: None)
+            self.assertEqual(str(reply), "priority answer")
+            self.assertTrue(thread.is_alive(), "the active tool should settle safely")
+            release_tool.set()
+            thread.join(timeout=5)
+
+        self.assertEqual(callbacks, [])
+        self.assertEqual(len(old_error), 1)
+        self.assertIsInstance(old_error[0], brain.Cancelled)
+        self.assertIn(
+            ("start_hard_task", "subagent launched"),
+            old_error[0].tools_ran,
+        )
 
     def test_a_system_turn_waits_out_the_turn_in_flight(self) -> None:
         # weave_result speaks for a finished deep-work job: there is no user
-        # to re-ask, so bouncing with BUSY_REPLY would discard the result.
+        # to re-ask, so it waits for foreground conversation to become idle.
         provider = ScriptedProvider(
             [{"deltas": ["it is done"], "content": "it is done"}]
         )
         self.install(provider)
-        acquired = brain._face_turn_lock.acquire(blocking=False)
-        self.assertTrue(acquired, "turn lock held by a previous test?")
+        active = brain._begin_foreground_turn(user_priority=True)
         out: List[str] = []
 
         def run_weave() -> None:
@@ -375,27 +598,11 @@ class BrainTurnTests(unittest.TestCase):
             )
             self.assertEqual(out, [])
         finally:
-            brain._face_turn_lock.release()
+            brain._end_foreground_turn(active)
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
         self.assertEqual(out, ["it is done"])
         self.assertEqual(self.diary[-1], ("rau", "it is done"))
-
-    def test_a_system_turn_gives_up_after_the_wait_instead_of_hanging(self) -> None:
-        provider = ScriptedProvider([{"content": "unreachable"}])
-        self.install(provider)
-        acquired = brain._face_turn_lock.acquire(blocking=False)
-        self.assertTrue(acquired, "turn lock held by a previous test?")
-        try:
-            with mock.patch.object(brain, "SYSTEM_TURN_WAIT_SEC", 0.05):
-                start = time.monotonic()
-                self.assertEqual(
-                    brain.weave_result("goal", "result"), brain.BUSY_REPLY
-                )
-                self.assertLess(time.monotonic() - start, 5.0)
-        finally:
-            brain._face_turn_lock.release()
-        self.assertEqual(provider.calls, [], "a timed-out turn must not reach the provider")
 
     def test_the_retired_entry_points_are_gone(self) -> None:
         # F11: both were dead code with no production callers.

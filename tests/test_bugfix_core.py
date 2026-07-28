@@ -122,5 +122,20 @@ class WriteReportTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
+class LaunchAgentDefinitionTests(unittest.TestCase):
+    def test_hub_mode_uses_hub_entrypoint(self) -> None:
+        from rau import launch_agent
+
+        plist = launch_agent.definition(mode="hub", no_audio=True)
+        self.assertEqual(plist["ProgramArguments"][-1], "hub")
+        self.assertNotIn("--no-audio", plist["ProgramArguments"])
+
+    def test_all_mode_keeps_no_audio_flag(self) -> None:
+        from rau import launch_agent
+
+        plist = launch_agent.definition(mode="all", no_audio=True)
+        self.assertEqual(plist["ProgramArguments"][-2:], ["all", "--no-audio"])
+
+
 if __name__ == "__main__":
     unittest.main()

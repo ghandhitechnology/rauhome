@@ -9,20 +9,38 @@ arrives, so Rau starts speaking while the model is still writing.
 from __future__ import annotations
 
 import base64
+import json
+import logging
+import queue
 import re
 import threading
+import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generator, Iterator, List, Optional, Tuple
+from urllib.parse import quote, urlencode
 
 import numpy as np
 
 from rau.env import get_secret
 from rau.providers.registry import get_slot
+from rau.voice.pronunciation import normalize_for_tts
 
 SR = 24000
+log = logging.getLogger("rau.voice.tts")
 
 DEFAULT_VOICE_ID = "TX3LPaxmHKxFdv7VOQHJ"
 DEFAULT_TTS_MODEL = "eleven_flash_v2_5"
+
+# A healthy warm ElevenLabs socket normally produces audio well inside this
+# window.  Without a deadline, a rejected/malformed context can leave a Voice
+# turn in "thinking" forever because there is no frame for the consumer to
+# inspect and therefore no opportunity to use the HTTP fallback.
+REALTIME_FIRST_AUDIO_TIMEOUT_SEC = 2.5
+# Once the complete model response has been submitted, the server must either
+# finish the context or fail it. This is deliberately longer than the initial
+# deadline because the final sentence may contain substantially more audio.
+REALTIME_FINAL_IDLE_TIMEOUT_SEC = 12.0
 
 #: Split on sentence enders, but keep the terminator with the sentence.
 #: End-of-buffer is deliberately NOT a boundary: a terminator at the buffer's
@@ -236,6 +254,37 @@ class RobotVoice:
             return pcm
 
 
+class StreamingRobotVoice:
+    """
+    Quality-preserving effect accumulator for a real-time TTS context.
+
+    Pedalboard's PitchShift currently buffers about 25,900 samples and drops
+    sub-latency input across ``reset=False`` calls. Both configured effects use
+    it, so incremental processing can silently remove short replies. Hyper
+    therefore degrades this individual stage to the proven one-shot chain
+    while retaining the faster endpoint, model, socket, routing, and playback
+    stages. SentenceBuffer keeps this fallback scoped to short natural phrases.
+    """
+
+    def __init__(self, effect: str) -> None:
+        self.effect = effect
+        self._buf = bytearray()
+
+    def push(self, pcm: bytes) -> List[bytes]:
+        if len(self._buf) + len(pcm) > MAX_SENTENCE_PCM_BYTES:
+            raise RuntimeError("TTS sentence audio exceeded two minutes")
+        self._buf.extend(pcm)
+        return []
+
+    def flush(self) -> List[bytes]:
+        if not self._buf:
+            return []
+        pcm = bytes(self._buf)
+        self._buf.clear()
+        rendered = RobotVoice(self.effect).process_pcm(pcm)
+        return [soften_edges(rendered)] if rendered else []
+
+
 #: Length of the ramp applied to each end of a whole-sentence buffer.
 #:
 #: Sentences are emitted as separate PCM buffers and played back to back. If
@@ -327,11 +376,14 @@ def synth_sentence(
     cancel: Optional[threading.Event] = None,
 ) -> Iterator[bytes]:
     """Yield PCM16 chunks for one sentence, stopping early if cancelled."""
+    spoken = normalize_for_tts(text)
+    if not spoken:
+        return
     slot = get_slot("tts") if not voice_id or not model else {}
     c = client or _client()
     request: Dict[str, Any] = {
         "voice_id": voice_id or slot.get("voice_id") or DEFAULT_VOICE_ID,
-        "text": text,
+        "text": spoken,
         "model_id": model or slot.get("model") or DEFAULT_TTS_MODEL,
         "output_format": "pcm_24000",
     }
@@ -412,6 +464,9 @@ def synth_sentence_timed(
     client or an account that cannot serve character timestamps, so losing
     alignment costs cue precision rather than the voice.
     """
+    spoken = normalize_for_tts(text)
+    if not spoken:
+        return
     slot = get_slot("tts") if not voice_id or not model else {}
     c = client or _client()
     vid = voice_id or slot.get("voice_id") or DEFAULT_VOICE_ID
@@ -423,7 +478,7 @@ def synth_sentence_timed(
         try:
             request: Dict[str, Any] = {
                 "voice_id": vid,
-                "text": text,
+                "text": spoken,
                 "model_id": mid,
                 "output_format": "pcm_24000",
             }
@@ -471,7 +526,7 @@ def synth_sentence_timed(
             return
 
     for chunk in synth_sentence(
-        text,
+        spoken,
         client=c,
         voice_id=vid,
         model=mid,
@@ -694,6 +749,604 @@ def speak_stream(
     tail = buf.flush()
     if tail:
         emit(tail)
+
+
+def _ws_alignment(item: Dict[str, Any]) -> Optional[Tuple[List[str], List[float]]]:
+    raw = (
+        item.get("normalizedAlignment")
+        or item.get("normalized_alignment")
+        or item.get("alignment")
+    )
+    if not isinstance(raw, dict):
+        return None
+    chars = raw.get("chars") or raw.get("characters")
+    starts_ms = raw.get("char_start_times_ms")
+    if starts_ms is None:
+        # ElevenLabs' WebSocket wire format currently uses camelCase while
+        # its agent/client examples and HTTP timestamp types use snake_case.
+        starts_ms = raw.get("charStartTimesMs")
+    if starts_ms is None:
+        starts_sec = raw.get("character_start_times_seconds")
+        if isinstance(starts_sec, list):
+            starts_ms = [float(value) * 1000.0 for value in starts_sec]
+    if not isinstance(chars, list) or not isinstance(starts_ms, list):
+        return None
+    if len(chars) != len(starts_ms):
+        return None
+    return [str(char) for char in chars], [float(value) / 1000.0 for value in starts_ms]
+
+
+def _realtime_provider_error(item: Dict[str, Any]) -> Optional[RuntimeError]:
+    """Turn an ElevenLabs error frame into a safe, actionable exception."""
+    kind = str(item.get("type") or item.get("status") or "").lower()
+    if "error" not in item and kind not in {"error", "failed", "failure"}:
+        return None
+    code = item.get("code") or item.get("status_code")
+    suffix = f" ({code})" if isinstance(code, (str, int)) else ""
+    # Do not include the provider's free-form detail: it can echo submitted
+    # text, and Voice diagnostics intentionally contain no transcript content.
+    return RuntimeError(f"real-time TTS provider error{suffix}")
+
+
+class RealtimeTtsSession:
+    """One persistent ElevenLabs multi-context socket per browser Voice session."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._send_lock = threading.Lock()
+        self._connect_lock = threading.Lock()
+        self._ws = None
+        self._signature: Optional[Tuple[str, str]] = None
+        self._contexts: Dict[str, Tuple[Any, "queue.Queue[object]"]] = {}
+        self._finishing: set[str] = set()
+        self._receiver: Optional[threading.Thread] = None
+
+    def _connect(self, voice_id: str, model: str):
+        from websockets.sync.client import connect
+
+        key = get_secret("ELEVENLABS_API_KEY")
+        if not key:
+            raise RuntimeError("ELEVENLABS_API_KEY not set")
+        params = urlencode(
+            {
+                "model_id": model,
+                "output_format": "pcm_24000",
+                # Hyper captions and phrase-bound body cues need a timeline
+                # before/alongside each PCM response, not one aggregate
+                # alignment after the whole context has played.
+                "sync_alignment": "true",
+                # The documented maximum keeps the session socket warm between
+                # user turns; protocol pings cover transport keepalive.
+                "inactivity_timeout": "180",
+            }
+        )
+        url = (
+            f"wss://api.elevenlabs.io/v1/text-to-speech/"
+            f"{quote(voice_id, safe='')}/multi-stream-input?{params}"
+        )
+        return connect(
+            url,
+            additional_headers={"xi-api-key": key},
+            open_timeout=6,
+            close_timeout=2,
+            ping_interval=15,
+            ping_timeout=10,
+            max_size=4 * 1024 * 1024,
+        )
+
+    def ensure(self, voice_id: str, model: str) -> None:
+        signature = (voice_id, model)
+        with self._connect_lock:
+            with self._lock:
+                if self._ws is not None and self._signature == signature:
+                    return
+            self._close_current()
+            ws = self._connect(voice_id, model)
+            with self._lock:
+                self._ws = ws
+                self._signature = signature
+                self._receiver = threading.Thread(
+                    target=self._receive,
+                    args=(ws,),
+                    daemon=True,
+                    name="rau-realtime-tts-recv",
+                )
+                self._receiver.start()
+
+    def warm(self) -> None:
+        slot = get_slot("tts")
+        self.ensure(
+            str(slot.get("voice_id") or DEFAULT_VOICE_ID),
+            str(slot.get("model") or DEFAULT_TTS_MODEL),
+        )
+
+    def _receive(self, ws) -> None:
+        failure: Optional[BaseException] = None
+        try:
+            while True:
+                raw = ws.recv()
+                if raw is None:
+                    break
+                if isinstance(raw, bytes):
+                    continue
+                item = json.loads(raw)
+                if not isinstance(item, dict):
+                    continue
+                context_id = item.get("contextId") or item.get("context_id")
+                provider_error = _realtime_provider_error(item)
+                if not isinstance(context_id, str):
+                    # Socket-level errors do not carry a context id. Dropping
+                    # one here strands every active turn waiting on an empty
+                    # queue, so fail the socket and let each pre-audio turn
+                    # take its normal HTTP fallback.
+                    if provider_error is not None:
+                        raise provider_error
+                    continue
+                with self._lock:
+                    pair = self._contexts.get(context_id)
+                    out = pair[1] if pair is not None and pair[0] is ws else None
+                if out is not None:
+                    out.put(provider_error or item)
+        except BaseException as exc:
+            failure = exc
+        finally:
+            # A provider error frame can terminate this receiver while the
+            # transport itself remains open. Close that orphan explicitly so
+            # reconnecting cannot leak a stale socket and its ping thread.
+            try:
+                ws.close()
+            except Exception:
+                pass
+            with self._lock:
+                if self._ws is ws:
+                    self._ws = None
+                    self._signature = None
+                dead = [
+                    context_id
+                    for context_id, pair in self._contexts.items()
+                    if pair[0] is ws
+                ]
+                contexts = [self._contexts.pop(context_id)[1] for context_id in dead]
+                self._finishing.difference_update(dead)
+            terminal = failure or RuntimeError("real-time TTS socket closed")
+            for out in contexts:
+                out.put(terminal)
+
+    def _send(self, payload: Dict[str, Any], *, socket=None) -> None:
+        with self._send_lock:
+            if socket is None:
+                with self._lock:
+                    ws = self._ws
+            else:
+                ws = socket
+            if ws is None:
+                raise RuntimeError("real-time TTS socket is unavailable")
+            ws.send(json.dumps(payload))
+
+    def _context_socket(self, context_id: str):
+        with self._lock:
+            pair = self._contexts.get(context_id)
+        if pair is None:
+            raise RuntimeError("real-time TTS context is unavailable")
+        return pair[0]
+
+    def open_context(
+        self,
+        context_id: str,
+        *,
+        voice_id: str,
+        model: str,
+        voice_settings: Dict[str, Any],
+    ) -> "queue.Queue[object]":
+        self.ensure(voice_id, model)
+        out: "queue.Queue[object]" = queue.Queue()
+        with self._lock:
+            ws = self._ws
+            if ws is None:
+                raise RuntimeError("real-time TTS socket is unavailable")
+            self._finishing.discard(context_id)
+            self._contexts[context_id] = (ws, out)
+        initial: Dict[str, Any] = {"context_id": context_id, "text": " "}
+        if voice_settings:
+            initial["voice_settings"] = voice_settings
+        try:
+            self._send(initial, socket=ws)
+        except Exception:
+            with self._lock:
+                self._contexts.pop(context_id, None)
+            raise
+        return out
+
+    def text(self, context_id: str, text: str, *, flush: bool = False) -> None:
+        payload: Dict[str, Any] = {"context_id": context_id, "text": text}
+        if flush:
+            payload["flush"] = True
+        self._send(payload, socket=self._context_socket(context_id))
+
+    def flush_context(self, context_id: str) -> None:
+        self._send(
+            {"context_id": context_id, "flush": True},
+            socket=self._context_socket(context_id),
+        )
+
+    def finish_context(self, context_id: str) -> None:
+        """
+        Gracefully end input while keeping the receive queue alive.
+
+        ``flush`` only forces currently buffered text to be generated; the
+        context remains open for more text and is therefore not required to
+        emit ``is_final``. A normal completed model turn must close its input
+        context too. We retain the local mapping until its final audio/terminal
+        frame has been consumed.
+        """
+        socket = self._context_socket(context_id)
+        self._send(
+            {"context_id": context_id, "close_context": True},
+            socket=socket,
+        )
+        with self._lock:
+            pair = self._contexts.get(context_id)
+            if pair is not None and pair[0] is socket:
+                self._finishing.add(context_id)
+
+    def close_context(self, context_id: str) -> None:
+        with self._lock:
+            pair = self._contexts.pop(context_id, None)
+            was_finishing = context_id in self._finishing
+            self._finishing.discard(context_id)
+        if pair is None:
+            return
+        if was_finishing:
+            return
+        try:
+            self._send(
+                {"context_id": context_id, "close_context": True},
+                socket=pair[0],
+            )
+        except Exception:
+            pass
+
+    def _close_current(self) -> None:
+        with self._lock:
+            ws, self._ws = self._ws, None
+            self._signature = None
+        if ws is None:
+            return
+        try:
+            with self._send_lock:
+                ws.send(json.dumps({"close_socket": True}))
+        except Exception:
+            pass
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        with self._connect_lock:
+            self._close_current()
+        with self._lock:
+            contexts = [pair[1] for pair in self._contexts.values()]
+            self._contexts.clear()
+            self._finishing.clear()
+        for out in contexts:
+            out.put(RuntimeError("real-time TTS session closed"))
+        receiver = self._receiver
+        if receiver is not None and receiver is not threading.current_thread():
+            receiver.join(timeout=0.5)
+
+
+def speak_realtime_stream(
+    tokens: Iterator[str],
+    *,
+    on_audio: Callable[[bytes], None],
+    on_sentence: Optional[Callable[[str], None]] = None,
+    on_timing: Optional[Callable[[SentenceTiming], None]] = None,
+    cancel: Optional[threading.Event] = None,
+    session: Optional[RealtimeTtsSession] = None,
+    context_id: str = "turn",
+) -> Generator[None, None, None]:
+    """
+    Feed generated phrases through ElevenLabs' bidirectional TTS WebSocket.
+
+    Connection setup happens before the token iterator is consumed, so a
+    handshake failure can safely fall back to the established HTTP path.
+    Once any audio is emitted, failures surface rather than replaying speech.
+    """
+    slot = get_slot("tts")
+    voice_id = str(slot.get("voice_id") or DEFAULT_VOICE_ID)
+    model = str(slot.get("model") or DEFAULT_TTS_MODEL)
+    effect = str(slot.get("effect") or "none")
+    voice_settings = dict(slot.get("voice_settings") or {})
+    owned_session = session is None
+    realtime = session or RealtimeTtsSession()
+
+    # Do not consume a token until the low-latency transport is known-good.
+    try:
+        messages = realtime.open_context(
+            context_id,
+            voice_id=voice_id,
+            model=model,
+            voice_settings=voice_settings,
+        )
+    except Exception as exc:
+        log.warning(
+            "voice_tts_degraded profile=hyper stage=connect fallback=http "
+            "context=%s error=%s",
+            context_id,
+            type(exc).__name__,
+        )
+        # Existing HTTP streaming is the quality-preserving fallback.
+        yield from speak_stream(
+            tokens,
+            on_audio=on_audio,
+            on_sentence=on_sentence,
+            on_timing=on_timing,
+            cancel=cancel,
+        )
+        if owned_session:
+            realtime.close()
+        return
+
+    phrases: "deque[Tuple[str, str]]" = deque()
+    phrases_ready = threading.Condition()
+    sender_done = threading.Event()
+    fallback_mode = threading.Event()
+    sender_error: List[BaseException] = []
+    replay: "queue.Queue[object]" = queue.Queue()
+    replay_end = object()
+    emitted = False
+    received_audio = False
+    first_phrase_sent_at = 0.0
+
+    def sender() -> None:
+        buf = SentenceBuffer()
+        source = iter(_without_leading_emotion_tag(tokens))
+
+        def send_phrase(sentence: str) -> None:
+            nonlocal first_phrase_sent_at
+            if fallback_mode.is_set():
+                return
+            spoken = normalize_for_tts(sentence)
+            if not spoken:
+                return
+            with phrases_ready:
+                phrases.append((sentence, spoken))
+                phrases_ready.notify_all()
+            if not first_phrase_sent_at:
+                first_phrase_sent_at = time.monotonic()
+            realtime.text(context_id, spoken + " ", flush=True)
+
+        try:
+            for token in source:
+                if cancel is not None and cancel.is_set():
+                    return
+                replay.put(token)
+                for sentence in buf.push(token):
+                    send_phrase(sentence)
+            tail = buf.flush()
+            if tail:
+                send_phrase(tail)
+            if not fallback_mode.is_set():
+                realtime.flush_context(context_id)
+                realtime.finish_context(context_id)
+        except BaseException as exc:  # delivered to the receiver thread below
+            if not fallback_mode.is_set():
+                sender_error.append(exc)
+            fallback_mode.set()
+            realtime.close_context(context_id)
+            # Keep sole ownership of the model iterator and feed the fallback
+            # queue. This prevents two threads from calling next() on it after
+            # a pre-audio socket failure.
+            try:
+                for token in source:
+                    if cancel is not None and cancel.is_set():
+                        break
+                    replay.put(token)
+            except BaseException as source_exc:
+                sender_error.append(source_exc)
+        finally:
+            replay.put(replay_end)
+            sender_done.set()
+            with phrases_ready:
+                phrases_ready.notify_all()
+
+    worker = threading.Thread(target=sender, name="rau-realtime-tts-send", daemon=True)
+    worker.start()
+
+    current = ""
+    current_spoken = ""
+    collector: Optional[_AlignmentCollector] = None
+    current_bytes = 0
+    current_raw_bytes = 0
+    aligned_chars = 0
+    fx = StreamingRobotVoice(effect) if effect != "none" else None
+    last_message_at = time.monotonic()
+
+    def finish_current(*, timing_sent: bool = False) -> None:
+        nonlocal current, current_spoken, collector
+        nonlocal current_bytes, current_raw_bytes, aligned_chars
+        if (
+            not timing_sent
+            and current
+            and collector is not None
+            and on_timing
+            and current_bytes
+        ):
+            on_timing(collector.finish(bytes_duration_ms(current_bytes)))
+        current = ""
+        current_spoken = ""
+        collector = None
+        current_bytes = 0
+        current_raw_bytes = 0
+        aligned_chars = 0
+
+    try:
+        while True:
+            if cancel is not None and cancel.is_set():
+                break
+            try:
+                raw = messages.get(timeout=0.2)
+            except queue.Empty:
+                if sender_done.is_set() and sender_error:
+                    raise sender_error[0]
+                now = time.monotonic()
+                if (
+                    first_phrase_sent_at
+                    and not received_audio
+                    and now - first_phrase_sent_at
+                    >= REALTIME_FIRST_AUDIO_TIMEOUT_SEC
+                ):
+                    raise TimeoutError(
+                        "real-time TTS produced no audio before its deadline"
+                    )
+                if (
+                    received_audio
+                    and sender_done.is_set()
+                    and now - last_message_at >= REALTIME_FINAL_IDLE_TIMEOUT_SEC
+                ):
+                    raise TimeoutError(
+                        "real-time TTS did not finish the submitted context"
+                    )
+                if sender_done.is_set() and not first_phrase_sent_at:
+                    # An empty/model-metadata-only response has nothing to
+                    # synthesise. Do not wait forever for a context final that
+                    # the provider has no reason to send.
+                    break
+                continue
+            last_message_at = time.monotonic()
+            if isinstance(raw, BaseException):
+                raise raw
+            item = raw
+            if not isinstance(item, dict):
+                continue
+            encoded = item.get("audio")
+            pcm = base64.b64decode(encoded) if isinstance(encoded, str) and encoded else b""
+            alignment = _ws_alignment(item)
+
+            if pcm:
+                received_audio = True
+                current_raw_bytes += len(pcm)
+                if current_raw_bytes > MAX_SENTENCE_PCM_BYTES:
+                    raise RuntimeError("TTS sentence audio exceeded two minutes")
+                if not current:
+                    with phrases_ready:
+                        if not phrases and not sender_done.is_set():
+                            phrases_ready.wait(timeout=0.25)
+                        if phrases:
+                            current, current_spoken = phrases.popleft()
+                        else:
+                            current, current_spoken = "", ""
+                    if current:
+                        collector = _AlignmentCollector(current)
+                        if on_sentence:
+                            on_sentence(current)
+                if collector is not None:
+                    collector.add(alignment)
+                if alignment is not None:
+                    aligned_chars += len(alignment[0])
+                chunks = fx.push(pcm) if fx is not None else [pcm]
+                for chunk in chunks:
+                    current_bytes += len(chunk)
+                    emitted = True
+                    on_audio(chunk)
+                    yield None
+                if current and aligned_chars >= len(current_spoken):
+                    if fx is not None:
+                        rendered = fx.flush()
+                        rendered_bytes = sum(len(chunk) for chunk in rendered)
+                        # Buffered effects release one phrase at a time. Put
+                        # its character timeline on the browser socket before
+                        # its PCM so the playback worklet's very first level
+                        # report can reveal the bubble progressively.
+                        if (
+                            current
+                            and collector is not None
+                            and on_timing
+                            and rendered_bytes
+                        ):
+                            on_timing(
+                                collector.finish(bytes_duration_ms(rendered_bytes))
+                            )
+                        for chunk in rendered:
+                            current_bytes += len(chunk)
+                            emitted = True
+                            on_audio(chunk)
+                            yield None
+                        fx = StreamingRobotVoice(effect)
+                        finish_current(timing_sent=True)
+                    else:
+                        finish_current()
+            if item.get("isFinal") or item.get("is_final"):
+                if first_phrase_sent_at and not received_audio:
+                    # A syntactically successful context with no PCM is still
+                    # a failed speech turn. Because nothing reached playback,
+                    # replaying through HTTP is safe and cannot duplicate.
+                    raise RuntimeError("real-time TTS completed without audio")
+                break
+
+        if fx is not None:
+            rendered = fx.flush()
+            rendered_bytes = sum(len(chunk) for chunk in rendered)
+            if (
+                current
+                and collector is not None
+                and on_timing
+                and rendered_bytes
+            ):
+                on_timing(collector.finish(bytes_duration_ms(rendered_bytes)))
+            for chunk in rendered:
+                current_bytes += len(chunk)
+                emitted = True
+                on_audio(chunk)
+                yield None
+            finish_current(timing_sent=True)
+        else:
+            finish_current()
+        if sender_error:
+            raise sender_error[0]
+    except Exception as exc:
+        if emitted:
+            log.error(
+                "voice_tts_failed profile=hyper stage=realtime "
+                "fallback=prohibited_after_audio context=%s error=%s",
+                context_id,
+                type(exc).__name__,
+            )
+            raise
+        log.warning(
+            "voice_tts_degraded profile=hyper stage=realtime fallback=http "
+            "context=%s error=%s received_audio=%s",
+            context_id,
+            type(exc).__name__,
+            received_audio,
+        )
+        # No user-audible side effect: make the sender a token pump and replay
+        # its complete queue into the established HTTP implementation.
+        fallback_mode.set()
+        realtime.close_context(context_id)
+
+        def replay_tokens() -> Iterator[str]:
+            while True:
+                item = replay.get()
+                if item is replay_end:
+                    return
+                yield str(item)
+
+        yield from speak_stream(
+            replay_tokens(),
+            on_audio=on_audio,
+            on_sentence=on_sentence,
+            on_timing=on_timing,
+            cancel=cancel,
+        )
+    finally:
+        if cancel is not None and cancel.is_set():
+            realtime.close_context(context_id)
+        worker.join(timeout=0.2)
+        realtime.close_context(context_id)
+        if owned_session:
+            realtime.close()
 
 
 def pcm_duration_ms(pcm: bytes, sample_rate: int = SR) -> float:

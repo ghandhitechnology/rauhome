@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import uuid
+from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rau.agent import compaction
@@ -248,10 +249,19 @@ if chess_tools is not None:
 #: the model would accept: a 100k-token prompt makes the face slow and
 #: expensive long before it makes it forgetful.
 FACE_CONTEXT_BUDGET = 12000
-#: Tool output is clamped harder here than for a worker. Six rounds of the
-#: transport default would outgrow the whole face budget inside a single turn,
-#: and nothing folds a turn that is still being spoken.
+#: Tool output is clamped harder here than for a worker. A long foreground run
+#: can now make twenty calls, so a single result must not consume the context
+#: the remaining calls need.
 FACE_TOOL_RESULT_LIMIT = 3000
+#: Foreground work stays conversational and bounded. This is an execution
+#: budget, not a model-round budget: providers may request several calls in one
+#: response, and only calls actually run count.
+MAX_FACE_TOOL_CALLS = 20
+#: One final tool-free provider pass turns accumulated evidence into an answer.
+MAX_FACE_MODEL_ROUNDS = MAX_FACE_TOOL_CALLS + 1
+#: During a long spoken run, provide an evidence-based update at this cadence
+#: if the model itself has not said anything useful between tool rounds.
+VOICE_CHECKIN_EVERY_CALLS = 4
 #: Voice turns keep a leaner diary excerpt so prefill stays short.
 VOICE_MEMORY_CHARS = 1000
 CHAT_MEMORY_CHARS = 2500
@@ -317,9 +327,11 @@ _DEEP_WORK_MARKERS = (
 )
 VOICE_TOOL_OPENER = (
     "## Voice turn\n"
-    "Before any tool call, speak one short clause first "
-    '(e.g. "One sec—", "Looking…"). Never sit silent while tools run. '
-    "Do not use thinking fillers as padding."
+    "You may use up to 20 foreground tool calls when the request genuinely "
+    "needs them. Before any tool call sequence, briefly say what you are checking. "
+    "During a long run, check in after roughly every four calls with one "
+    "specific fact about what is complete and what you are checking next. "
+    "Keep working after the check-in. Never use empty waiting filler."
 )
 #: Tools that mean real computer work — the avatar walks to the desk.
 #: Body/room visuals (choreography, props, panels) are excluded; browse_web
@@ -378,29 +390,37 @@ _history: List[Message] = []
 # runs on its own thread while /api/chat is served from the threadpool), so
 # every mutation of _history goes through this.
 _history_lock = threading.RLock()
-# Assistant placeholders reserved by in-flight streaming turns. Keeping the
-# slot in `_history` preserves ordering when a provider is slow and another
-# turn starts, while snapshots hide the empty internal marker from providers.
+# Assistant placeholders reserved by in-flight turns. Keeping the slot in
+# `_history` preserves ordering when a provider/tool is slow and a newer turn
+# preempts it, while snapshots hide the empty internal marker from providers.
 _pending_stream_messages: set[int] = set()
 # Held for the duration of a fold, so a fast exchange cannot start a second
 # summarizer on top of the one already thinking.
 _compacting = threading.Lock()
-#: One face turn at a time. A typed turn and a spoken turn running their model
-#: calls concurrently would braid two replies into one history, so the second
-#: caller gets a clear busy answer instead of a parallel turn.
-_face_turn_lock = threading.Lock()
+# Foreground conversation is newest-turn-wins. A generation that is already
+# inside third-party I/O cannot always be force-killed safely, so preemption is
+# cooperative: the old turn is invalidated immediately, its next callback/tool
+# boundary stops it, and its stale result is never emitted into the new turn.
+# Deep-work workers are intentionally outside this controller.
+class _ForegroundTurn:
+    def __init__(self, cascade_cancel: Optional[threading.Event] = None) -> None:
+        self.cancel = threading.Event()
+        self.cascade_cancel = cascade_cancel
+
+    def preempt(self) -> None:
+        self.cancel.set()
+        # Voice owns TTS/playback cancellation through its turn event. Cascading
+        # here makes a typed follow-up stop stale audio too, not just its LLM.
+        if self.cascade_cancel is not None:
+            self.cascade_cancel.set()
+
+
+_foreground_condition = threading.Condition()
+_active_foreground_turn: Optional[_ForegroundTurn] = None
 #: Guards the diary_deferred hand-off on a StreamingReply: a barge-in and a
 #: normal playback end can race to commit the same reply, and exactly one of
 #: them may write the diary.
 _deferred_diary_lock = threading.Lock()
-
-#: What the second of two concurrent face turns hears.
-BUSY_REPLY = "One moment — I'm still answering the last one."
-
-#: How long a system-originated turn waits for the face turn in flight before
-#: it, too, settles for the busy answer. A user turn bounces immediately; a
-#: deep-work result landing mid-reply has no user to re-ask, so it waits.
-SYSTEM_TURN_WAIT_SEC = 30.0
 
 #: Floor on the gap between `chat_delta` broadcasts. The event bus evicts the
 #: oldest item from a slow subscriber's queue, so a per-token firehose would
@@ -408,6 +428,41 @@ SYSTEM_TURN_WAIT_SEC = 30.0
 #: carries the whole reply so far, and they are throttled to a rate a browser
 #: can actually paint.
 DELTA_INTERVAL_SEC = 0.06
+
+
+def _begin_foreground_turn(
+    *,
+    user_priority: bool,
+    cascade_cancel: Optional[threading.Event] = None,
+) -> _ForegroundTurn:
+    """
+    Claim foreground response priority.
+
+    User turns immediately supersede whatever was answering before them.
+    System-originated speech (for example a completed Deep Work result) waits
+    for an idle gap, but never stops or cancels the background worker itself.
+    """
+    global _active_foreground_turn
+    claim = _ForegroundTurn(cascade_cancel)
+    with _foreground_condition:
+        if user_priority:
+            previous = _active_foreground_turn
+            if previous is not None:
+                previous.preempt()
+            _active_foreground_turn = claim
+            return claim
+        while _active_foreground_turn is not None:
+            _foreground_condition.wait()
+        _active_foreground_turn = claim
+        return claim
+
+
+def _end_foreground_turn(claim: _ForegroundTurn) -> None:
+    global _active_foreground_turn
+    with _foreground_condition:
+        if _active_foreground_turn is claim:
+            _active_foreground_turn = None
+            _foreground_condition.notify_all()
 
 
 class _TurnBroadcast:
@@ -816,6 +871,152 @@ def _desk_tool_finish(
     )
 
 
+_TOOL_ACTIVITY_LABELS = {
+    "read_file": "Reading a file",
+    "write_file": "Writing a file",
+    "edit_file": "Editing a file",
+    "run_shell": "Running a command",
+    "browse_web": "Browsing the web",
+    "start_hard_task": "Starting deep work",
+    "cancel_hard_task": "Stopping deep work",
+    "redirect_hard_task": "Redirecting deep work",
+    "use_skill": "Loading a skill",
+    "list_skills": "Checking available skills",
+    "set_goal": "Setting the goal",
+    "clear_goal": "Clearing the goal",
+    "goal_note": "Recording goal progress",
+    "memory_write": "Saving a memory",
+    "memory_read": "Checking memory",
+    "body_choreography": "Planning movement",
+    "move_object": "Moving an object",
+    "start_kittens": "Dealing a game",
+    "end_kittens": "Clearing the table",
+    "start_chess": "Setting the board up",
+    "chess_move": "Making a decision at the board",
+    "end_chess": "Putting the board away",
+    "show_panel": "Making something to look at",
+    "list_panels": "Looking at the wall",
+    "update_panel": "Changing a panel",
+    "close_panel": "Taking a panel down",
+    "present_panel": "Putting a panel up on screen",
+    "commission_panel": "Sending someone to build a panel",
+}
+
+
+def _tool_activity_label(name: str) -> str:
+    return _TOOL_ACTIVITY_LABELS.get(name, f"Using {name.replace('_', ' ')}")
+
+
+class _TurnTrace:
+    """
+    Public-safe account of observable work.
+
+    This deliberately does not reconstruct chain-of-thought. It summarizes
+    only provider-visible reasoning availability plus tools that actually ran
+    and their success/failure status, so every provider gets useful activity
+    summaries even when it returns no readable reasoning trace.
+    """
+
+    def __init__(self) -> None:
+        self.provider_reasoning = False
+        self.tools: List[Tuple[str, bool]] = []
+        self.spoken_checkins = 0
+        self.budget_reached = False
+
+    def record_tool(self, name: str, ok: bool) -> None:
+        self.tools.append((name, ok))
+
+    @property
+    def tool_count(self) -> int:
+        return len(self.tools)
+
+    def details(self) -> Dict[str, Any]:
+        counts = Counter(name for name, _ok in self.tools)
+        return {
+            "tool_calls": self.tool_count,
+            "succeeded": sum(1 for _name, ok in self.tools if ok),
+            "failed": sum(1 for _name, ok in self.tools if not ok),
+            "tools": [
+                {"name": name, "count": count}
+                for name, count in counts.most_common()
+            ],
+            "provider_reasoning_available": self.provider_reasoning,
+            "spoken_checkins": self.spoken_checkins,
+            "tool_budget_reached": self.budget_reached,
+        }
+
+    def summary(self, *, final: bool = False, interrupted: bool = False) -> str:
+        if not self.tools:
+            if interrupted:
+                base = "The turn was interrupted before any tool call completed."
+            elif final:
+                base = "Answered directly; no tool calls were needed."
+            else:
+                base = "Working out a direct response."
+        else:
+            counts = Counter(name for name, _ok in self.tools)
+            actions = ", ".join(
+                f"{_tool_activity_label(name).lower()} ×{count}"
+                if count > 1
+                else _tool_activity_label(name).lower()
+                for name, count in counts.most_common(4)
+            )
+            failures = sum(1 for _name, ok in self.tools if not ok)
+            state = "completed" if final else "completed so far"
+            base = f"{self.tool_count} tool calls {state}: {actions}."
+            if failures:
+                base += f" {failures} reported a failure."
+            if interrupted:
+                base += " The foreground turn was then interrupted."
+            elif final:
+                base += " Used the results to compose the response."
+        if self.provider_reasoning:
+            base += (
+                " Action summary uses observable work; the provider also "
+                "exposed a reasoning trace."
+            )
+        else:
+            base += (
+                " Summary is based on observable actions; the provider "
+                "exposed no reasoning trace."
+            )
+        return base
+
+
+def _voice_tool_checkin(completed: int, next_tool: str) -> str:
+    action = _tool_activity_label(next_tool)
+    action = action[:1].lower() + action[1:]
+    if completed <= 0:
+        return f"I’m starting by {action}."
+    return f"I’ve completed {completed} checks. Next, I’m {action}."
+
+
+def _history_with_trace(spoken: str, trace: _TurnTrace) -> str:
+    """Carry completed work into follow-up turns without speaking the metadata."""
+    if trace.tool_count <= 0:
+        return spoken
+    return (
+        spoken
+        + "\n\n(Internal continuity note, not spoken: "
+        + trace.summary(final=True)
+        + ")"
+    )
+
+
+def _force_tool_free_close(messages: List[Message], tool_count: int) -> None:
+    """Tell the final provider pass to turn evidence into an actual answer."""
+    if not messages or messages[0].role != "system":
+        return
+    suffix = (
+        "\n\n## Finish this turn now\n"
+        f"You have completed {tool_count} foreground tool calls. Tools are now "
+        "unavailable. Give the user the best complete answer supported by the "
+        "results above. State any unresolved limitation plainly. Do not mention "
+        "the internal call budget or ask to keep waiting."
+    )
+    messages[0] = Message(role="system", content=messages[0].content + suffix)
+
+
 def _record_tool_round(
     messages: List[Message],
     result: Any,
@@ -824,7 +1025,10 @@ def _record_tool_round(
     *,
     voice: bool = False,
     skill_prompts: Optional[List[str]] = None,
-) -> None:
+    should_stop: Optional[Callable[[], bool]] = None,
+    max_calls: Optional[int] = None,
+    assistant_content: Optional[str] = None,
+) -> bool:
     """
     Run one round of tool calls, appending the assistant/tool turns it produces.
 
@@ -835,34 +1039,45 @@ def _record_tool_round(
     messages.append(
         Message(
             role="assistant",
-            content=result.content,
+            content=(
+                result.content
+                if assistant_content is None
+                else assistant_content
+            ),
             tool_calls=list(result.tool_calls),
             reasoning=str(getattr(result, "reasoning", "") or ""),
             reasoning_details=getattr(result, "reasoning_details", None),
         )
     )
+    executed = 0
     for tc in result.tool_calls:
+        # Do not start another foreground action after a newer user turn has
+        # arrived. A tool already in flight is allowed to settle below, because
+        # arbitrary side-effecting calls are not safely killable.
+        if should_stop is not None and should_stop():
+            return False
+        if max_calls is not None and executed >= max(0, max_calls):
+            # Pair every provider-requested call even when it exceeds the
+            # foreground budget. The model sees a truthful "not run" result
+            # and can close cleanly without an orphaned tool-call protocol.
+            messages.append(
+                Message(
+                    role="tool",
+                    content=tool_result_text(
+                        {
+                            "ok": False,
+                            "error": "foreground tool-call budget reached",
+                            "summary": "not executed",
+                        },
+                        FACE_TOOL_RESULT_LIMIT,
+                    ),
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                )
+            )
+            continue
         turn_id = choreography.current_turn_id() or None
-        label = {
-            "read_file": "Reading a file",
-            "write_file": "Writing a file",
-            "edit_file": "Editing a file",
-            "run_shell": "Running a command",
-            "browse_web": "Browsing the web",
-            "start_hard_task": "Starting deep work",
-            "body_choreography": "Planning movement",
-            "start_kittens": "Dealing a game",
-            "end_kittens": "Clearing the table",
-            "start_chess": "Setting the board up",
-            "chess_move": "Making a decision at the board",
-            "end_chess": "Putting the board away",
-            "show_panel": "Making something to look at",
-            "list_panels": "Looking at the wall",
-            "update_panel": "Changing a panel",
-            "close_panel": "Taking a panel down",
-            "present_panel": "Putting a panel up on screen",
-            "commission_panel": "Sending someone to build a panel",
-        }.get(tc.name, f"Using {tc.name.replace('_', ' ')}")
+        label = _tool_activity_label(tc.name)
         public_span = ACTIVITY.start(
             "tool",
             label,
@@ -908,6 +1123,7 @@ def _record_tool_round(
         )
         if on_tool:
             on_tool(tc.name, tc.arguments, tr)
+        executed += 1
         if tc.name == "use_skill" and tr.get("ok") and tr.get("prompt"):
             # A freshly loaded skill only steers the next round from the system
             # prompt; left in the tool result it reads as trivia. Skills loaded
@@ -930,15 +1146,20 @@ def _record_tool_round(
                 name=tc.name,
             )
         )
+        # Quarantine this completed result from the superseding turn and skip
+        # every remaining call in the stale round.
+        if should_stop is not None and should_stop():
+            return False
+    return True
 
 
-def _call_face(provider, slot, messages):
+def _call_face(provider, slot, messages, *, tools):
     return provider.chat(
         messages,
         model=slot.get("model") or "deepseek-v4-flash",
         max_tokens=_face_max_tokens(slot),
         temperature=float(slot.get("temperature") or 0.9),
-        tools=FACE_TOOLS,
+        tools=tools,
         effort=str(slot.get("effort") or "medium"),
     )
 
@@ -980,9 +1201,8 @@ def chat(
     everything else gets one generated here, so no path can produce a reply the
     model was unable to choreograph.
 
-    `_wait_for_turn` is for system-originated turns (see weave_result): they
-    block on the turn in flight for up to SYSTEM_TURN_WAIT_SEC instead of
-    bouncing straight to BUSY_REPLY.
+    `_wait_for_turn` marks system-originated speech (see weave_result): it waits
+    for an idle gap while user turns always supersede older foreground work.
     """
     from rau.heartbeat.presence import begin_user_turn, end_user_turn
 
@@ -990,14 +1210,10 @@ def chat(
     broadcast = _TurnBroadcast(turn, user_text)
     # Snapshot absence before history is used (idempotent if note_user_reply ran).
     begin_user_turn()
-    if _wait_for_turn:
-        acquired = _face_turn_lock.acquire(timeout=SYSTEM_TURN_WAIT_SEC)
-    else:
-        acquired = _face_turn_lock.acquire(blocking=False)
-    if not acquired:
-        broadcast.done(BUSY_REPLY)
-        end_user_turn()
-        return BUSY_REPLY
+    claim = _begin_foreground_turn(user_priority=not _wait_for_turn)
+
+    def stop() -> bool:
+        return claim.cancel.is_set()
 
     try:
         prep = prepare_turn(user_text)
@@ -1011,28 +1227,71 @@ def chat(
 
         provider, slot = chat_for_slot("face")
         turn_text = prep.user_text
-        _append_history(Message(role="user", content=turn_text))
+        pending, history = _reserve_stream_turn(turn_text)
         messages = [
             Message(role="system", content=_system_prompt(prep.system_extra))
-        ] + snapshot_history()
+        ] + history
 
         spoken = ""
+        tools_ran: List[Tuple[str, str]] = []
+        trace = _TurnTrace()
+
+        def note_tool(name: str, _args: Dict[str, Any], result: Dict[str, Any]) -> None:
+            ok = bool(result.get("ok", True))
+            summary = str(
+                (result.get("summary") or "ok")
+                if ok
+                else (result.get("error") or "failed")
+            )
+            tools_ran.append((name, summary[:80]))
+            trace.record_tool(name, ok)
+
         try:
             with choreography.turn_scope(turn):
                 skill_prompts: List[str] = []
-                for _ in range(6):
-                    result = _call_face(provider, slot, messages)
-                    if result.tool_calls:
-                        _record_tool_round(
+                for round_idx in range(MAX_FACE_MODEL_ROUNDS):
+                    if stop():
+                        raise Cancelled(pending, "", user_text, turn, tools_ran)
+                    closing = (
+                        len(tools_ran) >= MAX_FACE_TOOL_CALLS
+                        or round_idx == MAX_FACE_MODEL_ROUNDS - 1
+                    )
+                    if closing:
+                        _force_tool_free_close(messages, len(tools_ran))
+                    result = _call_face(
+                        provider,
+                        slot,
+                        messages,
+                        tools=None if closing else FACE_TOOLS,
+                    )
+                    if result.reasoning or result.reasoning_details:
+                        trace.provider_reasoning = True
+                    if stop():
+                        raise Cancelled(pending, "", user_text, turn, tools_ran)
+                    if result.tool_calls and not closing:
+                        remaining = MAX_FACE_TOOL_CALLS - len(tools_ran)
+                        completed = _record_tool_round(
                             messages,
                             result,
                             prep.system_extra,
+                            note_tool,
                             skill_prompts=skill_prompts,
+                            should_stop=stop,
+                            max_calls=remaining,
                         )
+                        if not completed or stop():
+                            raise Cancelled(
+                                pending, "", user_text, turn, tools_ran
+                            )
                         continue
                     spoken = (result.content or "").strip()
                     break
+        except Cancelled as cancelled:
+            finish_interrupted_turn(cancelled, "")
+            broadcast.cancelled("")
+            raise
         except Exception as exc:
+            _finish_stream_turn(pending, "")
             broadcast.error(str(exc))
             raise
 
@@ -1041,7 +1300,7 @@ def chat(
         from rau.heartbeat.presence import apply_reply_mood
 
         spoken, _ = apply_reply_mood(spoken)
-        _append_history(Message(role="assistant", content=spoken))
+        _finish_stream_turn(pending, _history_with_trace(spoken, trace))
         _maybe_compact_history()
         append_diary("user", user_text)
         append_diary("rau", spoken)
@@ -1050,7 +1309,7 @@ def chat(
         return spoken
     finally:
         end_user_turn()
-        _face_turn_lock.release()
+        _end_foreground_turn(claim)
 
 
 class Cancelled(Exception):
@@ -1247,14 +1506,15 @@ def chat_streaming(
     defer_diary: bool = False,
     turn_id: Optional[str] = None,
     voice: bool = False,
+    latency_profile: str = "normal",
 ) -> str:
     """
     Streaming face turn that keeps full tool access.
 
-    Same six-round loop as `chat()` — the only differences are that prose is
-    handed to `on_token` as it arrives and that `cancel` is honoured between
-    tokens and rounds. Tool plumbing never reaches `on_token`; only assistant
-    prose does, or Rau would read protocol out loud.
+    Same twenty-call bounded loop as `chat()` — the only differences are that
+    prose is handed to `on_token` as it arrives and that `cancel` is honoured
+    between tokens and rounds. Tool plumbing never reaches `on_token`; only
+    assistant prose and brief evidence-based voice check-ins do.
 
     `turn_id` scopes any `body_choreography` the model calls, and is echoed on
     every `chat_*` event so a client can tie a plan to the text it anchors to.
@@ -1267,15 +1527,13 @@ def chat_streaming(
     turn = turn_id or choreography.new_turn_id()
     broadcast = _TurnBroadcast(turn, user_text)
     begin_user_turn()
-    if not _face_turn_lock.acquire(blocking=False):
-        # A second face turn would braid its reply into the one being spoken.
-        on_token(BUSY_REPLY)
-        broadcast.done(BUSY_REPLY)
-        end_user_turn()
-        return BUSY_REPLY
+    claim = _begin_foreground_turn(
+        user_priority=True,
+        cascade_cancel=cancel,
+    )
 
     def stop() -> bool:
-        return cancel is not None and cancel.is_set()
+        return claim.cancel.is_set() or (cancel is not None and cancel.is_set())
 
     def emit(token: str) -> None:
         broadcast.token(token)
@@ -1311,14 +1569,76 @@ def chat_streaming(
         # user barges in, finish_interrupted_turn folds them into history so
         # the next turn knows the work really happened.
         tools_ran: List[Tuple[str, str]] = []
+        trace = _TurnTrace()
+        approach_span_id: Optional[str] = None
+        last_voice_checkin_at = 0
+
+        def ensure_approach_span() -> str:
+            nonlocal approach_span_id
+            if approach_span_id is None:
+                approach_span_id = ACTIVITY.start(
+                    "planning",
+                    "Approach summary",
+                    source="face",
+                    summary=trace.summary(),
+                    details=trace.details(),
+                    turn_id=turn,
+                )["id"]
+            return approach_span_id
+
+        def finish_approach(
+            *,
+            status: str = "completed",
+            interrupted: bool = False,
+        ) -> None:
+            span_id = ensure_approach_span()
+            ACTIVITY.finish(
+                span_id,
+                status=status,
+                summary=trace.summary(
+                    final=status == "completed",
+                    interrupted=interrupted,
+                ),
+                details=trace.details(),
+            )
 
         def note_tool(name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
-            if result.get("ok", True):
+            nonlocal last_voice_checkin_at
+            ok = bool(result.get("ok", True))
+            if ok:
                 summary = str(result.get("summary") or "ok")
             else:
                 summary = str(result.get("error") or "failed")
             tools_ran.append((name, summary[:80]))
-            if on_tool:
+            trace.record_tool(name, ok)
+            if approach_span_id is not None:
+                ACTIVITY.delta(
+                    approach_span_id,
+                    summary=trace.summary(),
+                    details=trace.details(),
+                )
+            # Providers may batch many calls into one assistant turn. Keep a
+            # spoken run alive even inside that batch, where there is no next
+            # model round available to supply its own progress sentence.
+            if (
+                voice
+                and trace.tool_count - last_voice_checkin_at
+                >= VOICE_CHECKIN_EVERY_CALLS
+                and not stop()
+            ):
+                completed_action = _tool_activity_label(name).lower()
+                checkin = (
+                    f"I’ve completed {trace.tool_count} checks, including "
+                    f"{completed_action}. I’m continuing. "
+                )
+                heard.append(checkin)
+                emit_prose(checkin)
+                trace.spoken_checkins += 1
+                last_voice_checkin_at = trace.tool_count
+            # A tool that was already running may finish after preemption. Keep
+            # the fact that it ran for history, but never surface its stale
+            # result into the newest foreground turn.
+            if on_tool and not stop():
                 on_tool(name, args, result)
 
         # Strips a leading "[HAPPY]"-style tag before it can be read aloud; the
@@ -1335,7 +1655,7 @@ def chat_streaming(
         try:
             with choreography.turn_scope(turn):
                 skill_prompts: List[str] = []
-                for round_idx in range(6):
+                for round_idx in range(MAX_FACE_MODEL_ROUNDS):
                     if stop():
                         raise Cancelled(
                             pending, "".join(heard).strip(), user_text, turn, tools_ran
@@ -1343,10 +1663,14 @@ def chat_streaming(
 
                     chunks: List[str] = []
                     result = None
-                    # The last round gets no tools: after five rounds of calls
-                    # the model must close in prose, or the reply is nothing
-                    # but the "one sec" narration said before each call.
-                    closing = round_idx == 5
+                    # Once twenty calls have actually run, one final pass gets
+                    # no tools and must turn the gathered evidence into prose.
+                    closing = (
+                        trace.tool_count >= MAX_FACE_TOOL_CALLS
+                        or round_idx == MAX_FACE_MODEL_ROUNDS - 1
+                    )
+                    if closing:
+                        _force_tool_free_close(messages, trace.tool_count)
                     tools = None if closing else _tools_for_turn(
                         voice=voice, round_idx=round_idx, user_text=user_text
                     )
@@ -1357,6 +1681,7 @@ def chat_streaming(
                         temperature=float(slot.get("temperature") or 0.9),
                         tools=tools,
                         effort=str(slot.get("effort") or "medium"),
+                        latency_profile=latency_profile,
                     ):
                         if stop():
                             raise Cancelled(
@@ -1377,6 +1702,7 @@ def chat_streaming(
                                     turn_id=turn,
                                 )["id"]
                         elif isinstance(event, ReasoningDelta):
+                            trace.provider_reasoning = True
                             if reasoning_span_id is None:
                                 reasoning_span_id = ACTIVITY.start(
                                     "reasoning",
@@ -1392,21 +1718,67 @@ def chat_streaming(
                             result = event.result
                     if result is None:
                         break
+                    if result.reasoning or result.reasoning_details:
+                        trace.provider_reasoning = True
 
-                    if result.tool_calls:
-                        _record_tool_round(
+                    # A provider using the default blocking stream may only put
+                    # prose on StreamDone. It is just as audible as a delta.
+                    if not chunks and result.content:
+                        chunks.append(result.content)
+                        heard.append(result.content)
+                        emit_prose(result.content)
+
+                    if result.tool_calls and not closing:
+                        assistant_content: Optional[str] = (
+                            "".join(chunks) if chunks and not result.content else None
+                        )
+                        round_spoke = bool("".join(chunks).strip())
+                        if round_spoke:
+                            last_voice_checkin_at = trace.tool_count
+                        elif voice and (
+                            trace.tool_count == 0
+                            or trace.tool_count - last_voice_checkin_at
+                            >= VOICE_CHECKIN_EVERY_CALLS
+                        ):
+                            checkin = _voice_tool_checkin(
+                                trace.tool_count,
+                                result.tool_calls[0].name,
+                            )
+                            assistant_content = checkin
+                            heard.append(checkin + " ")
+                            emit_prose(checkin + " ")
+                            trace.spoken_checkins += 1
+                            last_voice_checkin_at = trace.tool_count
+
+                        remaining = MAX_FACE_TOOL_CALLS - trace.tool_count
+                        requested = len(result.tool_calls)
+                        completed = _record_tool_round(
                             messages,
                             result,
                             prep.system_extra,
                             note_tool,
                             voice=voice,
                             skill_prompts=skill_prompts,
+                            should_stop=stop,
+                            max_calls=remaining,
+                            assistant_content=assistant_content,
                         )
-                        if not closing:
-                            continue
-                        # A provider that calls tools with none on the table has
-                        # spent the closing round; whatever prose came with the
-                        # calls is the close this turn gets.
+                        if requested > remaining:
+                            trace.budget_reached = True
+                        if not completed or stop():
+                            raise Cancelled(
+                                pending,
+                                "".join(heard).strip(),
+                                user_text,
+                                turn,
+                                tools_ran,
+                            )
+                        # Start the aggregate only after the first tool event.
+                        # body_choreography promises its body_plan is the first
+                        # event after chat_started; an eager summary would
+                        # silently break phrase/body timing in the browser.
+                        ensure_approach_span()
+                        continue
 
                     if not chunks and result.content:
                         # Provider returned prose only in the terminal event.
@@ -1423,6 +1795,7 @@ def chat_streaming(
                         response_span_id,
                         summary="Response ready",
                     )
+                finish_approach()
         except Cancelled:
             if reasoning_span_id is not None:
                 ACTIVITY.finish(
@@ -1436,6 +1809,7 @@ def chat_streaming(
                     status="cancelled",
                     summary="Response interrupted",
                 )
+            finish_approach(status="interrupted", interrupted=True)
             broadcast.cancelled("".join(heard).strip())
             raise
         except Exception as exc:
@@ -1465,6 +1839,7 @@ def chat_streaming(
                     summary="Response failed",
                     details={"error": str(exc)},
                 )
+            finish_approach(status="failed")
             broadcast.error(str(exc))
             raise
 
@@ -1475,7 +1850,10 @@ def chat_streaming(
         from rau.heartbeat.presence import apply_reply_mood
 
         spoken, _ = apply_reply_mood(spoken)
-        history_message = _finish_stream_turn(pending, spoken)
+        history_message = _finish_stream_turn(
+            pending,
+            _history_with_trace(spoken, trace),
+        )
         if not defer_diary:
             _maybe_compact_history()
         if not defer_diary:
@@ -1491,7 +1869,7 @@ def chat_streaming(
         )
     finally:
         end_user_turn()
-        _face_turn_lock.release()
+        _end_foreground_turn(claim)
 
 
 def extract_emotion(text: str) -> Tuple[str, Optional[str]]:
@@ -1512,7 +1890,6 @@ def weave_result(goal: str, result: str) -> str:
         f"Your silent inner work finished.\nGoal: {goal}\nResult:\n{result}\n\n"
         "Speak to your friend as yourself — brief, natural, no mention of agents or tools teams."
     )
-    # A result landing mid-reply waits the turn out rather than bouncing off
-    # it: the work is done and there is no user to re-ask, so a busy answer
-    # here would discard it.
+    # A result landing mid-reply waits for an idle gap. A newer user turn may
+    # still supersede this narration, but never the Deep Work job that made it.
     return chat(prompt, _wait_for_turn=True)

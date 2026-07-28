@@ -22,6 +22,11 @@ from rau.providers.base import (
     pair_tool_calls,
     tool_message_content_anthropic,
 )
+from rau.providers.pooled_http import (
+    PooledLineResponse,
+    PooledStatusError,
+    make_client,
+)
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_STREAM_LINE_BYTES = 1024 * 1024
@@ -284,6 +289,7 @@ class AnthropicCompatProvider(ChatProvider):
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
         self.default_headers = default_headers or {}
+        self._pooled_client = None
 
     def _key(self) -> str:
         return get_secret(self.api_key_env)
@@ -302,6 +308,36 @@ class AnthropicCompatProvider(ChatProvider):
         if streaming:
             headers["Accept"] = "text/event-stream"
         return headers
+
+    def _pooled_stream(self, req: urllib.request.Request, timeout: float):
+        if self._pooled_client is None:
+            self._pooled_client = make_client()
+        return PooledLineResponse(
+            self._pooled_client,
+            method=req.get_method(),
+            url=req.full_url,
+            headers={key: value for key, value in req.header_items()},
+            content=req.data,
+            timeout=timeout,
+        )
+
+    def warm_hyper(self) -> None:
+        """Refresh the persistent Hyper connection while the user is speaking."""
+        key = self._key()
+        if not key:
+            return
+        try:
+            if self._pooled_client is None:
+                self._pooled_client = make_client()
+            # A 404/405 still pays the DNS/TLS/HTTP handshake and leaves the
+            # authenticated connection available for the coming stream.
+            self._pooled_client.get(
+                f"{self.base_url}/v1/messages",
+                headers=self._headers(key),
+                timeout=8,
+            )
+        except Exception:
+            pass
 
     def chat(
         self,
@@ -455,6 +491,7 @@ class AnthropicCompatProvider(ChatProvider):
         temperature: float = 0.7,
         tools: Optional[List[Dict[str, Any]]] = None,
         effort: Optional[str] = None,
+        latency_profile: str = "normal",
     ) -> Generator[Any, None, None]:
         """Stream prose and tool_use blocks together."""
         key = self._key()
@@ -492,7 +529,12 @@ class AnthropicCompatProvider(ChatProvider):
         stop_reason: Optional[str] = None
 
         try:
-            with urllib.request.urlopen(req, timeout=180) as resp:
+            stream = (
+                self._pooled_stream(req, 180)
+                if latency_profile == "hyper"
+                else urllib.request.urlopen(req, timeout=180)
+            )
+            with stream as resp:
                 for raw in _stream_lines(resp, self.name):
                     line = raw.decode("utf-8", errors="ignore").strip()
                     if not line.startswith("data:"):
@@ -604,6 +646,21 @@ class AnthropicCompatProvider(ChatProvider):
                 yield StreamDone(result)
                 return
             raise RuntimeError(f"{self.name} HTTP {e.code}: {err}") from e
+        except PooledStatusError as e:
+            if e.status in (400, 404, 415, 501):
+                result = self.chat(
+                    messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tools=tools,
+                    effort=effort,
+                )
+                if result.content:
+                    yield TextDelta(result.content)
+                yield StreamDone(result)
+                return
+            raise RuntimeError(f"{self.name} HTTP {e.status}: {e.detail}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
         except OSError as e:

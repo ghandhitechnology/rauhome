@@ -162,6 +162,7 @@ class ChatProvider(ABC):
         temperature: float = 0.7,
         tools: Optional[List[Dict[str, Any]]] = None,
         effort: Optional[str] = None,
+        latency_profile: str = "normal",
     ) -> Generator[StreamEvent, None, None]:
         """
         Stream one assistant turn as TextDelta / ToolCallDelta / StreamDone.

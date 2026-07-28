@@ -10,6 +10,7 @@
 
 /** Called ~20 times a second while audio is queued. */
 export type LevelHandler = (level: number, playedMs: number, idle: boolean) => void
+export type StartedHandler = () => void
 
 /** A flush the audio thread never answers must not hold up an interrupt. */
 const FLUSH_TIMEOUT_MS = 250
@@ -21,10 +22,13 @@ type WorkletMessage = {
   flushed?: boolean
   /** reset: the worklet confirms it zeroed its own played-time counter. */
   reset?: boolean
+  /** Render thread consumed the first non-silent sample of this utterance. */
+  started?: boolean
 }
 
 export class TtsPlayback {
   private handler: LevelHandler | null = null
+  private startedHandler: StartedHandler | null = null
   private ctx: AudioContext | null = null
   private node: AudioWorkletNode | null = null
   private opening: Promise<void> | null = null
@@ -35,6 +39,10 @@ export class TtsPlayback {
 
   onLevel(handler: LevelHandler | null) {
     this.handler = handler
+  }
+
+  onStarted(handler: StartedHandler | null) {
+    this.startedHandler = handler
   }
 
   start(): Promise<void> {
@@ -154,6 +162,10 @@ export class TtsPlayback {
   }
 
   private receive(msg: WorkletMessage) {
+    if (msg.started) {
+      this.startedHandler?.()
+      return
+    }
     // The worklet answers reset in stream order, so zeroing on its echo
     // cannot be undone by a level report that was already on the wire.
     if (msg.reset) {

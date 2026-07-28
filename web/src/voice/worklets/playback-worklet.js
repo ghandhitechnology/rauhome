@@ -23,6 +23,7 @@ class PlaybackWorklet extends AudioWorkletProcessor {
     this._playedSamples = 0
     this._level = 0
     this._reported = 0
+    this._audibleStarted = false
 
     this.port.onmessage = (e) => {
       const msg = e.data
@@ -36,6 +37,7 @@ class PlaybackWorklet extends AudioWorkletProcessor {
         this._chunk = null
         this._pos = 0
         this._level = 0
+        this._audibleStarted = false
         this.port.postMessage({ flushed: true, playedMs: this.playedMs() })
         return
       }
@@ -45,6 +47,7 @@ class PlaybackWorklet extends AudioWorkletProcessor {
         this._pos = 0
         this._playedSamples = 0
         this._level = 0
+        this._audibleStarted = false
         // Answer in stream order: the main thread zeroes its own counter on
         // this echo, after every report already on the wire — otherwise one
         // of them lands after the zero and resurrects the old timeline.
@@ -80,6 +83,11 @@ class PlaybackWorklet extends AudioWorkletProcessor {
       const s = this._chunk[Math.min(idx, this._chunk.length - 1)] / 32768
       ch[i] = s
       const a = Math.abs(s)
+      if (!this._audibleStarted && a > 1 / 32768) {
+        this._audibleStarted = true
+        // Emitted from the render quantum consuming the first audible sample.
+        this.port.postMessage({ started: true })
+      }
       if (a > peak) peak = a
       this._pos += this._ratio
       this._playedSamples += this._ratio

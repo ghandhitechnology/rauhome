@@ -13,11 +13,14 @@ from rau.paths import MEMORIES_DIR, ROOT
 
 LABEL = "com.rau.harness"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+SERVICE_MODES = {"all", "hub", "text"}
 
 
-def definition(no_audio: bool = False) -> Dict[str, Any]:
-    argv = [sys.executable, "-m", "rau", "all"]
-    if no_audio:
+def definition(mode: str = "all", no_audio: bool = False) -> Dict[str, Any]:
+    if mode not in SERVICE_MODES:
+        raise ValueError(f"unsupported LaunchAgent mode: {mode}")
+    argv = [sys.executable, "-m", "rau", mode]
+    if mode == "all" and no_audio:
         argv.append("--no-audio")
     return {
         "Label": LABEL,
@@ -61,7 +64,7 @@ def status() -> Dict[str, Any]:
     }
 
 
-def install(no_audio: bool = False) -> Dict[str, Any]:
+def install(mode: str = "all", no_audio: bool = False) -> Dict[str, Any]:
     if sys.platform != "darwin":
         raise RuntimeError("LaunchAgent installation is available only on macOS")
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +74,7 @@ def install(no_audio: bool = False) -> Dict[str, Any]:
     )
     try:
         with os.fdopen(fd, "wb") as handle:
-            plistlib.dump(definition(no_audio), handle, sort_keys=True)
+            plistlib.dump(definition(mode=mode, no_audio=no_audio), handle, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, PLIST_PATH)

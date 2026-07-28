@@ -59,8 +59,11 @@ def _effect(name: str) -> str:
     readonly = {
         "read_file",
         "memory_read",
+        "use_skill",
         "list_skills",
         "list_schedules",
+        "finish",
+        "spawn_subagent",
         "computer_status",
         "computer_observe",
         "computer_inspect_ui",
@@ -197,4 +200,67 @@ def validate_arguments(name: str, arguments: Any) -> Dict[str, Any]:
 
 def adapt_result(name: str, raw: Dict[str, Any]) -> ToolResult:
     item = descriptor(name)
-    return (item.result_adapter if item else _adapt)(raw)
+    result = (item.result_adapter if item else _adapt)(raw)
+    if not result.ok or item is None:
+        return result
+
+    artifacts = list(result.artifacts)
+    mutations = list(result.mutations)
+    evidence = list(result.evidence)
+    path = str(result.raw.get("path") or "").strip()
+
+    # Tool implementations predate the structured completion contract and
+    # many return only {ok, path}. Adapt those real effects into the harness
+    # ledger so the model cannot "forget" a mutation or claim verification it
+    # never performed.
+    if name in {"write_file", "edit_file"}:
+        if path and path not in artifacts:
+            artifacts.append(path)
+        if not mutations:
+            mutations.append(f"{name}: {path or 'workspace file'}")
+    elif item.effect_class != "read" and name not in {"finish", "run_shell"}:
+        if not mutations:
+            mutations.append(f"{name}: completed")
+        if not evidence:
+            evidence.append(
+                {
+                    "kind": "tool_receipt",
+                    "tool": name,
+                    "detail": result.summary,
+                }
+            )
+    elif item.effect_class == "read" and name not in {
+        "finish",
+        "use_skill",
+        "list_skills",
+        "spawn_subagent",
+    }:
+        if not evidence:
+            evidence.append(
+                {
+                    "kind": "tool_result",
+                    "tool": name,
+                    "detail": path or result.summary,
+                }
+            )
+    elif name == "run_shell" and not evidence:
+        evidence.append(
+            {
+                "kind": "command",
+                "tool": name,
+                "detail": f"command exited {result.raw.get('code', 0)}",
+            }
+        )
+
+    return ToolResult(
+        ok=result.ok,
+        summary=result.summary,
+        artifacts=artifacts,
+        mutations=mutations,
+        evidence=evidence,
+        errors=list(result.errors),
+        effect_state=(
+            "applied" if mutations and result.effect_state == "none" else result.effect_state
+        ),
+        raw=result.raw,
+    )

@@ -1,4 +1,4 @@
-# pi bridge (spike)
+# Pi AgentHarness bridge
 
 A bridge from Rau's Python hub to [pi](https://github.com/earendil-works/pi)'s
 `AgentHarness`, for long-horizon deep work. Voice and face stay in Python.
@@ -11,14 +11,17 @@ Two pieces:
   `orchestrator._run_subagent`: goal in, progress callbacks, cancellable via a
   `threading.Event`, result out.
 
-Nothing here is wired into `orchestrator.py` or the hub. Importing `rau.pi` has
-no side effects and does not require the sidecar to be running.
+The bridge is wired into `orchestrator.py`. When the optional sidecar
+dependencies are installed, coding Deep Work uses one supervised
+`AgentHarness` session by default; other work uses Rau's native autonomous
+harness. If Node or the sidecar dependencies are absent, executor selection
+falls back to the native harness without failing the job.
 
 ## Running it
 
 ```bash
-cd pi-sidecar && npm install     # 97 packages, pinned to pi 0.82.1
-node src/server.mjs              # PI_SIDECAR_HOST/PI_SIDECAR_PORT, default 127.0.0.1:8791
+scripts/setup.sh --pi
+# The hub starts/stops the sidecar on a private available loopback port.
 ```
 
 Requires Node >= 22.19 (tested on v26.5.0).
@@ -257,17 +260,11 @@ sidecar reports that text as `result`. It is strictly less structured than
   silent background worker has nothing to do with a token stream; it is there
   for a future foreground use.
 
-## If this were to ship
+## Remaining isolation boundary
 
-The seams that must be closed first, in order:
-
-1. Switch to `JsonlSessionRepo` so runs survive a sidecar restart.
-2. Supervise the sidecar from Python (`launch.sh` or the hub) instead of
-   requiring a hand-started `node`.
-3. Decide the termination contract — either register a pi-side `finish` tool that
-   mirrors Rau's, or accept unstructured final text.
-4. Decide whether seatbelt write confinement is sufficient or whether jobs
-   need per-run container isolation.
-
-Steps 1–3 are small. Step 4 is not, and it decides how much a run may read or
-reach over the network when nobody is watching.
+Runs now use durable JSONL sessions, Python lifecycle supervision, a structured
+`finish` tool, bounded recovery turns, cancellation, confirmation gates, and
+tool-backed mutation/verification ledgers. The remaining architectural choice
+is stronger per-run container isolation versus the current macOS seatbelt
+write confinement. Reads and network remain open by design, while tool shells
+receive a credential-scrubbed environment.

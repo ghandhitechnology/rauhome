@@ -9,8 +9,9 @@ from rau.pi.supervisor import PI_SUPERVISOR
 from rau.providers.registry import load_settings
 
 _CODING = re.compile(
-    r"\b(code|coding|repository|repo|bug|test|refactor|implement|"
-    r"python|javascript|typescript|rust|file|build|lint|compile)\b",
+    r"\b(code|coding|repository|repo|bug|fix|feature|test|refactor|implement|"
+    r"patch|harness|python|javascript|typescript|rust|"
+    r"file|build|lint|compile)\b",
     re.I,
 )
 _COMPUTER = re.compile(
@@ -36,7 +37,11 @@ _VISUAL = re.compile(
 def capabilities_for_goal(goal: str, executor: str) -> list[str]:
     if executor == "pi":
         return ["coding", "filesystem", "shell"]
-    found = ["memory"]
+    # A background worker must always be able to inspect its own workspace.
+    # Goal-keyword routing may add expensive/specialized capabilities, but it
+    # must never produce an "agent" that cannot read files or run diagnostics
+    # because the user said "make this work" rather than "edit the code".
+    found = ["memory", "filesystem", "shell"]
     if _VISUAL.search(goal or ""):
         found.append("visual")
     if _CODING.search(goal or ""):
@@ -57,6 +62,8 @@ def tools_for_goal(goal: str) -> list[Dict[str, Any]]:
 
     capabilities = set(capabilities_for_goal(goal, "python"))
     names = {
+        "read_file",
+        "run_shell",
         "memory_write",
         "memory_read",
         "finish",
@@ -109,8 +116,17 @@ def select_executor(goal: str, requested: str = "auto") -> str:
     settings = load_settings()
     mode = str(settings.get("subagent_executor") or "auto").lower()
     if mode in {"python", "pi"}:
-        return mode if mode != "pi" or PI_SUPERVISOR.enabled() else "python"
-    if PI_SUPERVISOR.enabled() and _CODING.search(goal or ""):
+        return (
+            mode
+            if mode != "pi"
+            or (PI_SUPERVISOR.enabled() and PI_SUPERVISOR.installed())
+            else "python"
+        )
+    if (
+        PI_SUPERVISOR.enabled()
+        and PI_SUPERVISOR.installed()
+        and _CODING.search(goal or "")
+    ):
         return "pi"
     return "python"
 

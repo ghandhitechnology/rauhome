@@ -18,7 +18,7 @@ import SlashMenu from '../components/SlashMenu'
 import { ThreadSkeleton } from '../components/PageSkeleton'
 import { api } from '../api'
 import { live } from '../live'
-import { useMode, modeListens, modeUsesVoice } from '../mode'
+import { useMode, modeListens, modeSupportsHyper, modeUsesVoice } from '../mode'
 import { useVoiceSession } from '../voice'
 import {
   filterSlashCommands,
@@ -230,9 +230,13 @@ function pendingEchoFor(log: any[], text: string): PendingEcho {
 }
 
 export default function Conversation() {
-  const { mode } = useMode()
+  const { mode, voiceLatency, setVoiceLatency } = useMode()
   const voiceOn = modeUsesVoice(mode)
-  const voice = useVoiceSession({ enabled: voiceOn, listen: modeListens(mode) })
+  const voice = useVoiceSession({
+    enabled: voiceOn,
+    listen: modeListens(mode),
+    profile: mode === 'voice' ? voiceLatency : 'normal',
+  })
   const [log, setLog] = useState<any[]>([])
   /** Until the first fetch settles, an empty `log` means "unknown", not "none". */
   const [logLoaded, setLogLoaded] = useState(false)
@@ -265,6 +269,9 @@ export default function Conversation() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const refreshingRef = useRef(false)
   const failsRef = useRef(0)
+  /** Only the newest HTTP turn may settle composer state. Older requests are
+   * allowed to drain so an in-flight side-effecting tool can finish safely. */
+  const sendSeqRef = useRef(0)
   /** Whether the user is reading at the bottom — only then do we auto-scroll. */
   const stickRef = useRef(true)
   /** Ignore model-speed chat_delta while a voice turn is speaking. */
@@ -496,7 +503,8 @@ export default function Conversation() {
 
   async function send() {
     const text = draft.trim()
-    if (!text || sending) return
+    if (!text) return
+    const sendSeq = ++sendSeqRef.current
     setSlashOpen(false)
     setSendError('')
     // Sending your own message always belongs at the bottom.
@@ -505,6 +513,8 @@ export default function Conversation() {
     // Voice/talk: same socket as speech so the reply streams as audio and the
     // live bubble tracks playback, not chat_delta.
     if (voiceOn && voice.connected) {
+      // A voice turn supersedes any older HTTP turn too.
+      setSending(false)
       setDraft('')
       setPending(pendingEchoFor(log, text))
       voice.sendText(text)
@@ -516,16 +526,22 @@ export default function Conversation() {
     setPending(pendingEchoFor(log, text))
     try {
       await api.chat(text)
+      if (sendSeq !== sendSeqRef.current) return
       failsRef.current = 0
       setOffline(false)
       await refresh()
     } catch {
-      // Give the message back instead of losing it.
-      setDraft(text)
-      setSendError('Could not reach Rau — that message was not sent.')
+      if (sendSeq === sendSeqRef.current) {
+        // Give the newest message back instead of losing it. A superseded
+        // request must never overwrite what the user is typing now.
+        setDraft(text)
+        setSendError('Could not reach Rau — that message was not sent.')
+      }
     } finally {
-      setPending(null)
-      setSending(false)
+      if (sendSeq === sendSeqRef.current) {
+        setPending(null)
+        setSending(false)
+      }
     }
   }
 
@@ -741,20 +757,35 @@ export default function Conversation() {
               autoFocus
             />
             <div className="compose-actions">
+              {modeSupportsHyper(mode) && (
+                <button
+                  type="button"
+                  className={`hyper-toggle ${voiceLatency === 'hyper' ? 'on' : ''}`}
+                  aria-label="Hyper-low-latency voice"
+                  aria-pressed={voiceLatency === 'hyper'}
+                  disabled={voice.phase !== 'idle'}
+                  title={
+                    voice.phase === 'idle'
+                      ? 'Use the same voice model and features with the lowest-latency pipeline'
+                      : 'Hyper can be changed after the current voice turn'
+                  }
+                  onClick={() =>
+                    setVoiceLatency(voiceLatency === 'hyper' ? 'normal' : 'hyper')
+                  }
+                >
+                  ⚡ Hyper
+                </button>
+              )}
               <PermissionMenu />
               <button
                 className="send-btn"
-                disabled={!draft.trim() || sending}
+                disabled={!draft.trim()}
                 onClick={send}
                 aria-label="Send"
               >
-                {sending ? (
-                  <i className="spinner" />
-                ) : (
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                    <path d="M3 10h13M11 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                )}
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M3 10h13M11 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
             </div>
           </div>

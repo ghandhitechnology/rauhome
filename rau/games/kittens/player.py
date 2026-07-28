@@ -118,7 +118,7 @@ def decide_nope(game: Game) -> bool:
                 max_tokens=8,
                 temperature=0.4,
             )
-            answer.append(str(getattr(result, "text", "") or "").strip().upper())
+            answer.append(str(result.content or "").strip().upper())
         except Exception:
             pass
 
@@ -213,7 +213,7 @@ def _ask_model(prompt: str) -> str:
         max_tokens=int(slot.get("max_tokens") or 400),
         temperature=float(slot.get("temperature") if slot.get("temperature") is not None else 0.6),
     )
-    return str(getattr(result, "text", "") or "")
+    return str(result.content or "")
 
 
 def _fallback_move(game: Game) -> Dict[str, Any]:
