@@ -66,15 +66,52 @@ def build_reasoning_fields(
     if param == "openai":
         return {"reasoning_effort": mapped}
 
-    if param in ("anthropic_effort", "none"):
-        if param == "none":
-            return {}
-        wire = {"low": "low", "medium": "high", "high": "high", "max": "max"}.get(
-            mapped, "high"
+    if param == "anthropic":
+        # Anthropic /v1/messages has no reasoning_effort knob; effort maps to
+        # an extended-thinking token budget instead. Assumption: kimi_code's
+        # Anthropic-compatible endpoint accepts the same thinking payload —
+        # it cannot be verified without live API access.
+        budget = {"low": 1024, "medium": 2048, "high": 4096, "max": 8192}.get(
+            mapped, 4096
         )
-        return {"reasoning_effort": wire}
+        return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+
+    if param == "none":
+        return {}
 
     return {"reasoning_effort": mapped}
+
+
+#: Anthropic rejects a thinking budget below this minimum, and any budget
+#: that is not strictly below max_tokens.
+_MIN_THINKING_BUDGET = 1024
+
+
+def _reconcile_thinking_budget(payload: Dict[str, Any]) -> None:
+    """Keep an enabled thinking budget strictly below ``max_tokens``.
+
+    Anthropic answers HTTP 400 unless max_tokens > thinking.budget_tokens,
+    and slot budgets (face 512, player 400, dream 2048, subagent 4096) sit
+    at or under the mapped budgets (1024-8192). Clamp the budget to
+    max_tokens - 1, or drop the thinking block when max_tokens cannot fit
+    the minimum — sending no thinking beats a guaranteed 400.
+    """
+    thinking = payload.get("thinking")
+    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        return
+    max_tokens = payload.get("max_tokens")
+    budget = thinking.get("budget_tokens")
+    if (
+        isinstance(max_tokens, bool)
+        or not isinstance(max_tokens, int)
+        or isinstance(budget, bool)
+        or not isinstance(budget, int)
+    ):
+        return
+    if max_tokens - 1 < _MIN_THINKING_BUDGET:
+        payload.pop("thinking", None)
+    elif budget >= max_tokens:
+        thinking["budget_tokens"] = max_tokens - 1
 
 
 def apply_reasoning_payload(
@@ -86,12 +123,17 @@ def apply_reasoning_payload(
         return payload
     extra = fields.pop("extra_body", None)
     payload.update(fields)
+    _reconcile_thinking_budget(payload)
     if isinstance(extra, dict):
         nested = payload.get("extra_body")
         if isinstance(nested, dict):
             nested.update(extra)
         else:
             payload["extra_body"] = extra
+    # Catalog-flagged models (strict OpenAI reasoning endpoints, Anthropic
+    # thinking) reject a non-default temperature with HTTP 400 — omit it.
+    if reasoning_for(provider, model).get("fixed_temperature"):
+        payload.pop("temperature", None)
     return payload
 
 
@@ -120,7 +162,12 @@ def effort_snapshot(models: Dict[str, Any]) -> Dict[str, Any]:
     """Build GET /api/effort (+ status.effort) payload from models.json."""
     slots_out: Dict[str, Any] = {}
     top: Dict[str, str] = {}
-    for slot_name, default in (("face", "medium"), ("subagent", "high"), ("dream", "medium")):
+    for slot_name, default in (
+        ("face", "medium"),
+        ("subagent", "high"),
+        ("player", "high"),
+        ("dream", "medium"),
+    ):
         slot = models.get(slot_name) or {}
         if not isinstance(slot, dict):
             slot = {}

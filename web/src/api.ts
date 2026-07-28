@@ -209,14 +209,25 @@ export type SetupState = {
   examples: { identity?: string; backstory?: string }
 }
 
+/** Pull the useful bit out of an error body: JSON error/detail, else text. */
+async function errorDetail(res: Response): Promise<string> {
+  let detail = await res.text()
+  try {
+    const parsed = JSON.parse(detail)
+    detail = parsed.error || parsed.detail || detail
+  } catch {
+    // Plain-text provider errors are already useful.
+  }
+  return detail || res.statusText
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
     ...init,
   })
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || res.statusText)
+    throw new Error(await errorDetail(res))
   }
   return res.json()
 }
@@ -227,14 +238,7 @@ async function blobReq(path: string, init?: RequestInit): Promise<Blob> {
     ...init,
   })
   if (!res.ok) {
-    let detail = await res.text()
-    try {
-      const parsed = JSON.parse(detail)
-      detail = parsed.error || parsed.detail || detail
-    } catch {
-      // Plain-text provider errors are already useful.
-    }
-    throw new Error(detail || res.statusText)
+    throw new Error(await errorDetail(res))
   }
   return res.blob()
 }

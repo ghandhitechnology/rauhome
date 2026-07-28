@@ -25,7 +25,10 @@ DEFAULT_VOICE_ID = "TX3LPaxmHKxFdv7VOQHJ"
 DEFAULT_TTS_MODEL = "eleven_flash_v2_5"
 
 #: Split on sentence enders, but keep the terminator with the sentence.
-_SENTENCE = re.compile(r"(?<=[.!?…])\s+|(?<=[.!?…])$|\n{2,}")
+#: End-of-buffer is deliberately NOT a boundary: a terminator at the buffer's
+#: edge may be mid-sentence ("…roughly 3" + "." + "5 today"); flush() releases
+#: the true final sentence once the stream ends.
+_SENTENCE = re.compile(r"(?<=[.!?…])\s+|\n{2,}")
 
 #: Don't ship a fragment shorter than this to TTS — one-word chunks sound
 #: clipped and cost a request each. Waits for more text instead.
@@ -117,14 +120,35 @@ class SentenceBuffer:
         while True:
             match = _SENTENCE.search(self._buf)
             if match:
-                head = self._buf[: match.end()].strip()
-                rest = self._buf[match.end() :]
-                short_hesitation = bool(_SHORT_HESITATION.match(head))
-                if len(head) >= self._min_chars() or len(rest) > 0 or short_hesitation:
+                end = match.end()
+                head = self._buf[:end].strip()
+                # A short sentence ("Hi.") is not worth a clipped TTS request
+                # of its own — but it must not hold back what follows it
+                # either. Walk the boundaries behind it and release the
+                # accumulated span once it is speakable; the tail past the
+                # last boundary is still being written and waits for its own
+                # terminator, or for flush() to ship it.
+                while (
+                    len(head) < self._min_chars()
+                    and not _SHORT_HESITATION.match(head)
+                ):
+                    nxt = _SENTENCE.search(self._buf, end)
+                    if nxt is None:
+                        break
+                    end = nxt.end()
+                    head = self._buf[:end].strip()
+                if len(head) >= self._min_chars() or _SHORT_HESITATION.match(head):
                     out.append(head)
-                    self._buf = rest
+                    self._buf = self._buf[end:]
                     self._opened = True
                     continue
+            elif _SHORT_HESITATION.match(self._buf.strip()):
+                # A hesitation ("음…") is complete on its own; without a
+                # trailing space there is no sentence match to release it.
+                out.append(self._buf.strip())
+                self._buf = ""
+                self._opened = True
+                continue
             # Only ever for the opening fragment, and only once the sentence
             # is long enough that waiting for its full stop is the expensive
             # option. A short opener reaches the ear soon anyway; a long one
@@ -267,14 +291,15 @@ def _client():
         return _el_client
 
 
-def warmup() -> None:
+def warmup() -> bool:
     """Touch the client and fire a tiny synth so the first real speak is warm."""
     try:
         client = _client()
         for _ in synth_sentence("warm", client=client):
             break
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _sdk_voice_settings(settings: Optional[Dict[str, Any]]):
@@ -494,6 +519,64 @@ class _AlignmentCollector:
         )
 
 
+#: Mood tags the model may open a reply with (mirrors brain.extract_emotion).
+#: The face strips the tag from the finished text; a streaming voice cannot
+#: wait that long, or the synthesiser reads "[HAPPY]" out loud.
+_EMOTION_TAG = re.compile(
+    r"\[(HAPPY|CURIOUS|EXCITED|SAD|SCARED|AMAZED|LOVE|DETERMINED|IDLE)\]",
+    re.I,
+)
+_EMOTION_TAG_NAMES = (
+    "HAPPY", "CURIOUS", "EXCITED", "SAD", "SCARED", "AMAZED", "LOVE",
+    "DETERMINED", "IDLE",
+)
+
+
+def _could_open_tag(text: str) -> bool:
+    """True while `text` (lstripped) may still grow into a leading tag."""
+    if not text:
+        return True  # only whitespace so far
+    if not text.startswith("["):
+        return False
+    inner = text[1:]
+    if "]" in inner:
+        return False  # decided one way or the other
+    upper = inner.upper()
+    return any(name.startswith(upper) for name in _EMOTION_TAG_NAMES)
+
+
+def _without_leading_emotion_tag(tokens: Iterator[str]) -> Iterator[str]:
+    """
+    Drop a leading "[HAPPY]"-style mood tag before sentence chunking.
+
+    The tag may span several tokens, so hold the opening tokens until the
+    stream proves or disproves one; anything that is not a tag is forwarded
+    verbatim.
+    """
+    head = ""
+    undecided = True
+    for token in tokens:
+        if not undecided:
+            yield token
+            continue
+        head += token
+        text = head.lstrip()
+        if _could_open_tag(text):
+            continue
+        undecided = False
+        match = _EMOTION_TAG.match(text)
+        if match:
+            remainder = text[match.end() :]
+            if remainder:
+                yield remainder
+        else:
+            yield head
+        head = ""
+    if undecided and head:
+        # Stream ended inside what could have been a tag — it is just text.
+        yield head
+
+
 def speak_stream(
     tokens: Iterator[str],
     *,
@@ -600,7 +683,7 @@ def speak_stream(
                 on_timing(timing)
         return True
 
-    for token in tokens:
+    for token in _without_leading_emotion_tag(tokens):
         if cancel is not None and cancel.is_set():
             return
         for sentence in buf.push(token):

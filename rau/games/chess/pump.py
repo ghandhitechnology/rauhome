@@ -27,10 +27,14 @@ from __future__ import annotations
 import random
 import threading
 import time
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 from rau.events import BUS
 from rau.games.chess.board import PHASE_OVER, PHASE_PLAYING, RAU, ChessGame
+
+if TYPE_CHECKING:  # runtime imports stay lazy so the pump never drags Stockfish in
+    from rau.games.chess.engine import MoveChoice
+    from rau.games.chess.timing import ThinkPlan
 
 #: How often the pump looks at the board.
 POLL_SEC = 0.15
@@ -144,7 +148,7 @@ def _run_rau_turn() -> None:
     making sure the two arrive together and that neither is used on a board that
     has since been swept.
     """
-    from rau.games.chess import engine, level, player, session, timing
+    from rau.games.chess import engine, level, session, timing
 
     try:
         game = session.current()
@@ -178,62 +182,78 @@ def _run_rau_turn() -> None:
         # everything that talks reads it from `session` rather than from here.
         session.note_read(choice)
 
-        # An outstanding offer of theirs is answered before anything else
-        # happens. Mechanically his move would decline it silently, but a person
-        # you have just offered a draw does not simply move — he says no, or he
-        # takes it. He takes it when the position agrees with the offer, or when
-        # he was losing anyway and it is a gift.
-        offer = live.offer
-        if offer and offer.get("by") != RAU:
-            if choice.dead_level or choice.bucket in ("worse", "losing"):
-                if session.apply_move(RAU, {"move": "accept_draw"}).get("ok"):
-                    player.table_talk(player.table_line("accept_draw"))
-                    return
-            elif session.apply_move(RAU, {"move": "decline_draw"}).get("ok"):
-                player.table_talk(player.table_line("decline_draw"))
-
-        with _lock:
-            mood = _mood.setdefault(game_id, {"hopeless": 0, "dead": 0, "offered": 0})
-            mood["hopeless"] = mood["hopeless"] + 1 if choice.hopeless else 0
-            mood["dead"] = mood["dead"] + 1 if choice.dead_level else 0
-            resign_now = mood["hopeless"] >= RESIGN_STREAK and len(live.moves) >= RESIGN_MIN_PLY
-            offer_now = (
-                not mood["offered"]
-                and mood["dead"] >= OFFER_STREAK
-                and len(live.moves) >= OFFER_MIN_PLY
-                and live.offer is None
-            )
-
-        if resign_now:
-            # Through the same door as every other move, so it is journalled,
-            # broadcast, and booked exactly like one. The line comes after the
-            # act — a person tips the king first and explains second.
-            if session.apply_move(RAU, {"move": "resign"}).get("ok"):
-                player.table_talk(player.table_line("resign"))
-            return
-
-        player.perform_move(live, choice, plan)
-
-        if offer_now:
-            # After his move rather than before it: the offer arrives while you
-            # are on the clock, with the position in front of you, which is when
-            # a draw offer is actually made across a real board. The move can
-            # have ended the game or been abandoned mid-delay, so the offer only
-            # goes out if the same game is still quietly in play.
-            live = session.current()
-            if (
-                live is not None
-                and live.game_id == game_id
-                and live.phase == PHASE_PLAYING
-                and live.offer is None
-            ):
-                if session.apply_move(RAU, {"move": "offer_draw"}).get("ok"):
-                    with _lock:
-                        _mood.setdefault(game_id, {}).update(offered=1)
-                    player.table_talk(player.table_line("offer_draw"))
+        # Everything from here on is the performance, and it gets the same
+        # backoff the engine call gets. Without it a raise inside the hover
+        # walk — before the move has landed and handed the turn over — leaves
+        # `_thinking` cleared over a board that still wants Rau to act, and the
+        # loop re-enters every 150ms with no shield at all.
+        try:
+            _act(game_id, live, choice, plan)
+        except Exception as exc:
+            BUS.emit("game_error", game="chess", error=f"player: {exc}")
+            _back_off()
     finally:
         _thinking.clear()
         session._broadcast()  # noqa: SLF001 — pump owns the refresh cadence
+
+
+def _act(game_id: str, live: ChessGame, choice: "MoveChoice", plan: "ThinkPlan") -> None:
+    """The performance half of a turn: answer any offer, mind the mood, move."""
+    from rau.games.chess import player, session
+
+    # An outstanding offer of theirs is answered before anything else
+    # happens. Mechanically his move would decline it silently, but a person
+    # you have just offered a draw does not simply move — he says no, or he
+    # takes it. He takes it when the position agrees with the offer, or when
+    # he was losing anyway and it is a gift.
+    offer = live.offer
+    if offer and offer.get("by") != RAU:
+        if choice.dead_level or choice.bucket in ("worse", "losing"):
+            if session.apply_move(RAU, {"move": "accept_draw"}).get("ok"):
+                player.table_talk(player.table_line("accept_draw"))
+                return
+        elif session.apply_move(RAU, {"move": "decline_draw"}).get("ok"):
+            player.table_talk(player.table_line("decline_draw"))
+
+    with _lock:
+        mood = _mood.setdefault(game_id, {"hopeless": 0, "dead": 0, "offered": 0})
+        mood["hopeless"] = mood["hopeless"] + 1 if choice.hopeless else 0
+        mood["dead"] = mood["dead"] + 1 if choice.dead_level else 0
+        resign_now = mood["hopeless"] >= RESIGN_STREAK and len(live.moves) >= RESIGN_MIN_PLY
+        offer_now = (
+            not mood["offered"]
+            and mood["dead"] >= OFFER_STREAK
+            and len(live.moves) >= OFFER_MIN_PLY
+            and live.offer is None
+        )
+
+    if resign_now:
+        # Through the same door as every other move, so it is journalled,
+        # broadcast, and booked exactly like one. The line comes after the
+        # act — a person tips the king first and explains second.
+        if session.apply_move(RAU, {"move": "resign"}).get("ok"):
+            player.table_talk(player.table_line("resign"))
+        return
+
+    player.perform_move(live, choice, plan)
+
+    if offer_now:
+        # After his move rather than before it: the offer arrives while you
+        # are on the clock, with the position in front of you, which is when
+        # a draw offer is actually made across a real board. The move can
+        # have ended the game or been abandoned mid-delay, so the offer only
+        # goes out if the same game is still quietly in play.
+        live = session.current()
+        if (
+            live is not None
+            and live.game_id == game_id
+            and live.phase == PHASE_PLAYING
+            and live.offer is None
+        ):
+            if session.apply_move(RAU, {"move": "offer_draw"}).get("ok"):
+                with _lock:
+                    _mood.setdefault(game_id, {}).update(offered=1)
+                player.table_talk(player.table_line("offer_draw"))
 
 
 def _pump_loop(stop_flag: threading.Event) -> None:

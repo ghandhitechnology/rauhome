@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import FrozenSet
 from zoneinfo import ZoneInfo
 
@@ -86,19 +86,21 @@ class CronSpec:
     def matches(self, local: datetime) -> bool:
         if local.minute not in self.minutes or local.hour not in self.hours:
             return False
+        return self._calendar_matches(local)
+
+    def _calendar_matches(self, local: datetime) -> bool:
+        """Month/day-of-month/day-of-week fields, with POSIX dom/dow OR."""
         if local.month not in self.months:
             return False
         day_match = local.day in self.days
         posix_weekday = (local.weekday() + 1) % 7
         weekday_match = posix_weekday in self.weekdays
         if self.day_wildcard:
-            calendar_match = weekday_match
-        elif self.weekday_wildcard:
-            calendar_match = day_match
-        else:
-            # POSIX cron treats restricted day-of-month/day-of-week as OR.
-            calendar_match = day_match or weekday_match
-        return calendar_match
+            return weekday_match
+        if self.weekday_wildcard:
+            return day_match
+        # POSIX cron treats restricted day-of-month/day-of-week as OR.
+        return day_match or weekday_match
 
     def next_after(
         self,
@@ -109,11 +111,38 @@ class CronSpec:
     ) -> float:
         zone = ZoneInfo(timezone_name)
         minute = int(after_timestamp // 60) * 60 + 60
-        for _ in range(max_minutes):
+        horizon = minute + max_minutes * 60
+        while minute < horizon:
             local = datetime.fromtimestamp(minute, tz=timezone.utc).astimezone(zone)
             if self.matches(local):
                 return float(minute)
-            minute += 60
+            # Sparse expressions must not minute-step through spans that
+            # cannot match (Feb 29 would otherwise scan ~4 years of minutes);
+            # jump to the next boundary that could.
+            step = 60
+            if local.month not in self.months:
+                year = local.year + (1 if local.month == 12 else 0)
+                month = 1 if local.month == 12 else local.month + 1
+                step = int(datetime(year, month, 1, tzinfo=zone).timestamp()) - minute
+            elif not self._calendar_matches(local):
+                step = (
+                    int(
+                        (local + timedelta(days=1))
+                        .replace(hour=0, minute=0, second=0, microsecond=0)
+                        .timestamp()
+                    )
+                    - minute
+                )
+            elif local.hour not in self.hours:
+                step = (
+                    int(
+                        (local + timedelta(hours=1))
+                        .replace(minute=0, second=0, microsecond=0)
+                        .timestamp()
+                    )
+                    - minute
+                )
+            minute += max(60, step)
         raise CronError("no cron occurrence found within five years")
 
 

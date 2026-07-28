@@ -18,6 +18,10 @@ from rau.voice.stt.base import SAMPLE_RATE, SttProvider, Transcript
 
 WS_URL = "wss://api.deepgram.com/v1/listen"
 
+#: 20ms frames × 512 ≈ 10s — absorbs a worst-case handshake (open_timeout)
+#: before backpressure reaches the mic queue upstream.
+_CONNECT_BUFFER_FRAMES = 512
+
 
 class DeepgramStt(SttProvider):
     name = "deepgram"
@@ -67,55 +71,86 @@ class DeepgramStt(SttProvider):
             "max_size": 1_000_000,
             "max_queue": 32,
         }
-        async with websockets.connect(self._url(), **connect_options) as ws:
-            self._ws = ws
+        # The mic queue upstream holds ~5s, but the handshake may take up to
+        # open_timeout (10s): start consuming immediately into a local buffer
+        # so a slow connect never force-closes the mic before Deepgram is
+        # even reached. The pump then drains the same queue.
+        frames: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue(
+            maxsize=_CONNECT_BUFFER_FRAMES
+        )
 
-            async def pump() -> None:
-                try:
-                    async for frame in audio:
-                        await ws.send(frame)
-                    # Tell Deepgram to flush rather than just dropping the socket,
-                    # otherwise the tail of the last word is lost.
-                    await ws.send(json.dumps({"type": "CloseStream"}))
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # Wake the receive loop so the sender failure is observed
-                    # instead of leaving transcription hung forever.
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
-                    raise
-
-            sender = asyncio.create_task(pump())
+        async def feed() -> None:
             try:
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    if msg.get("type") not in (None, "Results"):
-                        continue
-                    alt = (
-                        ((msg.get("channel") or {}).get("alternatives") or [{}])[0]
-                    )
-                    text = (alt.get("transcript") or "").strip()
-                    if not text:
-                        continue
-                    yield Transcript(
-                        text=text,
-                        final=bool(msg.get("is_final")),
-                        confidence=alt.get("confidence"),
-                    )
+                async for frame in audio:
+                    await frames.put(frame)
             finally:
-                if not sender.done():
-                    sender.cancel()
+                await frames.put(None)
+
+        feeder = asyncio.create_task(feed())
+        try:
+            async with websockets.connect(self._url(), **connect_options) as ws:
+                self._ws = ws
+
+                async def pump() -> None:
+                    try:
+                        while True:
+                            frame = await frames.get()
+                            if frame is None:
+                                break
+                            await ws.send(frame)
+                        # Tell Deepgram to flush rather than just dropping the socket,
+                        # otherwise the tail of the last word is lost.
+                        await ws.send(json.dumps({"type": "CloseStream"}))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # Wake the receive loop so the sender failure is observed
+                        # instead of leaving transcription hung forever.
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        raise
+
+                sender = asyncio.create_task(pump())
                 try:
-                    await sender
-                except asyncio.CancelledError:
-                    pass
-                self._ws = None
+                    async for raw in ws:
+                        try:
+                            msg = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if msg.get("type") not in (None, "Results"):
+                            continue
+                        alt = (
+                            ((msg.get("channel") or {}).get("alternatives") or [{}])[0]
+                        )
+                        text = (alt.get("transcript") or "").strip()
+                        if not text:
+                            continue
+                        yield Transcript(
+                            text=text,
+                            final=bool(msg.get("is_final")),
+                            confidence=alt.get("confidence"),
+                        )
+                finally:
+                    if not sender.done():
+                        sender.cancel()
+                    try:
+                        await sender
+                    except asyncio.CancelledError:
+                        pass
+                    self._ws = None
+                # A dead mic source must surface as an STT error, not as a
+                # clean end of stream.
+                if feeder.done() and not feeder.cancelled():
+                    feeder.result()
+        finally:
+            if not feeder.done():
+                feeder.cancel()
+            try:
+                await feeder
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def close(self) -> None:
         ws = self._ws

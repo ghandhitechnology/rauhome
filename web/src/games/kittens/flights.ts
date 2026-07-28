@@ -88,7 +88,12 @@ export function diffFlights(prev: TableState | null, next: TableState): FlightRe
 
   const played = next.discard.length - prev.discard.length
   if (played > 0) {
-    const from = seatSpot(prev.current)
+    let from = seatSpot(prev.current)
+    // A Nope is thrown by the seat the window was waiting on — never by
+    // whoever holds the turn — so it flies out of the other hand.
+    if (prev.pending && next.pending && next.pending.nopes > prev.pending.nopes) {
+      from = seatSpot(prev.pending.waiting_on)
+    }
     for (let i = 0; i < played; i++) out.push({ from, to: 'discard' })
   }
 

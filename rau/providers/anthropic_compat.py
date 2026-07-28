@@ -66,9 +66,10 @@ def _stream_lines(resp: Any, name: str):
             raw = readline(MAX_STREAM_LINE_BYTES + 1)
             if not raw:
                 return
-            if len(raw) > MAX_STREAM_LINE_BYTES or (
-                len(raw) == MAX_STREAM_LINE_BYTES + 1
-                and not raw.endswith((b"\n", b"\r"))
+            # readline caps at MAX+1 bytes: reaching that without a newline
+            # means the line itself is longer than the limit.
+            if len(raw) == MAX_STREAM_LINE_BYTES + 1 and not raw.endswith(
+                (b"\n", b"\r")
             ):
                 raise RuntimeError(
                     f"{name} stream line exceeded {MAX_STREAM_LINE_BYTES} bytes"
@@ -488,6 +489,7 @@ class AnthropicCompatProvider(ChatProvider):
         reasoning: List[str] = []
         reasoning_blocks: Dict[int, Dict[str, Any]] = {}
         malformed = 0
+        stop_reason: Optional[str] = None
 
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
@@ -507,6 +509,14 @@ class AnthropicCompatProvider(ChatProvider):
                         continue
 
                     etype = event.get("type")
+                    if etype == "message_delta":
+                        # Carries stop_reason/usage; no content-block index.
+                        mdelta = event.get("delta") or {}
+                        if isinstance(mdelta, dict):
+                            reason = mdelta.get("stop_reason")
+                            if isinstance(reason, str) and reason:
+                                stop_reason = reason
+                        continue
                     idx = _event_index(event.get("index"))
                     if idx is None:
                         malformed = _malformed(self.name, malformed)
@@ -598,6 +608,13 @@ class AnthropicCompatProvider(ChatProvider):
             raise RuntimeError(f"{self.name} is unreachable: {e.reason}") from e
         except OSError as e:
             raise RuntimeError(f"{self.name} connection failed: {e}") from e
+
+        # A tool call cut short by max_tokens would execute with
+        # {"_raw": partial} arguments — fail the turn instead.
+        if stop_reason == "max_tokens" and parts:
+            raise RuntimeError(
+                f"{self.name} stream truncated by max_tokens during a tool call"
+            )
 
         yield StreamDone(
             ChatResult(

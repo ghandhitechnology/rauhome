@@ -116,6 +116,15 @@ describe('sitting down', () => {
     expect(h.choreo.presence).toBe(1)
     expect(h.choreo.cameraTarget).toEqual(GAME_CAMERA)
   })
+
+  it('seatInstantly is idempotent — adopting twice changes nothing', () => {
+    const h = harness()
+    h.choreo.seatInstantly()
+    const x = h.rig.worldX
+    h.choreo.seatInstantly()
+    expect(h.choreo.state).toBe('playing')
+    expect(h.rig.worldX).toBe(x)
+  })
 })
 
 describe('dealing', () => {
@@ -132,6 +141,19 @@ describe('dealing', () => {
     const h = harness()
     h.choreo.seatInstantly()
     expect(h.choreo.startDeal(0)).toEqual([])
+  })
+
+  it('keeps the flourish going for every lap of a long deal', () => {
+    const h = harness()
+    h.choreo.seatInstantly()
+    // Sixteen cards over four flicks a lap is four laps — about five seconds.
+    h.choreo.startDeal(16)
+    // Past the first lap (1.3s) he is still dealing, not back in his seat.
+    h.step(1.5)
+    expect(h.rig.currentMotion).toBe('dealFlick')
+    // Once the last card has left, he settles back into the seat.
+    h.step(4.5)
+    expect(h.rig.currentMotion).toBe('sitTable')
   })
 })
 
@@ -256,6 +278,40 @@ describe('standing back up', () => {
     expect(h.choreo.state).toBe('idle')
     void h.choreo.dismiss()
     expect(h.choreo.state).toBe('idle')
+  })
+
+  it('resolves the walk it was waiting on when the ritual is cancelled', async () => {
+    // begin() awaits the summon promise alongside the deal; a game that ends
+    // mid-walk must still answer it or the table stack wedges for good.
+    const h = harness()
+    let seated = false
+    void h.choreo.summon().then(() => {
+      seated = true
+    })
+    h.step(1)
+    expect(h.choreo.state).toBe('walk')
+
+    void h.choreo.dismiss({ fast: true })
+    expect(stepUntil(h, 'idle')).toBe(true)
+    await Promise.resolve()
+    expect(seated).toBe(true)
+  })
+
+  it('does not leave him walking to a table that is gone', async () => {
+    const h = harness()
+    void h.choreo.summon()
+    h.step(1)
+    expect(h.choreo.state).toBe('walk')
+
+    void h.choreo.dismiss({ fast: true })
+    expect(stepUntil(h, 'idle')).toBe(true)
+    await Promise.resolve()
+
+    // The directed goTo is cancelled with the ritual: he never finishes the
+    // trip to where the table was, and never sits down at bare floor.
+    h.step(2)
+    expect(h.director.targetStation).not.toBe('table')
+    expect(h.rig.currentMotion).not.toBe('sitTable')
   })
 
   it('survives being told to leave twice', async () => {

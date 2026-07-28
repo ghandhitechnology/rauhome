@@ -5,7 +5,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rau.agent import compaction
 from rau.agent import orchestrator
@@ -383,6 +383,22 @@ _pending_stream_messages: set[int] = set()
 # Held for the duration of a fold, so a fast exchange cannot start a second
 # summarizer on top of the one already thinking.
 _compacting = threading.Lock()
+#: One face turn at a time. A typed turn and a spoken turn running their model
+#: calls concurrently would braid two replies into one history, so the second
+#: caller gets a clear busy answer instead of a parallel turn.
+_face_turn_lock = threading.Lock()
+#: Guards the diary_deferred hand-off on a StreamingReply: a barge-in and a
+#: normal playback end can race to commit the same reply, and exactly one of
+#: them may write the diary.
+_deferred_diary_lock = threading.Lock()
+
+#: What the second of two concurrent face turns hears.
+BUSY_REPLY = "One moment — I'm still answering the last one."
+
+#: How long a system-originated turn waits for the face turn in flight before
+#: it, too, settles for the busy answer. A user turn bounces immediately; a
+#: deep-work result landing mid-reply has no user to re-ask, so it waits.
+SYSTEM_TURN_WAIT_SEC = 30.0
 
 #: Floor on the gap between `chat_delta` broadcasts. The event bus evicts the
 #: oldest item from a slow subscriber's queue, so a per-token firehose would
@@ -535,27 +551,16 @@ def _maybe_compact_history() -> None:
         return
     if not _compacting.acquire(blocking=False):
         return
-    threading.Thread(
-        target=_fold_history,
-        args=(snapshot, budget),
-        daemon=True,
-        name="rau-face-compact",
-    ).start()
-
-
-def truncate_last_assistant(spoken: str) -> None:
-    """
-    Rewrite the last assistant turn to only what the user actually heard.
-
-    Used after a barge-in: if we keep the full generated text, the model
-    believes it said things that never reached the speaker and will not
-    repeat them.
-    """
-    with _history_lock:
-        for i in range(len(_history) - 1, -1, -1):
-            if _history[i].role == "assistant":
-                _history[i] = Message(role="assistant", content=spoken)
-                return
+    try:
+        threading.Thread(
+            target=_fold_history,
+            args=(snapshot, budget),
+            daemon=True,
+            name="rau-face-compact",
+        ).start()
+    except Exception:
+        # A thread that never started will never reach _fold_history's finally.
+        _compacting.release()
 
 
 def _cached_soul() -> str:
@@ -816,6 +821,7 @@ def _record_tool_round(
     on_tool: Optional[Callable[[str, Dict[str, Any], Dict[str, Any]], None]] = None,
     *,
     voice: bool = False,
+    skill_prompts: Optional[List[str]] = None,
 ) -> None:
     """
     Run one round of tool calls, appending the assistant/tool turns it produces.
@@ -902,11 +908,15 @@ def _record_tool_round(
             on_tool(tc.name, tc.arguments, tr)
         if tc.name == "use_skill" and tr.get("ok") and tr.get("prompt"):
             # A freshly loaded skill only steers the next round from the system
-            # prompt; left in the tool result it reads as trivia.
+            # prompt; left in the tool result it reads as trivia. Skills loaded
+            # earlier this turn accumulate rather than replacing each other.
+            if skill_prompts is not None:
+                skill_prompts.append(str(tr["prompt"]))
+            loaded = skill_prompts if skill_prompts is not None else [str(tr["prompt"])]
             messages[0] = Message(
                 role="system",
                 content=_system_prompt(
-                    (system_extra + "\n\n" + str(tr["prompt"])).strip(),
+                    (system_extra + "".join("\n\n" + p for p in loaded)).strip(),
                     voice=voice,
                 ),
             )
@@ -954,7 +964,12 @@ def _journal_table_chat(user_text: str, reply: str) -> None:
         chess_banter.note_user_chat()
 
 
-def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
+def chat(
+    user_text: str,
+    *,
+    turn_id: Optional[str] = None,
+    _wait_for_turn: bool = False,
+) -> str:
     """
     Non-streaming face reply (handles skills + tools).
 
@@ -962,6 +977,10 @@ def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
     that need it up front (the hub, so it can answer with it) pass their own;
     everything else gets one generated here, so no path can produce a reply the
     model was unable to choreograph.
+
+    `_wait_for_turn` is for system-originated turns (see weave_result): they
+    block on the turn in flight for up to SYSTEM_TURN_WAIT_SEC instead of
+    bouncing straight to BUSY_REPLY.
     """
     from rau.heartbeat.presence import begin_user_turn, end_user_turn
 
@@ -969,6 +988,14 @@ def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
     broadcast = _TurnBroadcast(turn, user_text)
     # Snapshot absence before history is used (idempotent if note_user_reply ran).
     begin_user_turn()
+    if _wait_for_turn:
+        acquired = _face_turn_lock.acquire(timeout=SYSTEM_TURN_WAIT_SEC)
+    else:
+        acquired = _face_turn_lock.acquire(blocking=False)
+    if not acquired:
+        broadcast.done(BUSY_REPLY)
+        end_user_turn()
+        return BUSY_REPLY
 
     try:
         prep = prepare_turn(user_text)
@@ -990,10 +1017,16 @@ def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
         spoken = ""
         try:
             with choreography.turn_scope(turn):
+                skill_prompts: List[str] = []
                 for _ in range(6):
                     result = _call_face(provider, slot, messages)
                     if result.tool_calls:
-                        _record_tool_round(messages, result, prep.system_extra)
+                        _record_tool_round(
+                            messages,
+                            result,
+                            prep.system_extra,
+                            skill_prompts=skill_prompts,
+                        )
                         continue
                     spoken = (result.content or "").strip()
                     break
@@ -1015,6 +1048,7 @@ def chat(user_text: str, *, turn_id: Optional[str] = None) -> str:
         return spoken
     finally:
         end_user_turn()
+        _face_turn_lock.release()
 
 
 class Cancelled(Exception):
@@ -1026,12 +1060,14 @@ class Cancelled(Exception):
         generated: str = "",
         user_text: str = "",
         turn_id: str = "",
+        tools_ran: Optional[List[Tuple[str, str]]] = None,
     ) -> None:
         super().__init__("streaming turn cancelled")
         self.pending = pending
         self.generated = generated
         self.user_text = user_text
         self.turn_id = turn_id
+        self.tools_ran = list(tools_ran or [])
 
 
 class StreamingReply(str):
@@ -1041,6 +1077,7 @@ class StreamingReply(str):
     user_text: str
     diary_deferred: bool
     turn_id: str
+    tools_ran: List[Tuple[str, str]]
 
     def __new__(
         cls,
@@ -1049,13 +1086,24 @@ class StreamingReply(str):
         user_text: str,
         diary_deferred: bool,
         turn_id: str = "",
+        tools_ran: Optional[List[Tuple[str, str]]] = None,
     ):
         obj = str.__new__(cls, value)
         obj.history_message = history_message
         obj.user_text = user_text
         obj.diary_deferred = diary_deferred
         obj.turn_id = turn_id
+        obj.tools_ran = list(tools_ran or [])
         return obj
+
+
+def _claim_deferred_diary(reply: StreamingReply) -> bool:
+    """Take ownership of a deferred diary write, exactly once."""
+    with _deferred_diary_lock:
+        if not reply.diary_deferred:
+            return False
+        reply.diary_deferred = False
+        return True
 
 
 def finish_interrupted_turn(
@@ -1067,49 +1115,125 @@ def finish_interrupted_turn(
         turn.pending if isinstance(turn, Cancelled) else turn.history_message
     )
     if marker is None:
-        if isinstance(turn, StreamingReply) and turn.diary_deferred:
+        if isinstance(turn, StreamingReply) and _claim_deferred_diary(turn):
             append_diary("user", turn.user_text)
             if heard:
                 append_diary("rau", heard)
-            turn.diary_deferred = False
+            _journal_table_chat(turn.user_text, heard)
         return
 
+    # The note rides as a user-role parenthetical, never role="system": the
+    # Anthropic encoder hoists every system message into the persistent system
+    # prompt, where a one-time "you were interrupted" would steer all later
+    # turns.
     note = Message(
-        role="system",
+        role="user",
         content=(
             "(You were interrupted here — the user began speaking before you "
             "finished. Do not repeat what you already said. Acknowledge them "
             "naturally and respond to what they actually asked.)"
         ),
     )
+    # Tools that already ran leave a one-line marker behind, or the next turn
+    # has no idea the work happened and may repeat or contradict it.
+    tools_ran = list(getattr(turn, "tools_ran", None) or [])
+    markers = (
+        [
+            Message(
+                role="user",
+                content="\n".join(
+                    f"(tool {name} ran: {summary})" for name, summary in tools_ran
+                ),
+            )
+        ]
+        if tools_ran
+        else []
+    )
     assistant = Message(role="assistant", content=heard)
     finished = False
     with _history_lock:
+        # The identity scan doubles as the idempotency guard: only the first
+        # caller still finds the marker, so a second finish is a no-op.
         for i, message in enumerate(_history):
             if message is marker:
-                _history[i : i + 1] = [assistant, note] if heard else [note]
+                replacement = ([assistant] if heard else []) + markers + [note]
+                _history[i : i + 1] = replacement
                 finished = True
                 break
         _pending_stream_messages.discard(id(marker))
 
     if not finished:
         return
+    if isinstance(turn, StreamingReply) and not _claim_deferred_diary(turn):
+        return
     append_diary("user", turn.user_text)
     if heard:
         append_diary("rau", heard)
-    if isinstance(turn, StreamingReply):
-        turn.diary_deferred = False
+    _journal_table_chat(turn.user_text, heard)
     _maybe_compact_history()
 
 
 def commit_streamed_turn(reply: StreamingReply) -> None:
     """Commit deferred voice diary entries once playback finishes normally."""
-    if not reply.diary_deferred:
+    if not _claim_deferred_diary(reply):
         return
     append_diary("user", reply.user_text)
     append_diary("rau", str(reply))
-    reply.diary_deferred = False
+    # Table talk is journaled here — when playback has drained, not when
+    # generation ended — so the game record holds only aired words.
+    _journal_table_chat(reply.user_text, str(reply))
     _maybe_compact_history()
+
+
+class _LeadingEmotionTag:
+    """
+    Holds back the very start of a streamed reply until a leading mood tag is
+    resolved, so `[HAPPY]` never reaches `on_token`/TTS. Once the opening is
+    known — tag or not — everything else passes through untouched, and the
+    raw text still lands in `heard` for `apply_reply_mood` to read the mood
+    from at the end of the turn.
+    """
+
+    _TAG = re.compile(
+        r"\[(HAPPY|CURIOUS|EXCITED|SAD|SCARED|AMAZED|LOVE|DETERMINED|IDLE)\]",
+        re.I,
+    )
+    _LONGEST = len("[DETERMINED]")
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._resolved = False
+
+    def feed(self, token: str) -> str:
+        """Return the part of `token` safe to speak right now (maybe empty)."""
+        if self._resolved:
+            return token
+        self._buffer += token
+        text = self._buffer
+        if not text:
+            return ""
+        if not text.startswith("["):
+            return self._release(text)
+        close = text.find("]")
+        if close == -1:
+            # Still could be a tag — unless it has already grown past the
+            # longest one, in which case it is ordinary prose with a bracket.
+            if len(text) <= self._LONGEST:
+                return ""
+            return self._release(text)
+        head = text[: close + 1]
+        if not self._TAG.fullmatch(head):
+            return self._release(text)
+        return self._release(text[close + 1 :].lstrip())
+
+    def flush(self) -> str:
+        """Release whatever is still buffered at the end of the stream."""
+        return self._release(self._buffer)
+
+    def _release(self, text: str) -> str:
+        self._buffer = ""
+        self._resolved = True
+        return text
 
 
 def chat_streaming(
@@ -1133,15 +1257,20 @@ def chat_streaming(
     `turn_id` scopes any `body_choreography` the model calls, and is echoed on
     every `chat_*` event so a client can tie a plan to the text it anchors to.
 
-    Returns everything generated. The caller is responsible for trimming the
-    history to what was actually spoken if it cancelled (see
-    `truncate_last_assistant`).
+    Returns everything generated. The caller is responsible for committing only
+    what was actually spoken if it cancelled (see `finish_interrupted_turn`).
     """
     from rau.heartbeat.presence import begin_user_turn, end_user_turn
 
     turn = turn_id or choreography.new_turn_id()
     broadcast = _TurnBroadcast(turn, user_text)
     begin_user_turn()
+    if not _face_turn_lock.acquire(blocking=False):
+        # A second face turn would braid its reply into the one being spoken.
+        on_token(BUSY_REPLY)
+        broadcast.done(BUSY_REPLY)
+        end_user_turn()
+        return BUSY_REPLY
 
     def stop() -> bool:
         return cancel is not None and cancel.is_set()
@@ -1176,17 +1305,47 @@ def chat_streaming(
         # remembered, or Rau will not know he already acknowledged the request.
         heard: List[str] = []
 
+        # Tools that executed this turn, as (name, one-line summary). If the
+        # user barges in, finish_interrupted_turn folds them into history so
+        # the next turn knows the work really happened.
+        tools_ran: List[Tuple[str, str]] = []
+
+        def note_tool(name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
+            if result.get("ok", True):
+                summary = str(result.get("summary") or "ok")
+            else:
+                summary = str(result.get("error") or "failed")
+            tools_ran.append((name, summary[:80]))
+            if on_tool:
+                on_tool(name, args, result)
+
+        # Strips a leading "[HAPPY]"-style tag before it can be read aloud; the
+        # raw text stays in `heard` for apply_reply_mood at the end of the turn.
+        leading_tag = _LeadingEmotionTag()
+
+        def emit_prose(token: str) -> None:
+            visible = leading_tag.feed(token)
+            if visible:
+                emit(visible)
+
         reasoning_span_id: Optional[str] = None
         response_span_id: Optional[str] = None
         try:
             with choreography.turn_scope(turn):
+                skill_prompts: List[str] = []
                 for round_idx in range(6):
                     if stop():
-                        raise Cancelled(pending, "".join(heard).strip(), user_text, turn)
+                        raise Cancelled(
+                            pending, "".join(heard).strip(), user_text, turn, tools_ran
+                        )
 
                     chunks: List[str] = []
                     result = None
-                    tools = _tools_for_turn(
+                    # The last round gets no tools: after five rounds of calls
+                    # the model must close in prose, or the reply is nothing
+                    # but the "one sec" narration said before each call.
+                    closing = round_idx == 5
+                    tools = None if closing else _tools_for_turn(
                         voice=voice, round_idx=round_idx, user_text=user_text
                     )
                     for event in provider.stream_turn(
@@ -1199,12 +1358,12 @@ def chat_streaming(
                     ):
                         if stop():
                             raise Cancelled(
-                                pending, "".join(heard).strip(), user_text, turn
+                                pending, "".join(heard).strip(), user_text, turn, tools_ran
                             )
                         if isinstance(event, TextDelta):
                             chunks.append(event.text)
                             heard.append(event.text)
-                            emit(event.text)
+                            emit_prose(event.text)
                             # Create this only after the first visible token so
                             # activity persistence cannot lengthen TTFT.
                             if response_span_id is None:
@@ -1237,16 +1396,24 @@ def chat_streaming(
                             messages,
                             result,
                             prep.system_extra,
-                            on_tool,
+                            note_tool,
                             voice=voice,
+                            skill_prompts=skill_prompts,
                         )
-                        continue
+                        if not closing:
+                            continue
+                        # A provider that calls tools with none on the table has
+                        # spent the closing round; whatever prose came with the
+                        # calls is the close this turn gets.
 
                     if not chunks and result.content:
                         # Provider returned prose only in the terminal event.
                         heard.append(result.content)
-                        emit(result.content)
+                        emit_prose(result.content)
                     break
+                tail = leading_tag.flush()
+                if tail:
+                    emit(tail)
                 if reasoning_span_id is not None:
                     ACTIVITY.finish(reasoning_span_id, summary="Reasoning complete")
                 if response_span_id is not None:
@@ -1272,7 +1439,16 @@ def chat_streaming(
         except Exception as exc:
             # A provider can fail after yielding prose. Preserve that partial reply
             # in the reserved slot; an empty failure must not leave a ghost turn.
-            _finish_stream_turn(pending, "".join(heard).strip())
+            if stop():
+                # The barge-in and the failure landed together: commit through
+                # the interruption path, or the note (and the record of tools
+                # that ran) is lost and the next turn repeats itself.
+                finish_interrupted_turn(
+                    Cancelled(pending, "".join(heard).strip(), user_text, turn, tools_ran),
+                    "".join(heard).strip(),
+                )
+            else:
+                _finish_stream_turn(pending, "".join(heard).strip())
             if reasoning_span_id is not None:
                 ACTIVITY.finish(
                     reasoning_span_id,
@@ -1303,79 +1479,17 @@ def chat_streaming(
         if not defer_diary:
             append_diary("user", user_text)
             append_diary("rau", spoken)
-        _journal_table_chat(user_text, spoken)
+            # Deferred (voice) turns journal when playback drains — see
+            # commit_streamed_turn — so a late barge-in cannot leave unaired
+            # words in the game record.
+            _journal_table_chat(user_text, spoken)
         broadcast.done(spoken)
-        return StreamingReply(spoken, history_message, user_text, defer_diary, turn)
-    finally:
-        end_user_turn()
-
-
-def chat_stream(user_text: str) -> Generator[str, None, str]:
-    # Skills/tools path is non-stream for reliability
-    if user_text.strip().startswith("/") or any(
-        k in user_text.lower()
-        for k in (
-            "research",
-            "look up",
-            "computer",
-            "open ",
-            "send ",
-            "fix this",
-            "deep",
-            "cancel",
-            "stop working",
-            "read ",
-            "write ",
-            "plan ",
-            "grill",
+        return StreamingReply(
+            spoken, history_message, user_text, defer_diary, turn, tools_ran=tools_ran
         )
-    ):
-        text = chat(user_text)
-        yield text
-        return text
-
-    from rau.heartbeat.presence import begin_user_turn, end_user_turn
-
-    begin_user_turn()
-    try:
-        prep = prepare_turn(user_text)
-        provider, slot = chat_for_slot("face")
-        _append_history(Message(role="user", content=prep.user_text))
-        messages = [
-            Message(role="system", content=_system_prompt(prep.system_extra))
-        ] + snapshot_history()
-        accum: List[str] = []
-        try:
-            for token in provider.chat_stream(
-                messages,
-                model=slot.get("model") or "deepseek-v4-flash",
-                max_tokens=_face_max_tokens(slot),
-                temperature=float(slot.get("temperature") or 0.9),
-                effort=str(slot.get("effort") or "medium"),
-            ):
-                accum.append(token)
-                yield token
-        except Exception:
-            # undo last user append then full chat
-            with _history_lock:
-                if _history and _history[-1].role == "user":
-                    _history.pop()
-            end_user_turn()
-            text = chat(user_text)
-            yield text
-            return text
-
-        spoken = "".join(accum).strip() or "Okay."
-        from rau.heartbeat.presence import apply_reply_mood
-
-        spoken, _ = apply_reply_mood(spoken)
-        _append_history(Message(role="assistant", content=spoken))
-        _maybe_compact_history()
-        append_diary("user", user_text)
-        append_diary("rau", spoken)
-        return spoken
     finally:
         end_user_turn()
+        _face_turn_lock.release()
 
 
 def extract_emotion(text: str) -> Tuple[str, Optional[str]]:
@@ -1396,4 +1510,7 @@ def weave_result(goal: str, result: str) -> str:
         f"Your silent inner work finished.\nGoal: {goal}\nResult:\n{result}\n\n"
         "Speak to your friend as yourself — brief, natural, no mention of agents or tools teams."
     )
-    return chat(prompt)
+    # A result landing mid-reply waits the turn out rather than bouncing off
+    # it: the work is done and there is no user to re-ask, so a busy answer
+    # here would discard it.
+    return chat(prompt, _wait_for_turn=True)

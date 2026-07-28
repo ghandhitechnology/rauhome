@@ -108,10 +108,17 @@ def _broadcast(force: bool = False) -> None:
         if not _game:
             return
         view = view_mod.browser_view(_game)
-    signature = repr(sorted(view.items(), key=lambda kv: kv[0]))
-    if not force and signature == _last_broadcast:
-        return
-    _last_broadcast = signature
+        # The compare-and-set stays under the lock, or it is not a guard: the
+        # pump's tick and an HTTP move land here from different threads, and
+        # both seeing "changed" before either records it means the same frame
+        # goes down the socket twice. The emit happens outside — an event bus
+        # full of subscribers is nothing to hold a lock across — so the worst
+        # race left is two *different* frames emitting out of order, which the
+        # idempotent payload shrugs off.
+        signature = repr(sorted(view.items(), key=lambda kv: kv[0]))
+        if not force and signature == _last_broadcast:
+            return
+        _last_broadcast = signature
     BUS.emit("game_state", game="chess", state=view)
 
 

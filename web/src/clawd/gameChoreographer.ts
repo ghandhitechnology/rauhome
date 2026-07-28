@@ -116,6 +116,8 @@ export class GameChoreographer implements TableChoreo {
 
   private verbQueue: GameVerb[] = []
   private verbReadyAt = 0
+  /** The flourish covers one lap of flicks; the deal runs until this time. */
+  private dealUntil = 0
   /** Remembered so an exit knows which way the game went even if not told. */
   private result: GameResult = null
   private fast = false
@@ -185,10 +187,15 @@ export class GameChoreographer implements TableChoreo {
   }
 
   startDeal(cards: number): number[] {
+    const laps = Math.ceil(Math.max(0, cards) / DEAL_FLICKS.length)
     if (this.state === 'playing') {
       this.verbQueue.length = 0
       this.holdingPose = false
       this.rig.play('dealFlick', { force: true, restart: true })
+      // The clip is one lap of flicks but the deal runs for several: it is
+      // restarted in drainBeats until the last card has left, or he sits
+      // motionless through most of his own deal.
+      this.dealUntil = this.clock + laps * DEAL_DURATION
       this.verbReadyAt = this.clock + DEAL_DURATION + 0.2
     }
     // One flick per card, cycling if he is dealing more than the clip has
@@ -392,6 +399,9 @@ export class GameChoreographer implements TableChoreo {
   private release() {
     this.director.manual = false
     this.director.holdGaze(false)
+    // The walk over was a directed goTo: with the table gone the destination
+    // is too, and finishing the trip would sit him down at bare floor.
+    this.director.cancelDirected()
     this.rig.setGaze(null)
     this.rig.play('idle', { force: true })
     this.gazeIsGlance = false
@@ -399,6 +409,9 @@ export class GameChoreographer implements TableChoreo {
     this.holdingPose = false
     this.result = null
     this.enter('idle')
+    // A begin() still awaiting its seat is answered too — the game it was
+    // walking to is gone, and waiting on it would wedge the table for good.
+    this.resolveSummon()
     const done = this.dismissResolve
     this.dismissResolve = null
     this.dismissPromise = null
@@ -413,7 +426,12 @@ export class GameChoreographer implements TableChoreo {
       // is meant to still be slumped when you read the result, and still
       // reaching over the board while he decides where to put the piece.
       if (!this.rig.busy && !this.holdingPose && this.rig.currentMotion !== 'sitTable') {
-        this.rig.play('sitTable', { force: true })
+        if (this.clock < this.dealUntil) {
+          // One clip is one lap of flicks; the deal runs for several.
+          this.rig.play('dealFlick', { force: true, restart: true })
+        } else {
+          this.rig.play('sitTable', { force: true })
+        }
       }
       return
     }

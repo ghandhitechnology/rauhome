@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- the re-seat path is exported for its regression tests */
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '../router'
 import ClawdRoom, { type ClawdRoomApi } from '../components/ClawdRoom'
@@ -103,6 +104,36 @@ function tagOf(sentence: string): string | null {
   return null
 }
 
+/**
+ * Seat him over a game that outlived the room.
+ *
+ * A game survives a reload, and it survives you walking off to another route
+ * and coming back — but the choreographer does not, and the phase store
+ * remembers a table state that a brand-new choreographer knows nothing
+ * about.
+ */
+export async function reseatIntoGame(): Promise<void> {
+  const phase = phaseStore.get()
+  if (phase === 'idle') {
+    phaseStore.adopt()
+    return
+  }
+  if (phase === 'summoning') {
+    // A 'summoning' at this point belongs to a begin()/arrive() from the
+    // room that was navigated away from: its summon() is only ever resolved
+    // by that choreographer's frame loop, which no longer exists. Seated
+    // below without unwinding it first, the phase would never advance past
+    // 'summoning' — him at an empty table, the cards never appearing.
+    await phaseStore.end({ fast: true })
+    phaseStore.adopt()
+    return
+  }
+  // Came back to a game left running: adopt() stands down on a phase it did
+  // not start, and nobody seats him — cards floating over a wandering crab.
+  // seatInstantly() no-ops unless the choreographer is idle.
+  gameBridge.choreography?.seatInstantly()
+}
+
 export default function Face() {
   const [signals, setSignals] = useState<Signals>(EMPTY_SIGNALS)
   const [panel, setPanel] = useState(false)
@@ -139,8 +170,8 @@ export default function Face() {
     reloaded game the full walk-on.
   */
   useEffect(() => {
-    void gameStore.refresh().then(() => {
-      if (gameStore.get() && phaseStore.get() === 'idle') phaseStore.adopt()
+    void gameStore.refresh().then(async () => {
+      if (gameStore.get()) await reseatIntoGame()
       gameSeeded.current = true
     })
   }, [])
@@ -220,7 +251,12 @@ export default function Face() {
 
   // Chat mode: `/ws` tokens paint the character bubble only (no composer panel).
   useEffect(() => {
-    if (voiceOn) return
+    if (voiceOn) {
+      // The ear owns the bubble now; drop any buffered text stream so it
+      // cannot resurface as a stale reply the moment chat mode returns.
+      setStream((prev) => (prev.phase === 'off' ? prev : IDLE_FACE_STREAM))
+      return
+    }
     if (stream.phase === 'off') {
       setSignals((s) => (s.streaming ? { ...s, streaming: false } : s))
       return
@@ -379,6 +415,13 @@ export default function Face() {
     }
   }, [mode, voiceOn])
 
+  // A voice turn settles with say_end, which the hub sends only after both
+  // sides of the exchange are in its log — chat_done arrives while TTS is
+  // still playing, too early to see them. Same fold-in as Conversation.
+  useEffect(() => {
+    if (voiceOn && voice.lastTurn) void refresh()
+  }, [voiceOn, voice.lastTurn, refresh])
+
   useEffect(() => {
     refresh()
     const id = setInterval(() => {
@@ -391,7 +434,9 @@ export default function Face() {
         event.kind === 'chat_done' ||
         event.kind === 'chat_error'
       ) {
-        setStream((prev) => reduceFaceStream(prev, event))
+        // Voice captions follow the ear; a text stream buffered now would
+        // paint a stale reply the moment chat mode returns.
+        if (!voiceOn) setStream((prev) => reduceFaceStream(prev, event))
         if (event.kind === 'chat_done' || event.kind === 'chat_error') {
           const text = typeof event.text === 'string' ? event.text : ''
           const turnId = typeof event.turn_id === 'string' ? event.turn_id : ''
@@ -417,12 +462,19 @@ export default function Face() {
     const offWork = live.subscribeWorking((working) => {
       setSignals((s) => (s.working === working ? s : { ...s, working }))
     })
+    const offStatus = live.onStatus((connectedNow) => {
+      // A reply streaming over the dead socket gets no chat_done.
+      if (!connectedNow) setStream(IDLE_FACE_STREAM)
+    })
     return () => {
       clearInterval(id)
       off()
       offWork()
+      offStatus()
     }
-  }, [refresh])
+    // voiceOn is read by the handler; refresh already tracks it, but list it
+    // so the dependency array says what the closure uses.
+  }, [refresh, voiceOn])
 
   const send = useCallback(
     async (text: string) => {

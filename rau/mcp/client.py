@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,28 +33,67 @@ def load_mcp_config() -> Dict[str, Any]:
 
 class MCPClient:
     def __init__(self):
-        self.cfg = load_mcp_config()
+        self._cfg: Optional[Dict[str, Any]] = None
+        self._cfg_mtime_ns: Optional[int] = None
+        self._cfg_lock = threading.RLock()
+
+    @property
+    def cfg(self) -> Dict[str, Any]:
+        """Config keyed on file mtime — edits to mcp.json apply without restart."""
+        try:
+            mtime_ns: Optional[int] = MCP_CONFIG.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        with self._cfg_lock:
+            if self._cfg is None or mtime_ns != self._cfg_mtime_ns:
+                self._cfg = load_mcp_config()
+                self._cfg_mtime_ns = mtime_ns
+            return self._cfg
+
+    @cfg.setter
+    def cfg(self, value: Dict[str, Any]) -> None:
+        # Pin the override against the file's current mtime so the reload
+        # check above treats it as fresh (tests inject configs this way).
+        try:
+            mtime_ns: Optional[int] = MCP_CONFIG.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        with self._cfg_lock:
+            self._cfg = value
+            self._cfg_mtime_ns = mtime_ns
 
     def status(self) -> Dict[str, Any]:
+        cfg = self.cfg
         servers = {}
-        for name, scfg in (self.cfg.get("servers") or {}).items():
+        for name, scfg in (cfg.get("servers") or {}).items():
             if not isinstance(scfg, dict):
                 servers[str(name)] = {
                     "enabled": False,
                     "configured": False,
+                    "supported": False,
                     "error": "invalid server config",
                 }
                 continue
             raw_env = scfg.get("api_key_env") or ""
             env_name = raw_env if isinstance(raw_env, str) else ""
-            servers[name] = {
+            entry: Dict[str, Any] = {
                 "enabled": bool(scfg.get("enabled")),
                 "type": scfg.get("type"),
                 "url": scfg.get("url"),
                 "configured": bool(get_secret(env_name)) if env_name else True,
                 "api_key_env": env_name,
+                "supported": True,
             }
-        return {"servers": servers}
+            # Only the Composio tool-call path is wired; any other server would
+            # report enabled/configured while nothing could ever connect to it.
+            if name != "composio":
+                entry["supported"] = False
+                entry["error"] = "unsupported server: only composio is wired"
+            servers[name] = entry
+        result: Dict[str, Any] = {"servers": servers}
+        if cfg.get("error"):
+            result["error"] = str(cfg["error"])
+        return result
 
     def composio_headers(self, key: Optional[str] = None) -> Dict[str, str]:
         key = key if key is not None else get_secret("COMPOSIO_API_KEY")

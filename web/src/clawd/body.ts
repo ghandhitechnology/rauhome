@@ -77,6 +77,7 @@ export const BODY_STATIONS = [
   'window',
   'plant',
   'rug',
+  'table',
   'centre',
   'desk',
   'shelf',

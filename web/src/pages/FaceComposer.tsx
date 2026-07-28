@@ -24,6 +24,7 @@ export default function FaceComposer({
 }: Props) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -35,12 +36,14 @@ export default function FaceComposer({
     if (!text || sending) return
     setSending(true)
     setDraft('')
+    setError('')
     // Collapse first so the hand is usable while the request is in flight.
     if (inGame) onOpenChange(false)
     try {
       await onSend(text)
     } catch {
       setDraft((d) => d || text)
+      setError('Could not reach Rau — that message was not sent.')
       if (inGame) onOpenChange(true)
     } finally {
       setSending(false)
@@ -72,49 +75,56 @@ export default function FaceComposer({
           talk to Rau
         </button>
       ) : (
-        <div className="face-box">
-          <input
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                void send()
-              }
-              if (e.key === 'Escape' && inGame) {
-                e.preventDefault()
-                e.stopPropagation()
-                onOpenChange(false)
-              }
-            }}
-            placeholder="Say something to Rau…"
-            aria-label="Message Rau"
-            autoComplete="off"
-            enterKeyHint="send"
-          />
-          <PermissionMenu />
-          {inGame && (
+        <>
+          {error && (
+            <p className="voice-note bad" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="face-box">
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void send()
+                }
+                if (e.key === 'Escape' && inGame) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onOpenChange(false)
+                }
+              }}
+              placeholder="Say something to Rau…"
+              aria-label="Message Rau"
+              autoComplete="off"
+              enterKeyHint="send"
+            />
+            <PermissionMenu />
+            {inGame && (
+              <button
+                type="button"
+                className="face-collapse"
+                onClick={() => onOpenChange(false)}
+                aria-label="Hide chat"
+                title="Hide chat"
+              >
+                ⌄
+              </button>
+            )}
             <button
               type="button"
-              className="face-collapse"
-              onClick={() => onOpenChange(false)}
-              aria-label="Hide chat"
-              title="Hide chat"
+              className="face-send"
+              disabled={!draft.trim() || sending}
+              onClick={() => void send()}
+              aria-label="Send"
             >
-              ⌄
+              {sending ? <i className="spinner" /> : '→'}
             </button>
-          )}
-          <button
-            type="button"
-            className="face-send"
-            disabled={!draft.trim() || sending}
-            onClick={() => void send()}
-            aria-label="Send"
-          >
-            {sending ? <i className="spinner" /> : '→'}
-          </button>
-        </div>
+          </div>
+        </>
       )}
     </footer>
   )

@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type AnchorHTMLAttributes,
   type MouseEvent,
@@ -80,6 +81,11 @@ function readLocation(): Location {
  */
 export function BrowserRouter({ children }: { children: ReactNode }) {
   const [location, setLocation] = useState(readLocation)
+  /**
+   * Monotonic navigation counter. A slow chunk load must not let an earlier
+   * click commit after a newer one — last-clicked wins, not last-settled.
+   */
+  const navSeq = useRef(0)
 
   // Tells the stylesheet to stand down `.route-fade`, so a route never plays a
   // cross-fade and a slide-up at the same time. Set from JS rather than hard-
@@ -107,7 +113,11 @@ export function BrowserRouter({ children }: { children: ReactNode }) {
     const onPopState = () => {
       // Back should feel identical to a click, chunk preload included.
       const target = readLocation()
-      void settleRoute(target.pathname).then(() => commit(() => setLocation(target)))
+      const seq = ++navSeq.current
+      void settleRoute(target.pathname).then(() => {
+        if (seq !== navSeq.current) return
+        commit(() => setLocation(target))
+      })
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
@@ -126,13 +136,16 @@ export function BrowserRouter({ children }: { children: ReactNode }) {
       // so the address bar and the pixels change together — pushing first would
       // leave the URL pointing at a page not yet on screen for the whole
       // duration of the chunk fetch.
-      void settleRoute(url.pathname).then(() =>
+      const seq = ++navSeq.current
+      void settleRoute(url.pathname).then(() => {
+        // A newer navigation started while this chunk loaded — it wins.
+        if (seq !== navSeq.current) return
         commit(() => {
           if (options.replace) window.history.replaceState(null, '', next)
           else window.history.pushState(null, '', next)
           setLocation(readLocation())
-        }),
-      )
+        })
+      })
     },
     [commit],
   )

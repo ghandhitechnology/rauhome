@@ -38,8 +38,12 @@ void FLOOR_Y
 
 /** Matches the ceiling `useClawdCanvas` puts on the real canvas. */
 function pixelRatio(): number {
-  if (typeof window === 'undefined') return 1
-  return Math.min(window.devicePixelRatio || 1, 2)
+  if (typeof window === 'undefined' || typeof document === 'undefined') return 1
+  // Baking sharper than the canvas the layer lands on is memory and raster
+  // time spent on pixels nobody can see.
+  const profile = document.documentElement?.dataset.resourceProfile || 'balanced'
+  const maxDpr = profile === 'eco' ? 1 : profile === 'performance' ? 2 : 1.5
+  return Math.min(window.devicePixelRatio || 1, maxDpr)
 }
 
 type Ctx = CanvasRenderingContext2D

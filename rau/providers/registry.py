@@ -400,6 +400,9 @@ def provider_status() -> Dict[str, Any]:
         "codex": "OPENAI_API_KEY",
         "openai": "OPENAI_API_KEY",
         "elevenlabs": "ELEVENLABS_API_KEY",
+        "deepgram": "DEEPGRAM_API_KEY",
+        "firecrawl": "FIRECRAWL_API_KEY",
+        "browserbase": "BROWSERBASE_API_KEY",
         "composio": "COMPOSIO_API_KEY",
     }
     return {

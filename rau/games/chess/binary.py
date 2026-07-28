@@ -32,9 +32,15 @@ from typing import Any, Dict, Optional
 #: always wins over whatever happens to be installed.
 ENV_VAR = "STOCKFISH_PATH"
 
-#: Where Homebrew puts it on this machine. Tried last, never first — finding it
-#: here is a fallback, not a preference.
-FALLBACK = "/opt/homebrew/bin/stockfish"
+#: Where package managers put it when it is not on PATH. Tried last, never
+#: first — finding it here is a fallback, not a preference. Homebrew on macOS;
+#: Debian and Ubuntu install theirs to /usr/games, which login shells often
+#: leave off PATH entirely.
+FALLBACKS = (
+    "/opt/homebrew/bin/stockfish",
+    "/usr/games/stockfish",
+    "/usr/local/bin/stockfish",
+)
 
 #: The probe runs the binary and waits for it to say hello. Generous, because a
 #: cold start off a sleeping disk is slow, but bounded, because a hung engine
@@ -66,7 +72,7 @@ def found(*, refresh: bool = False) -> Optional[str]:
         candidates = (
             os.environ.get(ENV_VAR),
             shutil.which("stockfish"),
-            FALLBACK,
+            *FALLBACKS,
         )
         _path = next((p for p in (_usable(c) for c in candidates) if p), None)
         _path_resolved = True
@@ -90,7 +96,10 @@ def probe(*, refresh: bool = False) -> Dict[str, Any]:
         result = {
             "ok": False,
             "path": None,
-            "detail": f"no stockfish on PATH, in ${ENV_VAR}, or at {FALLBACK}",
+            "detail": (
+                f"no stockfish on PATH, in ${ENV_VAR}, or at "
+                + ", ".join(FALLBACKS)
+            ),
         }
     else:
         try:

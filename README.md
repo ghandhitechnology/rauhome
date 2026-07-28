@@ -131,7 +131,7 @@ On macOS the report reads per-process idle and interrupt wakeups directly from
 
 - The hub defaults to loopback and rejects untrusted Host, Origin, cross-site HTTP, and WebSocket traffic. Set `hub_allowed_hosts` explicitly for trusted LAN names.
 - Every shell command, external app action, computer input, destructive write, and skill installation requires explicit confirmation. Model-authored subprocesses do not inherit provider credentials.
-- File tools and the Pi sidecar are confined to the project root. A non-loopback Pi sidecar additionally requires a 32+ character `PI_SIDECAR_TOKEN`.
+- File tools and the Pi sidecar are confined to the project root; confined shell writes additionally cover temp and cache dirs. A non-loopback Pi sidecar additionally requires a 32+ character `PI_SIDECAR_TOKEN`.
 - Secrets are stored atomically in owner-only `.env`; model config and `soul.md` use atomic replacement and recoverable backups.
 
 ## Verification

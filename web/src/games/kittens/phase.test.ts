@@ -138,6 +138,21 @@ describe('a table that was already there', () => {
     expect(gameBridge.active).toBe(true)
   })
 
+  it('re-seats a fresh room over a game already in progress', () => {
+    phaseStore.adopt()
+    expect(fake.calls).toEqual(['seatInstantly'])
+    // Navigated away from /face mid-game and back: a new choreographer
+    // registers while the phase is still 'playing', and he still has to be
+    // sat down — adopting again is what puts him there.
+    const fresh = fakeChoreo()
+    gameBridge.registerChoreo(fresh.choreo)
+    phaseStore.adopt()
+    expect(fresh.calls).toEqual(['seatInstantly'])
+    expect(phaseStore.get()).toBe('playing')
+    // Hand the original back so the afterEach unwind lands on it.
+    gameBridge.registerChoreo(fake.choreo)
+  })
+
   it('gives him the whole walk when he deals himself in', async () => {
     void phaseStore.arrive()
     expect(phaseStore.get()).toBe('summoning')
@@ -198,6 +213,26 @@ describe('leaving', () => {
     expect(phaseStore.get()).toBe('ending')
     fake.stood()
     await flush()
+    expect(phaseStore.get()).toBe('idle')
+  })
+
+  it('stands him up when the game ends while he is still walking to it', async () => {
+    const begun = phaseStore.begin()
+    await flush()
+    expect(phaseStore.get()).toBe('summoning')
+    // `game_ended` from the hub before he ever reached the chair: the walk
+    // must not complete into a game that is gone.
+    gameStore.set(null)
+    await flush()
+    expect(phaseStore.get()).toBe('ending')
+    expect(fake.calls).toContain('dismiss(fast,none)')
+
+    fake.stood()
+    await flush()
+    expect(phaseStore.get()).toBe('idle')
+    // And the begin that was awaiting the walk is answered, not left dangling.
+    fake.seated()
+    await begun
     expect(phaseStore.get()).toBe('idle')
   })
 })

@@ -19,6 +19,10 @@ CHARS_PER_TOKEN = 4
 #: Role framing and delimiters each message costs on the wire regardless of
 #: how short its body is.
 PER_MESSAGE_OVERHEAD = 4
+#: A screenshot or photo rides `Message.images` as bytes the character
+#: heuristic never sees, yet costs real tokens on the wire. Charged per image
+#: so a CUA observation loop trips compaction like any other fat transcript.
+PER_IMAGE_TOKENS = 1500
 
 #: Context assumed when a caller does not say.
 DEFAULT_BUDGET = 100_000
@@ -56,8 +60,9 @@ def estimate_tokens(text: str) -> int:
 
 
 def message_tokens(m: Message) -> int:
-    """Approximate cost of one message, tool plumbing included."""
+    """Approximate cost of one message, tool plumbing and images included."""
     total = estimate_tokens(m.content or "") + PER_MESSAGE_OVERHEAD
+    total += PER_IMAGE_TOKENS * len(m.images or [])
     for tc in m.tool_calls or []:
         total += estimate_tokens(
             tc.name + json.dumps(tc.arguments, ensure_ascii=False)
@@ -184,7 +189,11 @@ def compact(
     except Exception:  # noqa: BLE001 — losing history beats losing the turn
         summary = ""
     if not summary:
-        return msgs[:head] + msgs[cut:]
+        # Even an unsummarized fold must keep the goal: it rides the first
+        # user turn, which a bare head+tail cut drops with the rest of the
+        # span — leaving a worker with no idea what it was asked to do.
+        goal = next((m for m in msgs[head:cut] if m.role == "user"), None)
+        return msgs[:head] + ([goal] if goal is not None else []) + msgs[cut:]
 
     pinned = [m for m in msgs[:head] if not _is_summary(m)]
     return pinned + [Message(role="system", content=SUMMARY_HEADER + summary)] + msgs[cut:]

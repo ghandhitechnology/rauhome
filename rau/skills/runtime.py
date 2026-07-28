@@ -6,7 +6,7 @@ from typing import List
 
 from rau.providers.registry import EFFORT_LEVELS, load_models, save_models
 from rau.skills import goals
-from rau.skills.loader import load_skill, skills_public
+from rau.skills.loader import always_prompt_block, load_skill, skills_public
 
 
 @dataclass
@@ -82,7 +82,8 @@ def _goal(arg: str) -> str:
 def prepare_turn(user_text: str) -> PreparedTurn:
     raw = str(user_text or "").strip()
     if not raw.startswith("/"):
-        return PreparedTurn(user_text=raw)
+        # Skills flagged `always` ride along on every model turn.
+        return PreparedTurn(user_text=raw, system_extra=always_prompt_block())
 
     token, _, arg = raw.partition(" ")
     name = token[1:].strip().lower().replace("_", "-")
@@ -106,8 +107,10 @@ def prepare_turn(user_text: str) -> PreparedTurn:
         turn_text = arg
     else:
         turn_text = f"Use the /{skill.name} skill now. Ask for the minimum input needed to begin."
+    # The invoked skill is already in `instruction`; the rest stay always-on.
+    always = always_prompt_block(exclude=skill.name)
     return PreparedTurn(
         user_text=turn_text,
-        system_extra=instruction,
+        system_extra=(always + "\n\n" + instruction).strip(),
         activate=[skill.name],
     )

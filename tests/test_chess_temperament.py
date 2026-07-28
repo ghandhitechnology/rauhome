@@ -260,6 +260,34 @@ class AnsweringTheirs(TemperamentCase):
         self.assertIsNone(game.winner)
 
 
+class WhenThePerformanceItselfBreaks(TemperamentCase):
+    def test_a_raise_mid_performance_backs_the_loop_off(self):
+        """
+        The engine call has always had a backoff; the performance after it did
+        not. A raise inside the hover walk happens *before* the move lands, so
+        the turn is still owed — and without the backoff the loop re-enters
+        every 150ms against whatever just broke, with nothing shielding it.
+        """
+        game = self.game()
+
+        def broken(live, choice, plan):
+            raise RuntimeError("the claw came off")
+
+        real = player.perform_move
+        player.perform_move = broken  # type: ignore[assignment]
+        self.addCleanup(setattr, player, "perform_move", real)
+
+        with pump._lock:  # noqa: SLF001
+            pump._next_turn_at = 0.0  # noqa: SLF001
+        self.user_moves(game)
+        self.rau_turn()
+
+        self.assertEqual(game.phase, PHASE_PLAYING, "the board should be untouched")
+        with pump._lock:  # noqa: SLF001
+            backed_off = pump._next_turn_at > 0.0  # noqa: SLF001
+        self.assertTrue(backed_off, "no backoff: the loop would spin at tick rate")
+
+
 class TheColours(TemperamentCase):
     """Alternation: finished games swap the seats, abandoned ones do not."""
 

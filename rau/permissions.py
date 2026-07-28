@@ -23,6 +23,8 @@ DEFAULT_PERMISSIONS: Dict[str, str] = {
 }
 
 #: Tools always allowed under read-only (no host mutation).
+#: composio_search is deliberately absent: its query text is model-authored
+#: and leaves the machine, which is an exfiltration channel, not a read.
 _READONLY_ALLOW = frozenset(
     {
         "read_file",
@@ -34,7 +36,6 @@ _READONLY_ALLOW = frozenset(
         "body_choreography",
         "finish",
         "cancel_hard_task",
-        "composio_search",
         "list_schedules",
         "computer_status",
         "computer_observe",
@@ -147,10 +148,18 @@ def is_readonly_allowed(name: str, arguments: Optional[Dict[str, Any]] = None) -
     """Whether a tool may run when the scope is read-only."""
     n = (name or "").lower().strip()
     args = arguments if isinstance(arguments, dict) else {}
+    if n == "computer_observe" and not str(args.get("session_id") or "").strip():
+        # Without a session the call starts one, seizing the single machine
+        # lease — a mutation read-only mode must not make, and one that
+        # wedges every other session if the observe then fails.
+        return False
     if n in _READONLY_ALLOW:
         return True
     if n.startswith("composio") or n.startswith("mcp_") or "execute" in n:
-        if n.endswith("search") or n.endswith("list") or n.endswith("status"):
+        # "search" is not a lookup: the query is model-authored text sent to
+        # a remote API, so it rides out of the read-only jail. list/status
+        # take no such payload and stay allowed.
+        if n.endswith("list") or n.endswith("status"):
             return True
         return False
     if n in ("cua_action", "computer_action"):

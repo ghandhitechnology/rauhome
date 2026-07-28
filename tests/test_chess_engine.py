@@ -715,7 +715,7 @@ class TheBinaryItself(unittest.TestCase):
     def test_a_missing_binary_is_an_answer_and_not_an_exception(self):
         with patch.dict("os.environ", {binary.ENV_VAR: "/nonexistent/stockfish"}), \
                 patch("shutil.which", lambda name: None), \
-                patch.object(binary, "FALLBACK", "/nonexistent/stockfish"):
+                patch.object(binary, "FALLBACKS", ("/nonexistent/stockfish",)):
             self.addCleanup(binary.forget)
             binary.forget()
             self.assertIsNone(binary.found(refresh=True))

@@ -341,12 +341,17 @@ class PhaseStore {
    *
    * No ritual: he did not just decide to play, he has been sitting there the
    * whole time and you went away.
+   *
+   * Safe to call over a game already adopted: a choreographer mid-ritual
+   * ignores the seating, and a *fresh* one — the room was navigated away from
+   * mid-game and come back to, leaving the phase 'playing' — is sat down
+   * where the last room had him. Gating this on 'idle' left exactly that
+   * board floating over a Rau who was standing across the room.
    */
   adopt(): void {
-    if (this.phase !== 'idle') return
     gameBridge.activate(CHESS_SURFACE)
     gameBridge.choreography?.seatInstantly()
-    this.set('playing')
+    if (this.phase === 'idle') this.set('playing')
   }
 
   /**

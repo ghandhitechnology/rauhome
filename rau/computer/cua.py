@@ -197,6 +197,31 @@ def to_global(x: int, y: int, display: Dict[str, Any]) -> Tuple[int, int]:
     return int(x) + int(display.get("x") or 0), int(y) + int(display.get("y") or 0)
 
 
+def _capture_origin(action: Dict[str, Any], display: Dict[str, Any]) -> Tuple[int, int]:
+    """Origin that the action's coordinates are relative to.
+
+    A window capture (screencapture -l) puts the window's top-left at image
+    (0,0), so a click read off that image must add the window's global
+    position — adding the display origin instead lands the click offset by
+    wherever the window happens to sit. An explicit "window_bounds" carries
+    the observation's recorded origin through; an app/frontmost target
+    re-resolves the window's current position. Anything else is a display
+    capture and keeps the display origin.
+    """
+    bounds = action.get("window_bounds")
+    if isinstance(bounds, dict) and ("x" in bounds or "y" in bounds):
+        return int(bounds.get("x") or 0), int(bounds.get("y") or 0)
+    app = action.get("app")
+    frontmost = _bool_field(action, "frontmost", False)
+    if (isinstance(app, str) and app.strip()) or frontmost:
+        info = _window_info(
+            app=app if isinstance(app, str) else None,
+            frontmost=frontmost or not app,
+        )
+        return int(info["bounds"]["x"]), int(info["bounds"]["y"])
+    return int(display.get("x") or 0), int(display.get("y") or 0)
+
+
 # ── window targeting ──────────────────────────────────────────────────
 
 
@@ -914,13 +939,19 @@ def execute_action(
             result["action"] = "screenshot"
         else:
             display = _resolve_display(_optional_int(action, "display_id"))
+            # Resolved lazily: window targeting costs a Quartz lookup that
+            # type/key/wait never need, and a drag must not re-resolve (and
+            # potentially disagree with itself) between its two endpoints.
+            origin: Optional[Tuple[int, int]] = None
+
+            def _map(x: int, y: int) -> Tuple[int, int]:
+                nonlocal origin
+                if origin is None:
+                    origin = _capture_origin(action, display)
+                return x + origin[0], y + origin[1]
 
             def _xy() -> Tuple[int, int]:
-                return to_global(
-                    _int_field(action, "x"),
-                    _int_field(action, "y"),
-                    display,
-                )
+                return _map(_int_field(action, "x"), _int_field(action, "y"))
 
             if kind in ("click", "double_click"):
                 gx, gy = _xy()
@@ -974,10 +1005,9 @@ def execute_action(
                     time.sleep(seconds)
             elif kind == "drag":
                 gx, gy = _xy()
-                gx2, gy2 = to_global(
+                gx2, gy2 = _map(
                     _int_field(action, "x2"),
                     _int_field(action, "y2"),
-                    display,
                 )
                 ok, detail = _drag(gx, gy, gx2, gy2, cancel=cancel)
                 if not ok:

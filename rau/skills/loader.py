@@ -229,6 +229,18 @@ def all_skills() -> List[Skill]:
     return list(safe)
 
 
+def always_prompt_block(*, exclude: Optional[str] = None) -> str:
+    """System-prompt fragment for skills flagged ``always`` — every face turn."""
+    blocks = [
+        skill.prompt_block()
+        for skill in all_skills()
+        if skill.always and skill.name != exclude
+    ]
+    if not blocks:
+        return ""
+    return "## Always-on skills\n\n" + "\n\n".join(blocks)
+
+
 def load_skill(name: str) -> Optional[Skill]:
     wanted = _normalise_name(name).removeprefix("/")
     skills = all_skills()

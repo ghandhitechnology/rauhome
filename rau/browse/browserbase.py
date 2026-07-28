@@ -151,6 +151,9 @@ class BrowserbaseBrowser(BrowseProvider):
         connect_url = str(body.get("connectUrl") or "")
         session_id = str(body.get("id") or "")
         if not connect_url:
+            # The session exists and is already billing; hand it back before
+            # failing, or it idles until the provider's timeout.
+            self._release(session_id, timeout)
             raise BrowseError(
                 "Browserbase did not return a connect URL", code="bad_response"
             )

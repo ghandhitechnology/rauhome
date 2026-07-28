@@ -143,10 +143,27 @@ function errandPlan(errandId: string, from: SpotId, to: SpotId): BodyCue[] {
 // same cue, but the errand advances once.
 bodyController.onCueChange((cue) => {
   const errand = cue?.errand
-  if (errand) propStore.advance(errand.id, errand.phase)
-  else if (propStore.activeErrand?.phase === 'place') {
-    propStore.advance(propStore.activeErrand.id, 'done')
+  if (errand) {
+    propStore.advance(errand.id, errand.phase)
+    return
   }
+  const active = propStore.activeErrand
+  if (!active) return
+  if (active.phase === 'place') {
+    propStore.advance(active.id, 'done')
+    return
+  }
+  // A cue clearing with the object still in his claws is either the gap
+  // between two errand steps — the next cue lands in the same tick — or the
+  // performance being cut short (poke, takeover, body_cancel, game summon).
+  // Defer the call so only the second one abandons the errand.
+  const id = active.id
+  setTimeout(() => {
+    const stranded = propStore.activeErrand
+    if (stranded && stranded.id === id && stranded.phase !== 'place') {
+      propStore.cancel(id)
+    }
+  }, 0)
 })
 
 function driveBody(event: LiveEvent) {
@@ -271,6 +288,8 @@ function connect() {
   ws.onclose = () => {
     if (socket !== ws) return
     socket = null
+    // The *_finished events for any open tool/browse died with the socket.
+    resetDeskWork()
     setConnected(false)
     schedule()
   }

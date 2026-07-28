@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from rau.agent.edit import edit_file, note_read
 from rau.agent.sandbox import (
@@ -259,8 +259,10 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "computer_observe",
             "description": (
-                "Start or refresh a computer session. Returns a screenshot, "
-                "window/display identity, and bounded Accessibility tree."
+                "Refresh a computer session, or take a one-shot observation "
+                "when no session_id is given (the borrowed session is "
+                "released immediately). Returns a screenshot, window/display "
+                "identity, and bounded Accessibility tree."
             ),
             "parameters": {
                 "type": "object",
@@ -655,13 +657,38 @@ def run_tool(
             # slice below ever applied.
             with path.open(encoding="utf-8", errors="replace") as fh:
                 text = fh.read(50001)
+                total_chars = len(text)
+                hit_eof = total_chars <= 50000
+                if not hit_eof:
+                    # Count the rest chunk-wise, so the truncation marker can
+                    # carry the true total with memory still bounded. The scan
+                    # is bounded too: past the cap the exact count stops
+                    # mattering and a multi-GB log would block the worker, so
+                    # the marker degrades to a floor like ">5000000".
+                    while total_chars < 5_000_000:
+                        chunk = fh.read(1 << 20)
+                        if not chunk:
+                            hit_eof = True
+                            break
+                        total_chars += len(chunk)
         except OSError as exc:
             return {"ok": False, "error": f"could not read: {exc}", "path": str(path)}
         # Only a full read licenses a later edit; a truncated one would let the
         # model edit against a tail it never saw.
-        if len(text) <= 50000:
+        if total_chars <= 50000:
             note_read(path)
-        return {"ok": True, "path": str(path), "content": text[:50000]}
+            return {"ok": True, "path": str(path), "content": text}
+        # A clipped read must say so: an unmarked truncation looks like the
+        # whole file, and the model reasons over an ending that is not one.
+        return {
+            "ok": True,
+            "path": str(path),
+            "content": text[:50000],
+            "truncated": True,
+            # An int when the file was counted to its end; a floor string
+            # once the counting scan hit its own cap.
+            "total_chars": total_chars if hit_eof else ">5000000",
+        }
 
     if name == "write_file":
         if not isinstance(args.get("path"), str) or not args["path"].strip():
@@ -751,23 +778,37 @@ def run_tool(
             if name == "computer_status":
                 return COMPUTER.status(session_id or None)
             if name == "computer_observe":
-                if not session_id:
+                created_here = not session_id
+                if created_here:
                     started = COMPUTER.start(
                         job_id=job_id,
                         app=str(args.get("app") or "") or None,
                         frontmost=bool(args.get("frontmost", True)),
                     )
                     session_id = str(started["id"])
-                return COMPUTER.observe(
-                    session_id,
-                    app=str(args.get("app") or "") or None,
-                    frontmost=args.get("frontmost")
-                    if isinstance(args.get("frontmost"), bool)
-                    else None,
-                    display_id=args.get("display_id")
-                    if isinstance(args.get("display_id"), int)
-                    else None,
-                )
+                observed: Dict[str, Any] = {"ok": False}
+                try:
+                    observed = COMPUTER.observe(
+                        session_id,
+                        app=str(args.get("app") or "") or None,
+                        frontmost=args.get("frontmost")
+                        if isinstance(args.get("frontmost"), bool)
+                        else None,
+                        display_id=args.get("display_id")
+                        if isinstance(args.get("display_id"), int)
+                        else None,
+                    )
+                finally:
+                    if created_here:
+                        # A bare observe borrowed the single machine lease.
+                        # Release it like the legacy one-shot path does, or
+                        # every later start() fails until the lease ages out.
+                        COMPUTER.finish(
+                            session_id,
+                            outcome="completed" if observed.get("ok") else "failed",
+                            summary="one-shot computer_observe",
+                        )
+                return observed
             if name == "computer_inspect_ui":
                 return COMPUTER.inspect_ui(session_id)
             if name == "computer_focus":
@@ -945,11 +986,12 @@ def _terminate_process_tree(proc: subprocess.Popen[Any]) -> None:
             pass
 
 
-def _tail_bytes(stream: Any, limit: int) -> str:
+def _tail_bytes(stream: Any, limit: int) -> Tuple[str, bool]:
+    """Return the tail of the spool, and whether anything was dropped."""
     stream.flush()
     size = stream.tell()
     stream.seek(max(0, size - limit))
-    return stream.read().decode("utf-8", errors="replace")
+    return stream.read().decode("utf-8", errors="replace"), size > limit
 
 
 def _run_shell(
@@ -1037,8 +1079,8 @@ def _run_shell(
                 # raise out of the tool loop.
                 code = -signal.SIGKILL
 
-        out = _tail_bytes(stdout, 8000)
-        err_text = _tail_bytes(stderr, 2000)
+        out, out_clipped = _tail_bytes(stdout, 8000)
+        err_text, err_clipped = _tail_bytes(stderr, 2000)
 
     append_trace(
         "shell",
@@ -1058,6 +1100,9 @@ def _run_shell(
         "stderr": err_text,
         "code": code,
     }
+    if out_clipped or err_clipped:
+        # The tail windows hide how much was dropped; say so plainly.
+        result["truncated"] = True
     if cancelled:
         result.update(cancelled=True, error="command cancelled")
     elif timed_out:

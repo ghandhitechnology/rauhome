@@ -49,6 +49,8 @@ export default function ClawdAvatar({
 
   const pointer = useRef<{ x: number; y: number } | null>(null)
   const centre = useRef({ x: 0, y: 0 })
+  /** The canvas's viewport position, cached — see the effect below. */
+  const canvasPos = useRef({ left: 0, top: 0 })
   const desired = useRef<MotionName>('idle')
   const smile = useRef(0)
   /** The cue holding this avatar, and the timer for its walk-in-place. */
@@ -132,8 +134,10 @@ export default function ClawdAvatar({
     const x = w / 2
     const y = h - unit * 2.6
 
-    const rect = ctx.canvas.getBoundingClientRect()
-    centre.current = { x: rect.left + x, y: rect.top + y - unit * 5 }
+    centre.current = {
+      x: canvasPos.current.left + x,
+      y: canvasPos.current.top + y - unit * 5,
+    }
 
     const held = cue.current
     if (held) {
@@ -161,6 +165,32 @@ export default function ClawdAvatar({
 
     drawClawd(ctx, rig.params, { unit, x, y })
   }, [rig, trackPointer])
+
+  // A getBoundingClientRect per frame is a forced layout per frame, on a page
+  // whose DOM mutates constantly while streaming. Resize and scroll move the
+  // canvas, but so does content reflowing without a scroll — a thread growing
+  // above the avatar pushes it down silently. The position only feeds the
+  // pointer gaze, so it is re-measured on pointer moves as well: fresh exactly
+  // when it is read, and still never a forced layout per frame.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const measure = () => {
+      const rect = canvas.getBoundingClientRect()
+      canvasPos.current = { left: rect.left, top: rect.top }
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(canvas)
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('pointermove', measure, { passive: true })
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('pointermove', measure)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className={`clawd-avatar ${className}`}>

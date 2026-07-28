@@ -144,4 +144,27 @@ describe('the backdrop cache', () => {
     // The ratio rides in the key, so the same zoom on a new display repaints.
     expect(unitKey(12)).toContain('@')
   })
+
+  it('caps the bake at the resolution ceiling the real canvas uses', () => {
+    // useClawdCanvas caps dpr at 1/1.5/2 by resource profile; a bake sharper
+    // than that is pixels nobody can see.
+    const prevWindow = (globalThis as { window?: unknown }).window
+    const prevDocument = (globalThis as { document?: unknown }).document
+    const dataset: Record<string, string> = {}
+    ;(globalThis as { window?: unknown }).window = { devicePixelRatio: 2 }
+    ;(globalThis as { document?: unknown }).document = {
+      documentElement: { dataset },
+    }
+    try {
+      dataset.resourceProfile = 'eco'
+      expect(unitKey(12)).toBe('12.00@1')
+      dataset.resourceProfile = 'balanced'
+      expect(unitKey(12)).toBe('12.00@1.5')
+      dataset.resourceProfile = 'performance'
+      expect(unitKey(12)).toBe('12.00@2')
+    } finally {
+      ;(globalThis as { window?: unknown }).window = prevWindow
+      ;(globalThis as { document?: unknown }).document = prevDocument
+    }
+  })
 })

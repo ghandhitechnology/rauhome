@@ -514,6 +514,14 @@ class ComputerSessionManager:
                 for field in ("x", "y", "x2", "y2", "display_id"):
                     if field in target:
                         action_args[field] = target[field]
+                # Visual coords are relative to whatever the observation
+                # captured. For a window capture that is the window's
+                # top-left, so carry its recorded origin through for
+                # execute_action to add — _validate_target_context has
+                # already confirmed the window has not moved since.
+                window_bounds = (observation.get("window") or {}).get("window_bounds")
+                if isinstance(window_bounds, dict):
+                    action_args["window_bounds"] = window_bounds
             elif target_kind == "semantic":
                 app_cfg = session.get("app") or {}
                 try:

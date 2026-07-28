@@ -116,6 +116,7 @@ class SchedulerService:
         self._timer_pool = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="rau-timer"
         )
+        self._timer_pool_stopped = False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -123,12 +124,16 @@ class SchedulerService:
         self.store.initialize()
         self._stop.clear()
         self._wake.clear()
+        if self._timer_pool_stopped:
+            # ThreadPoolExecutor.shutdown is terminal; a restart needs a pool.
+            self._timer_pool = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="rau-timer"
+            )
+            self._timer_pool_stopped = False
         if "activity_retention" not in self._timers:
-            from rau.activity import ACTIVITY
-
             self.register_timer(
                 "activity_retention",
-                lambda: ACTIVITY.purge(retention_days=7),
+                self._run_activity_retention,
                 interval_sec=24 * 3600.0,
                 initial_delay_sec=24 * 3600.0,
             )
@@ -147,6 +152,10 @@ class SchedulerService:
         thread = self._thread
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+        # Do not let an in-flight timer (e.g. the nightly dream) pin the
+        # process at exit; queued maintenance may be cancelled outright.
+        self._timer_pool.shutdown(wait=False, cancel_futures=True)
+        self._timer_pool_stopped = True
         if self._listener_registered:
             BUS.off("job_done", self._job_terminal)
             BUS.off("job_failed", self._job_terminal)
@@ -351,6 +360,9 @@ class SchedulerService:
                 )
             if timer_at is not None:
                 next_at = timer_at if next_at is None else min(next_at, timer_at)
+            retry_at = self._next_queued_retry_at()
+            if retry_at is not None:
+                next_at = retry_at if next_at is None else min(next_at, retry_at)
             timeout = 60.0 if next_at is None else max(
                 0.1, min(60.0, next_at - time.time())
             )
@@ -398,6 +410,17 @@ class SchedulerService:
             callback()
         except Exception as exc:  # noqa: BLE001
             BUS.emit("timer_error", timer=name, error=str(exc)[:1000])
+
+    def _next_queued_retry_at(self) -> Optional[float]:
+        """Earliest queued-run retry stamp; the loop must wake up for it."""
+        return self.store.next_queued_retry_at()
+
+    def _run_activity_retention(self) -> None:
+        from rau.activity import ACTIVITY
+
+        cutoff = time.time() - 7 * 86_400
+        ACTIVITY.purge(retention_days=7)
+        self.store.prune(cutoff)
 
     def _enqueue_due(self, schedule: Dict[str, Any], now: float) -> None:
         first = float(schedule["next_run_at"])

@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- the echo hand-off is exported for its regression tests */
 import {
   useEffect,
   useMemo,
@@ -167,6 +168,67 @@ function useComposerRubberBand(
   }, [threadRef, composeRef])
 }
 
+/** A locally-echoed send waiting for the hub's log to catch up with it. */
+export type PendingEcho = {
+  role: 'user'
+  text: string
+  time: string
+  /**
+   * The log's last entry at send time. Positions are no anchor: the hub
+   * trims the log at its cap, so the slot a message held at send time slides
+   * left as new lines push old ones out. The echo is anchored to this entry.
+   */
+  anchor: { role: string; text: string; time: string } | null
+}
+
+/**
+ * Whether the hub's log now holds a locally-echoed send.
+ *
+ * Only a match *after* the anchor's current position counts: an older
+ * identical line (a second "yes") is a different message and must not
+ * swallow this echo. If the anchor itself has been trimmed out of the log,
+ * every line left arrived after the send, so any match is the echo.
+ */
+export function pendingEchoed(log: any[], pending: PendingEcho): boolean {
+  let from = 0
+  const anchor = pending.anchor
+  if (anchor) {
+    let at = -1
+    for (let i = log.length - 1; i >= 0; i--) {
+      const m = log[i]
+      if (
+        m?.role === anchor.role &&
+        String(m?.text || '') === anchor.text &&
+        String(m?.time || '') === anchor.time
+      ) {
+        at = i
+        break
+      }
+    }
+    if (at >= 0) from = at + 1
+  }
+  return log.some(
+    (m, i) => i >= from && m?.role === 'user' && String(m.text || '') === pending.text,
+  )
+}
+
+/** The echo to show until the hub logs the send, anchored to the log's tail. */
+function pendingEchoFor(log: any[], text: string): PendingEcho {
+  const last = log[log.length - 1]
+  return {
+    role: 'user',
+    text,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    anchor: last
+      ? {
+          role: String(last.role || ''),
+          text: String(last.text || ''),
+          time: String(last.time || ''),
+        }
+      : null,
+  }
+}
+
 export default function Conversation() {
   const { mode } = useMode()
   const voiceOn = modeUsesVoice(mode)
@@ -183,7 +245,7 @@ export default function Conversation() {
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashOpen, setSlashOpen] = useState(true)
   /** The message just sent, echoed locally until the hub's log includes it. */
-  const [pending, setPending] = useState<{ role: 'user'; text: string; time: string } | null>(null)
+  const [pending, setPending] = useState<PendingEcho | null>(null)
   /**
    * The reply arriving right now, streamed over `/ws`.
    *
@@ -245,9 +307,20 @@ export default function Conversation() {
       if (!live.isConnected()) void refresh()
     }, 15_000)
     const offWork = live.subscribeWorking(setDeskWorking)
+    const offStatus = live.onStatus((connectedNow) => {
+      if (connectedNow) {
+        // The poll stands down while the socket is up, so a hub restart is
+        // only ever noticed here: pull the log, drop the offline banner.
+        void refresh()
+      } else {
+        // A reply streaming over the dead socket gets no chat_done.
+        setStreaming(null)
+      }
+    })
     return () => {
       clearInterval(id)
       offWork()
+      offStatus()
     }
   }, [])
 
@@ -280,6 +353,10 @@ export default function Conversation() {
         case 'chat_done':
           if (voiceActiveRef.current || voiceOn) {
             setStreaming(null)
+            // The voice branch used to trust say_end to fold the turn in, but
+            // non-voice producers (game table talk, …) have no say_end — pull
+            // the log now or those lines never appear.
+            void refresh()
             break
           }
           // Hold the finished text until the polled log catches up with it,
@@ -326,13 +403,12 @@ export default function Conversation() {
 
   // The pending echo is a stand-in until the hub's log includes the message.
   // Keeping it past that point re-appends it as a ghost copy the moment the
-  // log moves on to Rau's reply.
+  // log moves on to Rau's reply. Only a match after the anchor counts: an
+  // older identical line is a different message, and must not swallow this
+  // one's echo.
   useEffect(() => {
     if (!pending) return
-    const echoed = log.some(
-      (m) => m?.role === 'user' && String(m.text || '') === pending.text,
-    )
-    if (echoed) setPending(null)
+    if (pendingEchoed(log, pending)) setPending(null)
   }, [log, pending])
 
   // The pending echo disappears once the hub's log has caught up with it.
@@ -368,6 +444,20 @@ export default function Conversation() {
     return text
   }, [voiceOn, voice.spokenText, voice.phase, streaming, log])
 
+  // Your own line as the mic hears it, before the hub logs it — the same
+  // transcript the room's voice HUD shows. Only while the turn it belongs to
+  // is in play: finalText outlives its turn, and an old transcript is not a
+  // new message. Once the log holds the line it renders itself.
+  const voiceLine = useMemo(() => {
+    if (!voiceOn || voice.phase === 'idle') return ''
+    const heard = (voice.partial || voice.finalText).trim()
+    if (!heard) return ''
+    const lastUser = log.map((m) => m?.role).lastIndexOf('user')
+    if (lastUser >= 0 && String(log[lastUser]?.text || '').trim() === heard) return ''
+    if (pending?.text.trim() === heard) return ''
+    return heard
+  }, [voiceOn, voice.phase, voice.partial, voice.finalText, log, pending])
+
   // Track whether the reader is at the bottom; scrolling up to reread must
   // not be yanked back down by the next poll.
   useEffect(() => {
@@ -388,7 +478,7 @@ export default function Conversation() {
     requestAnimationFrame(() => {
       thread.scrollTop = thread.scrollHeight
     })
-  }, [displayLog, sending, liveReply])
+  }, [displayLog, sending, liveReply, voiceLine])
 
   // Grow the composer with its content instead of scrolling a one-line box.
   useEffect(() => {
@@ -416,22 +506,14 @@ export default function Conversation() {
     // live bubble tracks playback, not chat_delta.
     if (voiceOn && voice.connected) {
       setDraft('')
-      setPending({
-        role: 'user',
-        text,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      })
+      setPending(pendingEchoFor(log, text))
       voice.sendText(text)
       return
     }
 
     setSending(true)
     setDraft('')
-    setPending({
-      role: 'user',
-      text,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    })
+    setPending(pendingEchoFor(log, text))
     try {
       await api.chat(text)
       failsRef.current = 0
@@ -573,6 +655,15 @@ export default function Conversation() {
             </article>
           )
         })}
+        {voiceLine && (
+          <article className="convo-msg user is-streaming">
+            <div className="meta">
+              <span className="who">You</span>
+              <span className="time">now</span>
+            </div>
+            <ChatMarkdown text={voiceLine} />
+          </article>
+        )}
         {liveReply && (
           <article className="convo-msg rau is-streaming">
             <div className="meta">
@@ -614,6 +705,11 @@ export default function Conversation() {
           {sendError && (
             <p className="compose-error" role="alert">
               {sendError}
+            </p>
+          )}
+          {voiceOn && voice.error && (
+            <p className="compose-error" role="alert">
+              {voice.error}
             </p>
           )}
           {activeSlash && (
