@@ -213,8 +213,9 @@ class VoicePreviewIn(BaseModel):
         min_length=1,
         max_length=240,
     )
+    provider: str = Field(default="elevenlabs", pattern="^(elevenlabs|cartesia)$")
     voice_id: str = Field(min_length=3, max_length=128)
-    model: str = Field(default="eleven_flash_v2_5", min_length=3, max_length=128)
+    model: str = Field(default="", max_length=128)
     effect: str = Field(default="none", pattern="^(none|robot|childlike)$")
     voice_settings: Dict[str, Any] = Field(
         default_factory=lambda: {
@@ -742,6 +743,12 @@ def api_voice_status():
 
     provider, slot = resolve_stt()
     meta = STT_PROVIDERS.get(provider) or {}
+    models = load_models()
+    tts = models.get("tts") or {}
+    tts_provider = str(tts.get("provider") or "elevenlabs")
+    tts_env = (
+        "CARTESIA_API_KEY" if tts_provider == "cartesia" else "ELEVENLABS_API_KEY"
+    )
     return {
         "stt": {
             "provider": provider,
@@ -755,30 +762,40 @@ def api_voice_status():
             "reason": slot.get("_reason") or "",
         },
         "available": available_stt(),
-        "tts_ready": has_secret("ELEVENLABS_API_KEY"),
+        "tts_ready": has_secret(tts_env),
         "tts": {
-            "voice_id": (load_models().get("tts") or {}).get("voice_id") or "",
-            "preset": (load_models().get("tts") or {}).get("preset") or "",
-            "effect": (load_models().get("tts") or {}).get("effect") or "none",
+            "provider": tts_provider,
+            "voice_id": tts.get("voice_id") or "",
+            "model": tts.get("model") or "",
+            "preset": tts.get("preset") or "",
+            "effect": tts.get("effect") or "none",
         },
     }
 
 
 @app.get("/api/voice/voices")
-def api_voice_voices():
-    """Voices visible to the saved ElevenLabs key, including user-created ones."""
-    if not has_secret("ELEVENLABS_API_KEY"):
+def api_voice_voices(provider: str = "elevenlabs"):
+    """Voices visible to the selected provider key."""
+    if provider not in ("elevenlabs", "cartesia"):
         return JSONResponse(
-            {"ok": False, "error": "Connect an ElevenLabs API key first."},
+            {"ok": False, "error": "Unsupported TTS provider."}, status_code=400
+        )
+    env_name = (
+        "CARTESIA_API_KEY" if provider == "cartesia" else "ELEVENLABS_API_KEY"
+    )
+    label = "Cartesia" if provider == "cartesia" else "ElevenLabs"
+    if not has_secret(env_name):
+        return JSONResponse(
+            {"ok": False, "error": f"Connect a {label} API key first."},
             status_code=409,
         )
     try:
-        from rau.voice.elevenlabs_api import list_voices
+        from rau.voice.tts_api import list_voices
 
-        return {"ok": True, "voices": list_voices()}
+        return {"ok": True, "voices": list_voices(provider)}
     except Exception as exc:  # noqa: BLE001 — provider detail belongs in settings
         return JSONResponse(
-            {"ok": False, "error": f"Could not load ElevenLabs voices: {str(exc)[:300]}"},
+            {"ok": False, "error": f"Could not load {label} voices: {str(exc)[:300]}"},
             status_code=502,
         )
 
@@ -786,9 +803,15 @@ def api_voice_voices():
 @app.post("/api/voice/preview")
 def api_voice_preview(body: VoicePreviewIn):
     """Synthesize a short sample using the exact pending settings."""
-    if not has_secret("ELEVENLABS_API_KEY"):
+    env_name = (
+        "CARTESIA_API_KEY"
+        if body.provider == "cartesia"
+        else "ELEVENLABS_API_KEY"
+    )
+    label = "Cartesia" if body.provider == "cartesia" else "ElevenLabs"
+    if not has_secret(env_name):
         return JSONResponse(
-            {"ok": False, "error": "Connect an ElevenLabs API key first."},
+            {"ok": False, "error": f"Connect a {label} API key first."},
             status_code=409,
         )
     text = body.text.strip()
@@ -800,19 +823,23 @@ def api_voice_preview(body: VoicePreviewIn):
         # Apply the same validation as persisted settings without modifying the
         # user's models.json.
         cfg = load_models()
+        model = body.model.strip() or (
+            "sonic-3.5" if body.provider == "cartesia" else "eleven_flash_v2_5"
+        )
         cfg["tts"] = {
-            "provider": "elevenlabs",
+            "provider": body.provider,
             "voice_id": body.voice_id,
-            "model": body.model,
+            "model": model,
             "preset": "preview",
             "effect": body.effect,
             "voice_settings": body.voice_settings,
         }
         from rau.providers.registry import _validated_models
-        from rau.voice.elevenlabs_api import render_preview
+        from rau.voice.tts_api import render_preview
 
         checked = _validated_models(cfg)["tts"]
         wav = render_preview(
+            provider=str(checked["provider"]),
             text=text,
             voice_id=str(checked["voice_id"]),
             model=str(checked["model"]),
@@ -984,7 +1011,7 @@ def api_setup_state():
         "identity_ready": bool(identity.get("ready")),
         "brains_ready": brains_ready,
         "models_ready": models_ready,
-        "voice_ready": "elevenlabs" in configured,
+        "voice_ready": bool({"elevenlabs", "cartesia"} & configured),
         "apps_ready": "composio" in configured,
         "complete": bool(identity.get("ready")) and brains_ready and models_ready,
         "configured": sorted(configured),

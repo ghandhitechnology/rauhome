@@ -35,7 +35,13 @@ function loadDraft(): Draft {
     const raw = localStorage.getItem(DRAFT_KEY)
     if (!raw) return EMPTY_DRAFT
     const parsed = JSON.parse(raw)
-    return { ...EMPTY_DRAFT, ...parsed, slots: { ...EMPTY_DRAFT.slots, ...(parsed.slots || {}) } }
+    return {
+      ...EMPTY_DRAFT,
+      ...parsed,
+      slots: { ...EMPTY_DRAFT.slots, ...(parsed.slots || {}) },
+      tts: { ...EMPTY_DRAFT.tts, ...(parsed.tts || {}) },
+      stt: { ...EMPTY_DRAFT.stt, ...(parsed.stt || {}) },
+    }
   } catch {
     return EMPTY_DRAFT
   }
@@ -76,6 +82,7 @@ export default function Setup({ onDone }: { onDone: () => void }) {
           if (s.models?.tts) {
             next.tts = {
               ...next.tts,
+              provider: s.models.tts.provider || next.tts.provider,
               voice_id: s.models.tts.voice_id || next.tts.voice_id,
               model: s.models.tts.model || next.tts.model,
               preset: s.models.tts.preset || next.tts.preset,

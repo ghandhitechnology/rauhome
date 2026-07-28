@@ -25,6 +25,7 @@ cd web && npm install && npm run build && cd ..
 # .env in repo root (examples):
 #   OPENROUTER_API_KEY=...
 #   ELEVENLABS_API_KEY=...
+#   CARTESIA_API_KEY=...       # optional Sonic 3.5 alternative
 #   COMPOSIO_API_KEY=...
 #   DEEPSEEK_API_KEY=...
 #   KIMI_API_KEY=...           # Moonshot platform (pay-as-you-go)
@@ -79,8 +80,9 @@ Browser speakers ◀─(PCM16 24k)─ sentence TTS ◀──────┘
 
 Speech-to-text is a pluggable slot (Deepgram, ElevenLabs Scribe, OpenAI, or
 local whisper). Automatic mode prefers the lowest-latency connected backend.
-ElevenLabs speaking includes Robotic, Grandfather, Girlfriend, and Childlike
-presets plus every voice available to the user's own key — see
+Speaking can use ElevenLabs or Cartesia Sonic 3.5. ElevenLabs includes
+Robotic, Grandfather, Girlfriend, and Childlike presets; both providers expose
+the voices available to the user's own key — see
 **Settings → Voice / Hearing** and [SETUP.md](SETUP.md).
 
 ### Always-available skills

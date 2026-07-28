@@ -321,6 +321,27 @@ TTS_MODELS: List[Dict[str, str]] = [
     {"id": "eleven_multilingual_v2", "label": "Multilingual v2", "note": "highest quality"},
 ]
 
+TTS_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "elevenlabs": {
+        "label": "ElevenLabs",
+        "blurb": "Expressive speech with account voices and the four built-in personalities.",
+        "auth": "elevenlabs",
+        "models": TTS_MODELS,
+    },
+    "cartesia": {
+        "label": "Cartesia",
+        "blurb": "Sonic 3.5 speech with a persistent low-latency streaming connection.",
+        "auth": "cartesia",
+        "models": [
+            {
+                "id": "sonic-3.5",
+                "label": "Sonic 3.5",
+                "note": "latest low-latency model",
+            }
+        ],
+    },
+}
+
 # ── speech-to-text ────────────────────────────────────────────────────
 # `partials` drives whether the UI promises a live transcript. Only Deepgram
 # streams interim results; the rest cannot return anything until you stop
@@ -592,6 +613,7 @@ def catalog() -> Dict[str, Any]:
         "voice_presets": VOICE_PRESETS,
         "voice_effects": VOICE_EFFECTS,
         "tts_models": TTS_MODELS,
+        "tts_providers": TTS_PROVIDERS,
         "stt_providers": STT_PROVIDERS,
         "browse_providers": BROWSE_PROVIDERS,
     }

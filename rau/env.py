@@ -54,7 +54,14 @@ AUTH_SLOTS: List[Dict[str, str]] = [
         "label": "ElevenLabs",
         "env": "ELEVENLABS_API_KEY",
         "docs_url": "https://elevenlabs.io/app/settings/api-keys",
-        "help": "Voice TTS. Required for spoken replies.",
+        "help": "Text-to-speech and optional Scribe speech-to-text.",
+    },
+    {
+        "id": "cartesia",
+        "label": "Cartesia",
+        "env": "CARTESIA_API_KEY",
+        "docs_url": "https://play.cartesia.ai/keys",
+        "help": "Low-latency Sonic 3.5 text-to-speech.",
     },
     {
         "id": "deepgram",

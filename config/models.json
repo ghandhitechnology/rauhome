@@ -1,7 +1,7 @@
 {
   "face": {
     "provider": "openrouter",
-    "model": "z-ai/glm-5.2",
+    "model": "google/gemini-3.6-flash",
     "max_tokens": 4090,
     "temperature": 0.9,
     "effort": "high"
@@ -28,11 +28,11 @@
     "effort": "high"
   },
   "tts": {
-    "provider": "elevenlabs",
-    "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
-    "model": "eleven_flash_v2_5",
-    "preset": "robotic",
-    "effect": "robot",
+    "provider": "cartesia",
+    "voice_id": "e1717dc3-b87b-4720-aa7f-b6db290e0609",
+    "model": "sonic-3.5",
+    "preset": "custom",
+    "effect": "none",
     "voice_settings": {
       "stability": 0.72,
       "similarity_boost": 0.72,
@@ -44,7 +44,7 @@
   "stt": {
     "provider": "deepgram",
     "model": "nova-3",
-    "language": "en"
+    "language": "ko"
   },
   "browse": {
     "provider": "firecrawl"

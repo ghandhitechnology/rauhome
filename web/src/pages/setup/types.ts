@@ -20,6 +20,7 @@ export type Draft = {
   backstory: string
   slots: Record<'face' | 'subagent' | 'dream', SlotDraft>
   tts: {
+    provider: 'elevenlabs' | 'cartesia'
     voice_id: string
     model: string
     preset: string
@@ -57,6 +58,7 @@ export const EMPTY_DRAFT: Draft = {
     dream: { provider: '', model: '' },
   },
   tts: {
+    provider: 'elevenlabs',
     voice_id: 'TX3LPaxmHKxFdv7VOQHJ',
     model: 'eleven_flash_v2_5',
     preset: 'robotic',

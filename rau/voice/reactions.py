@@ -162,8 +162,10 @@ class _Bag:
         return None
 
 
-def _cache_key(text: str, voice_id: str, model: str, effect: str) -> str:
-    raw = "\x1f".join([text, voice_id, model, effect]).encode("utf-8")
+def _cache_key(
+    text: str, provider: str, voice_id: str, model: str, effect: str
+) -> str:
+    raw = "\x1f".join([text, provider, voice_id, model, effect]).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:20]
 
 
@@ -172,10 +174,11 @@ class _Voice:
     voice_id: str
     model: str
     effect: str
+    provider: str = "elevenlabs"
 
     @property
     def token(self) -> str:
-        return f"{self.voice_id}|{self.model}|{self.effect}"
+        return f"{self.provider}|{self.voice_id}|{self.model}|{self.effect}"
 
 
 class ReactionPool:
@@ -226,9 +229,14 @@ class ReactionPool:
         from rau.voice.tts_stream import DEFAULT_TTS_MODEL, DEFAULT_VOICE_ID
 
         slot = get_slot("tts") or {}
+        provider = str(slot.get("provider") or "elevenlabs")
         return _Voice(
+            provider=provider,
             voice_id=str(slot.get("voice_id") or DEFAULT_VOICE_ID),
-            model=str(slot.get("model") or DEFAULT_TTS_MODEL),
+            model=str(
+                slot.get("model")
+                or ("sonic-3.5" if provider == "cartesia" else DEFAULT_TTS_MODEL)
+            ),
             effect=str(slot.get("effect") or "robot"),
         )
 
@@ -279,7 +287,9 @@ class ReactionPool:
         return pcm
 
     def _path(self, text: str, voice: _Voice) -> Path:
-        return CACHE_DIR / f"{_cache_key(text, voice.voice_id, voice.model, voice.effect)}.pcm"
+        return CACHE_DIR / (
+            f"{_cache_key(text, voice.provider, voice.voice_id, voice.model, voice.effect)}.pcm"
+        )
 
     def _load_from_disk(self, text: str, voice: _Voice) -> Optional[bytes]:
         try:
@@ -319,6 +329,7 @@ class ReactionPool:
             parts = bytearray()
             for chunk in synth_sentence(
                 text,
+                provider=voice.provider,
                 voice_id=voice.voice_id,
                 model=voice.model,
                 voice_settings=(get_slot("tts") or {}).get("voice_settings"),

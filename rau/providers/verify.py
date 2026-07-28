@@ -111,6 +111,22 @@ def _verify_elevenlabs(key: str) -> Dict[str, Any]:
     return {"ok": True, "detail": detail, "models": []}
 
 
+def _verify_cartesia(key: str) -> Dict[str, Any]:
+    body = _get_json(
+        "https://api.cartesia.ai/voices?limit=1",
+        {
+            "Authorization": f"Bearer {key}",
+            "Cartesia-Version": "2026-03-01",
+            "Accept": "application/json",
+        },
+    )
+    voices = body.get("data") or []
+    detail = "authenticated"
+    if voices:
+        detail += " · voices available"
+    return {"ok": True, "detail": detail, "models": ["sonic-3.5"]}
+
+
 def _verify_composio(key: str) -> Dict[str, Any]:
     # Composio's API surface moves around; treat a saved key as configured and
     # let the Connect flow report the real state.
@@ -173,6 +189,8 @@ def verify(slot_id: str, key: Optional[str] = None) -> Dict[str, Any]:
             result = _verify_kimi_code(secret)
         elif slot_id == "elevenlabs":
             result = _verify_elevenlabs(secret)
+        elif slot_id == "cartesia":
+            result = _verify_cartesia(secret)
         elif slot_id == "deepgram":
             from rau.voice.stt.deepgram import probe_key
 
