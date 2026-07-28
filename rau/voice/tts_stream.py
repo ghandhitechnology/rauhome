@@ -31,6 +31,8 @@ log = logging.getLogger("rau.voice.tts")
 
 DEFAULT_VOICE_ID = "TX3LPaxmHKxFdv7VOQHJ"
 DEFAULT_TTS_MODEL = "eleven_flash_v2_5"
+DEFAULT_TTS_PROVIDER = "elevenlabs"
+CARTESIA_TTS_MODEL = "sonic-3.5"
 
 # A healthy warm ElevenLabs socket normally produces audio well inside this
 # window.  Without a deadline, a rejected/malformed context can leave a Voice
@@ -326,8 +328,10 @@ _el_client = None
 _el_client_lock = threading.Lock()
 
 
-def _client():
+def _client(provider: str = DEFAULT_TTS_PROVIDER):
     """Reuse one ElevenLabs client across speaks (TLS/setup off the hot path)."""
+    if provider != "elevenlabs":
+        return None
     global _el_client
     with _el_client_lock:
         if _el_client is None:
@@ -343,8 +347,7 @@ def _client():
 def warmup() -> bool:
     """Touch the client and fire a tiny synth so the first real speak is warm."""
     try:
-        client = _client()
-        for _ in synth_sentence("warm", client=client):
+        for _ in synth_sentence("warm"):
             break
         return True
     except Exception:
@@ -370,6 +373,7 @@ def synth_sentence(
     text: str,
     *,
     client: Any = None,
+    provider: str = "",
     voice_id: str = "",
     model: str = "",
     voice_settings: Optional[Dict[str, Any]] = None,
@@ -379,19 +383,57 @@ def synth_sentence(
     spoken = normalize_for_tts(text)
     if not spoken:
         return
-    slot = get_slot("tts") if not voice_id or not model else {}
-    c = client or _client()
+    slot = get_slot("tts") if not provider or not voice_id or not model else {}
+    selected_provider = str(provider or slot.get("provider") or DEFAULT_TTS_PROVIDER)
+    selected_voice = str(voice_id or slot.get("voice_id") or DEFAULT_VOICE_ID)
+    selected_model = str(
+        model
+        or slot.get("model")
+        or (CARTESIA_TTS_MODEL if selected_provider == "cartesia" else DEFAULT_TTS_MODEL)
+    )
+    selected_settings = (
+        voice_settings if voice_settings is not None else slot.get("voice_settings")
+    ) or {}
+    if selected_provider == "cartesia":
+        from rau.voice.cartesia_api import stream_audio
+
+        emitted = 0
+        stream = stream_audio(
+            text=spoken,
+            voice_id=selected_voice,
+            model=selected_model,
+            speed=float(selected_settings.get("speed", 1.0)),
+        )
+        try:
+            for chunk in stream:
+                if cancel is not None and cancel.is_set():
+                    return
+                if not isinstance(chunk, bytes):
+                    raise TypeError("TTS provider returned a non-bytes audio chunk")
+                if len(chunk) % 2:
+                    raise RuntimeError("TTS provider returned incomplete PCM16 audio")
+                emitted += len(chunk)
+                if emitted > MAX_SENTENCE_PCM_BYTES:
+                    raise RuntimeError("TTS sentence audio exceeded two minutes")
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+        return
+    if selected_provider != "elevenlabs":
+        raise RuntimeError(f"Unsupported TTS provider: {selected_provider}")
+
+    c = client or _client(selected_provider)
     request: Dict[str, Any] = {
-        "voice_id": voice_id or slot.get("voice_id") or DEFAULT_VOICE_ID,
+        "voice_id": selected_voice,
         "text": spoken,
-        "model_id": model or slot.get("model") or DEFAULT_TTS_MODEL,
+        "model_id": selected_model,
         "output_format": "pcm_24000",
     }
-    selected_settings = _sdk_voice_settings(
-        voice_settings if voice_settings is not None else slot.get("voice_settings")
-    )
-    if selected_settings is not None:
-        request["voice_settings"] = selected_settings
+    sdk_settings = _sdk_voice_settings(selected_settings)
+    if sdk_settings is not None:
+        request["voice_settings"] = sdk_settings
     stream = c.text_to_speech.stream(**request)
     emitted = 0
     try:
@@ -452,6 +494,7 @@ def synth_sentence_timed(
     text: str,
     *,
     client: Any = None,
+    provider: str = "",
     voice_id: str = "",
     model: str = "",
     voice_settings: Optional[Dict[str, Any]] = None,
@@ -467,8 +510,22 @@ def synth_sentence_timed(
     spoken = normalize_for_tts(text)
     if not spoken:
         return
-    slot = get_slot("tts") if not voice_id or not model else {}
-    c = client or _client()
+    slot = get_slot("tts") if not provider or not voice_id or not model else {}
+    selected_provider = str(provider or slot.get("provider") or DEFAULT_TTS_PROVIDER)
+    if selected_provider == "cartesia":
+        for chunk in synth_sentence(
+            spoken,
+            provider=selected_provider,
+            voice_id=voice_id,
+            model=model,
+            voice_settings=voice_settings
+            if voice_settings is not None
+            else slot.get("voice_settings"),
+            cancel=cancel,
+        ):
+            yield chunk, None
+        return
+    c = client or _client(selected_provider)
     vid = voice_id or slot.get("voice_id") or DEFAULT_VOICE_ID
     mid = model or slot.get("model") or DEFAULT_TTS_MODEL
 
@@ -528,6 +585,7 @@ def synth_sentence_timed(
     for chunk in synth_sentence(
         spoken,
         client=c,
+        provider=selected_provider,
         voice_id=vid,
         model=mid,
         voice_settings=voice_settings
@@ -651,10 +709,16 @@ def speak_stream(
     body cues to playback.
     """
     buf = SentenceBuffer()
-    client = _client()
     slot = get_slot("tts")
+    provider = str(slot.get("provider") or DEFAULT_TTS_PROVIDER)
+    # Keep the no-argument call for compatibility with injected ElevenLabs
+    # clients in tests and local extensions.
+    client = None if provider == "cartesia" else _client()
     voice_id = str(slot.get("voice_id") or DEFAULT_VOICE_ID)
-    model = str(slot.get("model") or DEFAULT_TTS_MODEL)
+    model = str(
+        slot.get("model")
+        or (CARTESIA_TTS_MODEL if provider == "cartesia" else DEFAULT_TTS_MODEL)
+    )
     effect = str(slot.get("effect") or "none")
     if robot is True:
         effect = "robot"
@@ -685,6 +749,7 @@ def speak_stream(
             for chunk, alignment in synth_sentence_timed(
                 sentence,
                 client=client,
+                provider=provider,
                 voice_id=voice_id,
                 model=model,
                 voice_settings=voice_settings,
@@ -706,6 +771,7 @@ def speak_stream(
         for chunk, alignment in synth_sentence_timed(
             sentence,
             client=client,
+            provider=provider,
             voice_id=voice_id,
             model=model,
             voice_settings=voice_settings,
@@ -789,20 +855,48 @@ def _realtime_provider_error(item: Dict[str, Any]) -> Optional[RuntimeError]:
 
 
 class RealtimeTtsSession:
-    """One persistent ElevenLabs multi-context socket per browser Voice session."""
+    """One provider-aware, persistent multi-context socket per Voice session."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._send_lock = threading.Lock()
         self._connect_lock = threading.Lock()
         self._ws = None
-        self._signature: Optional[Tuple[str, str]] = None
+        self._provider = DEFAULT_TTS_PROVIDER
+        self._signature: Optional[Tuple[str, str, str]] = None
         self._contexts: Dict[str, Tuple[Any, "queue.Queue[object]"]] = {}
+        self._context_cfg: Dict[str, Dict[str, Any]] = {}
         self._finishing: set[str] = set()
         self._receiver: Optional[threading.Thread] = None
 
-    def _connect(self, voice_id: str, model: str):
+    def _connect(
+        self,
+        voice_id: str,
+        model: str,
+        provider: str = DEFAULT_TTS_PROVIDER,
+    ):
         from websockets.sync.client import connect
+
+        if provider == "cartesia":
+            from rau.voice.cartesia_api import API_VERSION
+
+            key = get_secret("CARTESIA_API_KEY")
+            if not key:
+                raise RuntimeError("CARTESIA_API_KEY not set")
+            return connect(
+                "wss://api.cartesia.ai/tts/websocket",
+                additional_headers={
+                    "X-API-Key": key,
+                    "Cartesia-Version": API_VERSION,
+                },
+                open_timeout=6,
+                close_timeout=2,
+                ping_interval=15,
+                ping_timeout=10,
+                max_size=4 * 1024 * 1024,
+            )
+        if provider != "elevenlabs":
+            raise RuntimeError(f"Unsupported TTS provider: {provider}")
 
         key = get_secret("ELEVENLABS_API_KEY")
         if not key:
@@ -834,16 +928,22 @@ class RealtimeTtsSession:
             max_size=4 * 1024 * 1024,
         )
 
-    def ensure(self, voice_id: str, model: str) -> None:
-        signature = (voice_id, model)
+    def ensure(
+        self,
+        voice_id: str,
+        model: str,
+        provider: str = DEFAULT_TTS_PROVIDER,
+    ) -> None:
+        signature = (provider, voice_id, model)
         with self._connect_lock:
             with self._lock:
                 if self._ws is not None and self._signature == signature:
                     return
             self._close_current()
-            ws = self._connect(voice_id, model)
+            ws = self._connect(voice_id, model, provider)
             with self._lock:
                 self._ws = ws
+                self._provider = provider
                 self._signature = signature
                 self._receiver = threading.Thread(
                     target=self._receive,
@@ -855,9 +955,14 @@ class RealtimeTtsSession:
 
     def warm(self) -> None:
         slot = get_slot("tts")
+        provider = str(slot.get("provider") or DEFAULT_TTS_PROVIDER)
         self.ensure(
             str(slot.get("voice_id") or DEFAULT_VOICE_ID),
-            str(slot.get("model") or DEFAULT_TTS_MODEL),
+            str(
+                slot.get("model")
+                or (CARTESIA_TTS_MODEL if provider == "cartesia" else DEFAULT_TTS_MODEL)
+            ),
+            provider,
         )
 
     def _receive(self, ws) -> None:
@@ -907,6 +1012,8 @@ class RealtimeTtsSession:
                     if pair[0] is ws
                 ]
                 contexts = [self._contexts.pop(context_id)[1] for context_id in dead]
+                for context_id in dead:
+                    self._context_cfg.pop(context_id, None)
                 self._finishing.difference_update(dead)
             terminal = failure or RuntimeError("real-time TTS socket closed")
             for out in contexts:
@@ -937,8 +1044,9 @@ class RealtimeTtsSession:
         voice_id: str,
         model: str,
         voice_settings: Dict[str, Any],
+        provider: str = DEFAULT_TTS_PROVIDER,
     ) -> "queue.Queue[object]":
-        self.ensure(voice_id, model)
+        self.ensure(voice_id, model, provider)
         out: "queue.Queue[object]" = queue.Queue()
         with self._lock:
             ws = self._ws
@@ -946,6 +1054,14 @@ class RealtimeTtsSession:
                 raise RuntimeError("real-time TTS socket is unavailable")
             self._finishing.discard(context_id)
             self._contexts[context_id] = (ws, out)
+            self._context_cfg[context_id] = {
+                "provider": provider,
+                "voice_id": voice_id,
+                "model": model,
+                "voice_settings": dict(voice_settings or {}),
+            }
+        if provider == "cartesia":
+            return out
         initial: Dict[str, Any] = {"context_id": context_id, "text": " "}
         if voice_settings:
             initial["voice_settings"] = voice_settings
@@ -958,12 +1074,40 @@ class RealtimeTtsSession:
         return out
 
     def text(self, context_id: str, text: str, *, flush: bool = False) -> None:
+        cfg = self._context_cfg.get(context_id) or {}
+        if cfg.get("provider") == "cartesia":
+            settings = cfg.get("voice_settings") or {}
+            payload: Dict[str, Any] = {
+                "model_id": cfg.get("model") or CARTESIA_TTS_MODEL,
+                "transcript": text,
+                "voice": {"mode": "id", "id": cfg.get("voice_id")},
+                "context_id": context_id,
+                "output_format": {
+                    "container": "raw",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": SR,
+                },
+                "continue": True,
+                # Rau already buffers to natural sentence/clause boundaries.
+                "max_buffer_delay_ms": 0,
+                "generation_config": {
+                    "speed": float(settings.get("speed", 1.0))
+                },
+            }
+            if flush:
+                payload["flush"] = True
+            self._send(payload, socket=self._context_socket(context_id))
+            return
         payload: Dict[str, Any] = {"context_id": context_id, "text": text}
         if flush:
             payload["flush"] = True
         self._send(payload, socket=self._context_socket(context_id))
 
     def flush_context(self, context_id: str) -> None:
+        cfg = self._context_cfg.get(context_id) or {}
+        if cfg.get("provider") == "cartesia":
+            self.text(context_id, "", flush=True)
+            return
         self._send(
             {"context_id": context_id, "flush": True},
             socket=self._context_socket(context_id),
@@ -980,10 +1124,32 @@ class RealtimeTtsSession:
         frame has been consumed.
         """
         socket = self._context_socket(context_id)
-        self._send(
-            {"context_id": context_id, "close_context": True},
-            socket=socket,
-        )
+        cfg = self._context_cfg.get(context_id) or {}
+        if cfg.get("provider") == "cartesia":
+            payload = {
+                "model_id": cfg.get("model") or CARTESIA_TTS_MODEL,
+                "transcript": "",
+                "voice": {"mode": "id", "id": cfg.get("voice_id")},
+                "context_id": context_id,
+                "output_format": {
+                    "container": "raw",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": SR,
+                },
+                "continue": False,
+                "max_buffer_delay_ms": 0,
+                "generation_config": {
+                    "speed": float(
+                        (cfg.get("voice_settings") or {}).get("speed", 1.0)
+                    )
+                },
+            }
+            self._send(payload, socket=socket)
+        else:
+            self._send(
+                {"context_id": context_id, "close_context": True},
+                socket=socket,
+            )
         with self._lock:
             pair = self._contexts.get(context_id)
             if pair is not None and pair[0] is socket:
@@ -992,6 +1158,7 @@ class RealtimeTtsSession:
     def close_context(self, context_id: str) -> None:
         with self._lock:
             pair = self._contexts.pop(context_id, None)
+            cfg = self._context_cfg.pop(context_id, {})
             was_finishing = context_id in self._finishing
             self._finishing.discard(context_id)
         if pair is None:
@@ -999,10 +1166,16 @@ class RealtimeTtsSession:
         if was_finishing:
             return
         try:
-            self._send(
-                {"context_id": context_id, "close_context": True},
-                socket=pair[0],
-            )
+            if cfg.get("provider") == "cartesia":
+                self._send(
+                    {"context_id": context_id, "cancel": True},
+                    socket=pair[0],
+                )
+            else:
+                self._send(
+                    {"context_id": context_id, "close_context": True},
+                    socket=pair[0],
+                )
         except Exception:
             pass
 
@@ -1012,11 +1185,12 @@ class RealtimeTtsSession:
             self._signature = None
         if ws is None:
             return
-        try:
-            with self._send_lock:
-                ws.send(json.dumps({"close_socket": True}))
-        except Exception:
-            pass
+        if self._provider == "elevenlabs":
+            try:
+                with self._send_lock:
+                    ws.send(json.dumps({"close_socket": True}))
+            except Exception:
+                pass
         try:
             ws.close()
         except Exception:
@@ -1028,6 +1202,7 @@ class RealtimeTtsSession:
         with self._lock:
             contexts = [pair[1] for pair in self._contexts.values()]
             self._contexts.clear()
+            self._context_cfg.clear()
             self._finishing.clear()
         for out in contexts:
             out.put(RuntimeError("real-time TTS session closed"))
@@ -1047,15 +1222,19 @@ def speak_realtime_stream(
     context_id: str = "turn",
 ) -> Generator[None, None, None]:
     """
-    Feed generated phrases through ElevenLabs' bidirectional TTS WebSocket.
+    Feed generated phrases through the selected provider's TTS WebSocket.
 
     Connection setup happens before the token iterator is consumed, so a
     handshake failure can safely fall back to the established HTTP path.
     Once any audio is emitted, failures surface rather than replaying speech.
     """
     slot = get_slot("tts")
+    provider = str(slot.get("provider") or DEFAULT_TTS_PROVIDER)
     voice_id = str(slot.get("voice_id") or DEFAULT_VOICE_ID)
-    model = str(slot.get("model") or DEFAULT_TTS_MODEL)
+    model = str(
+        slot.get("model")
+        or (CARTESIA_TTS_MODEL if provider == "cartesia" else DEFAULT_TTS_MODEL)
+    )
     effect = str(slot.get("effect") or "none")
     voice_settings = dict(slot.get("voice_settings") or {})
     owned_session = session is None
@@ -1068,6 +1247,7 @@ def speak_realtime_stream(
             voice_id=voice_id,
             model=model,
             voice_settings=voice_settings,
+            provider=provider,
         )
     except Exception as exc:
         log.warning(
@@ -1129,7 +1309,9 @@ def speak_realtime_stream(
                 send_phrase(tail)
             if not fallback_mode.is_set():
                 realtime.flush_context(context_id)
-                realtime.finish_context(context_id)
+                finish = getattr(realtime, "finish_context", None)
+                if callable(finish):
+                    finish(context_id)
         except BaseException as exc:  # delivered to the receiver thread below
             if not fallback_mode.is_set():
                 sender_error.append(exc)
@@ -1220,7 +1402,7 @@ def speak_realtime_stream(
             item = raw
             if not isinstance(item, dict):
                 continue
-            encoded = item.get("audio")
+            encoded = item.get("audio") or item.get("data")
             pcm = base64.b64decode(encoded) if isinstance(encoded, str) and encoded else b""
             alignment = _ws_alignment(item)
 
@@ -1277,7 +1459,24 @@ def speak_realtime_stream(
                         finish_current(timing_sent=True)
                     else:
                         finish_current()
-            if item.get("isFinal") or item.get("is_final"):
+            if item.get("flush_done") and current:
+                if fx is not None:
+                    rendered = fx.flush()
+                    rendered_bytes = sum(len(chunk) for chunk in rendered)
+                    if collector is not None and on_timing and rendered_bytes:
+                        on_timing(
+                            collector.finish(bytes_duration_ms(rendered_bytes))
+                        )
+                    for chunk in rendered:
+                        current_bytes += len(chunk)
+                        emitted = True
+                        on_audio(chunk)
+                        yield None
+                    fx = StreamingRobotVoice(effect)
+                    finish_current(timing_sent=True)
+                else:
+                    finish_current()
+            if item.get("isFinal") or item.get("is_final") or item.get("done") is True:
                 if first_phrase_sent_at and not received_audio:
                     # A syntactically successful context with no PCM is still
                     # a failed speech turn. Because nothing reached playback,

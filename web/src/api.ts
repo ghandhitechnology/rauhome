@@ -41,7 +41,7 @@ export type VoicePreset = {
   settings: VoiceSettings
 }
 
-export type ElevenVoice = {
+export type TtsVoice = {
   id: string
   label: string
   category: string
@@ -168,6 +168,10 @@ export type Catalog = {
   voice_presets: VoicePreset[]
   voice_effects: CatalogModel[]
   tts_models: { id: string; label: string; note?: string }[]
+  tts_providers: Record<
+    string,
+    { label: string; blurb: string; auth: string; models: CatalogModel[] }
+  >
   stt_providers: Record<string, SttProviderMeta>
   browse_providers: Record<string, BrowseProviderMeta>
 }
@@ -186,7 +190,13 @@ export type VoiceStatus = {
   }
   available: Record<string, boolean>
   tts_ready: boolean
-  tts: { voice_id: string; preset: string; effect: string }
+  tts: {
+    provider: 'elevenlabs' | 'cartesia'
+    voice_id: string
+    model: string
+    preset: string
+    effect: string
+  }
 }
 
 export type HealthStatus = {
@@ -301,8 +311,15 @@ export const api = {
   catalog: () => req<Catalog>('/api/models/catalog'),
   voiceStatus: () => req<VoiceStatus>('/api/voice/status'),
   browseStatus: () => req<BrowseStatus>('/api/browse/status'),
-  elevenVoices: () => req<{ ok: boolean; voices: ElevenVoice[] }>('/api/voice/voices'),
+  ttsVoices: (provider: string) =>
+    req<{ ok: boolean; voices: TtsVoice[] }>(
+      `/api/voice/voices?provider=${encodeURIComponent(provider)}`,
+    ),
+  /** Compatibility alias for older callers. */
+  elevenVoices: () =>
+    req<{ ok: boolean; voices: TtsVoice[] }>('/api/voice/voices?provider=elevenlabs'),
   previewVoice: (body: {
+    provider: string
     text?: string
     voice_id: string
     model: string

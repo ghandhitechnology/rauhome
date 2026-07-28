@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type ElevenVoice, type VoicePreset } from '../../api'
+import { api, type TtsVoice, type VoicePreset } from '../../api'
 import AuthCard, { VerifyLine } from '../../components/AuthCard'
 import type { StepProps } from './types'
 
@@ -12,30 +12,33 @@ export default function StepVoice({
   verify,
   setVerify,
 }: StepProps) {
-  const [keys, setKeys] = useState({ elevenlabs: '', deepgram: '' })
+  const [keys, setKeys] = useState({ elevenlabs: '', cartesia: '', deepgram: '' })
   const [busy, setBusy] = useState('')
-  const [voices, setVoices] = useState<ElevenVoice[]>([])
+  const [voices, setVoices] = useState<TtsVoice[]>([])
 
   const providers = state?.providers || []
   const el = providers.find((p) => p.id === 'elevenlabs')
+  const cartesia = providers.find((p) => p.id === 'cartesia')
   const dg = providers.find((p) => p.id === 'deepgram')
+  const selectedAuth = draft.tts.provider === 'cartesia' ? cartesia : el
 
   useEffect(() => {
-    if (!el?.configured) {
+    if (!selectedAuth?.configured) {
       setVoices([])
       return
     }
     api
-      .elevenVoices()
+      .ttsVoices(draft.tts.provider)
       .then((result) => setVoices(result.voices || []))
       .catch(() => setVoices([]))
-  }, [el?.configured])
+  }, [draft.tts.provider, selectedAuth?.configured])
 
-  async function connect(id: 'elevenlabs' | 'deepgram') {
+  async function connect(id: 'elevenlabs' | 'cartesia' | 'deepgram') {
     const key = keys[id].trim()
     if (!key) return
     setBusy(id)
-    setVerify(id, { status: 'checking', detail: `Asking ${id === 'elevenlabs' ? 'ElevenLabs' : 'Deepgram'}…` })
+    const label = id === 'elevenlabs' ? 'ElevenLabs' : id === 'cartesia' ? 'Cartesia' : 'Deepgram'
+    setVerify(id, { status: 'checking', detail: `Asking ${label}…` })
     try {
       const result = await api.verifyAuth(id, key)
       if (!result.ok) {
@@ -58,6 +61,8 @@ export default function StepVoice({
     patch({
       tts: {
         ...draft.tts,
+        provider: 'elevenlabs',
+        model: draft.tts.provider === 'elevenlabs' ? draft.tts.model : 'eleven_flash_v2_5',
         preset: preset.id,
         voice_id: preset.voice_id,
         effect: preset.effect,
@@ -67,7 +72,7 @@ export default function StepVoice({
   }
 
   async function preview() {
-    if (!el?.configured) return
+    if (!selectedAuth?.configured) return
     setBusy('preview')
     try {
       const blob = await api.previewVoice(draft.tts)
@@ -77,13 +82,13 @@ export default function StepVoice({
       audio.addEventListener('error', () => URL.revokeObjectURL(url), { once: true })
       await audio.play()
     } catch (error: any) {
-      setVerify('elevenlabs', { status: 'bad', detail: error?.message || String(error) })
+      setVerify(draft.tts.provider, { status: 'bad', detail: error?.message || String(error) })
     } finally {
       setBusy('')
     }
   }
 
-  function authCard(id: 'elevenlabs' | 'deepgram', label: string, provider: any, help: string) {
+  function authCard(id: 'elevenlabs' | 'cartesia' | 'deepgram', label: string, provider: any, help: string) {
     const check = verify[id] || { status: 'idle' as const }
     return (
       <AuthCard
@@ -140,33 +145,65 @@ export default function StepVoice({
         <p className="eyebrow">Step five — voice</p>
         <h2>Give Rau a voice and ears</h2>
         <p className="step-lede">
-          ElevenLabs speaks. Deepgram hears in real time. You can use either key independently,
-          and automatic hearing always falls back to another connected backend.
+          Choose ElevenLabs or Cartesia Sonic 3.5 for speech. Deepgram hears in real time.
+          Speaking and hearing keys are independent.
         </p>
       </header>
 
       {authCard('elevenlabs', 'ElevenLabs', el, 'Text-to-speech and optional Scribe speech-to-text.')}
+      {authCard('cartesia', 'Cartesia', cartesia, 'Low-latency Sonic 3.5 text-to-speech.')}
 
-      {el?.configured && (
+      {(el?.configured || cartesia?.configured) && (
         <section className="voice-setup-card">
-          <h3>Choose a personality</h3>
-          <div className="voice-preset-grid">
-            {(catalog?.voice_presets || []).map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className={`voice-preset ${draft.tts.preset === preset.id ? 'selected' : ''}`}
-                onClick={() => choosePreset(preset)}
-              >
-                <strong>{preset.label}</strong>
-                <span>{preset.note}</span>
-                <em>{preset.voice_name}</em>
-              </button>
-            ))}
-          </div>
+          <h3>Choose a speaking service and voice</h3>
           <div className="voice-picks">
             <div className="field">
-              <label>Your account voices</label>
+              <label>Speech provider</label>
+              <select
+                value={draft.tts.provider}
+                onChange={(event) => {
+                  const provider = event.target.value as 'elevenlabs' | 'cartesia'
+                  const model = catalog?.tts_providers?.[provider]?.models?.[0]?.id || ''
+                  patch({
+                    tts: {
+                      ...draft.tts,
+                      provider,
+                      model,
+                      preset: 'custom',
+                      voice_id: '',
+                      effect: 'none',
+                    },
+                  })
+                }}
+              >
+                {Object.entries(catalog?.tts_providers || {}).map(([id, meta]) => (
+                  <option key={id} value={id}>
+                    {meta.label}
+                    {providers.some((p) => p.id === meta.auth && p.configured) ? '' : ' (no key)'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {draft.tts.provider === 'elevenlabs' && (
+            <div className="voice-preset-grid">
+              {(catalog?.voice_presets || []).map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={`voice-preset ${draft.tts.preset === preset.id ? 'selected' : ''}`}
+                  onClick={() => choosePreset(preset)}
+                >
+                  <strong>{preset.label}</strong>
+                  <span>{preset.note}</span>
+                  <em>{preset.voice_name}</em>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="voice-picks">
+            <div className="field">
+              <label>{draft.tts.provider === 'cartesia' ? 'Cartesia voices' : 'Your account voices'}</label>
               <select
                 value={voices.some((voice) => voice.id === draft.tts.voice_id) ? draft.tts.voice_id : ''}
                 onChange={(event) =>
@@ -180,7 +217,7 @@ export default function StepVoice({
                   })
                 }
               >
-                <option value="">choose a custom or saved voice…</option>
+                <option value="">choose a voice…</option>
                 {voices.map((voice) => (
                   <option key={voice.id} value={voice.id}>
                     {voice.label}
@@ -211,7 +248,7 @@ export default function StepVoice({
                 value={draft.tts.model}
                 onChange={(event) => patch({ tts: { ...draft.tts, model: event.target.value } })}
               >
-                {(catalog?.tts_models || []).map((model) => (
+                {(catalog?.tts_providers?.[draft.tts.provider]?.models || []).map((model) => (
                   <option key={model.id} value={model.id}>
                     {model.label} — {model.note}
                   </option>
@@ -232,7 +269,14 @@ export default function StepVoice({
               </select>
             </div>
           </div>
-          <button className="btn sm" disabled={busy === 'preview'} onClick={preview}>
+          <p className="step-note subtle">
+            {catalog?.tts_providers?.[draft.tts.provider]?.blurb}
+          </p>
+          <button
+            className="btn sm"
+            disabled={busy === 'preview' || !selectedAuth?.configured || !draft.tts.voice_id}
+            onClick={preview}
+          >
             {busy === 'preview' && <i className="spinner" />}
             {busy === 'preview' ? 'Generating…' : 'Preview this voice'}
           </button>

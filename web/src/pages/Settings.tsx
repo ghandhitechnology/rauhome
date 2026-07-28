@@ -5,7 +5,7 @@ import {
   type AuthProvider,
   type BrowseStatus,
   type Catalog,
-  type ElevenVoice,
+  type TtsVoice,
   type VoicePreset,
   type VoiceStatus,
 } from '../api'
@@ -31,7 +31,7 @@ export default function Settings() {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
   const [dirty, setDirty] = useState(false)
-  const [accountVoices, setAccountVoices] = useState<ElevenVoice[]>([])
+  const [accountVoices, setAccountVoices] = useState<TtsVoice[]>([])
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null)
   const [voiceLoadError, setVoiceLoadError] = useState('')
 
@@ -51,17 +51,18 @@ export default function Settings() {
     setCatalog(c)
     setVoiceStatus(v)
     setBrowseStatus(b)
-    if ((a.providers || []).some((p: AuthProvider) => p.id === 'elevenlabs' && p.configured)) {
-      void loadAccountVoices()
+    const ttsProvider = m.tts?.provider || 'elevenlabs'
+    if ((a.providers || []).some((p: AuthProvider) => p.id === ttsProvider && p.configured)) {
+      void loadAccountVoices(ttsProvider)
     } else {
       setAccountVoices([])
     }
   }
 
-  async function loadAccountVoices() {
+  async function loadAccountVoices(provider = models?.tts?.provider || 'elevenlabs') {
     setVoiceLoadError('')
     try {
-      const result = await api.elevenVoices()
+      const result = await api.ttsVoices(provider)
       setAccountVoices(result.voices || [])
     } catch (e: any) {
       setVoiceLoadError(e?.message || String(e))
@@ -168,8 +169,8 @@ export default function Settings() {
       setAuth(saved.providers || [])
       setDrafts((d) => ({ ...d, [id]: '' }))
       setChecks((c) => ({ ...c, [id]: { status: 'ok', detail: res.detail || 'Connected.' } }))
-      if (id === 'elevenlabs') void loadAccountVoices()
-      if (id === 'elevenlabs' || id === 'deepgram' || id === 'codex') {
+      if (id === models?.tts?.provider) void loadAccountVoices(id)
+      if (id === 'elevenlabs' || id === 'cartesia' || id === 'deepgram' || id === 'codex') {
         api.voiceStatus().then(setVoiceStatus).catch(() => {})
         api.browseStatus().then(setBrowseStatus).catch(() => {})
       }
@@ -202,8 +203,8 @@ export default function Settings() {
       const res = await api.clearAuth(id)
       setAuth(res.providers || [])
       setChecks((c) => ({ ...c, [id]: { status: 'idle' } }))
-      if (id === 'elevenlabs') setAccountVoices([])
-      if (id === 'elevenlabs' || id === 'deepgram' || id === 'codex') {
+      if (id === models?.tts?.provider) setAccountVoices([])
+      if (id === 'elevenlabs' || id === 'cartesia' || id === 'deepgram' || id === 'codex') {
         api.voiceStatus().then(setVoiceStatus).catch(() => {})
         api.browseStatus().then(setBrowseStatus).catch(() => {})
       }
@@ -226,6 +227,10 @@ export default function Settings() {
       tts: {
         ...prev.tts,
         provider: 'elevenlabs',
+        model:
+          prev.tts?.provider === 'elevenlabs'
+            ? prev.tts?.model
+            : catalog?.tts_providers?.elevenlabs?.models?.[0]?.id || 'eleven_flash_v2_5',
         preset: preset.id,
         voice_id: preset.voice_id,
         effect: preset.effect,
@@ -240,12 +245,30 @@ export default function Settings() {
       ...prev,
       tts: {
         ...prev.tts,
-        provider: 'elevenlabs',
         preset: 'custom',
         voice_id: voiceId,
         effect: 'none',
       },
     }))
+  }
+
+  function chooseTtsProvider(provider: string) {
+    const firstModel = catalog?.tts_providers?.[provider]?.models?.[0]?.id || ''
+    setDirty(true)
+    setAccountVoices([])
+    setVoiceLoadError('')
+    setModels((prev: any) => ({
+      ...prev,
+      tts: {
+        ...prev.tts,
+        provider,
+        model: firstModel,
+        voice_id: '',
+        preset: 'custom',
+        effect: 'none',
+      },
+    }))
+    if (configured.has(provider)) void loadAccountVoices(provider)
   }
 
   async function previewVoice() {
@@ -257,6 +280,7 @@ export default function Settings() {
     setBusy('voice-preview')
     try {
       const blob = await api.previewVoice({
+        provider: tts.provider || 'elevenlabs',
         voice_id: tts.voice_id,
         model: tts.model,
         effect: tts.effect || 'none',
@@ -401,46 +425,72 @@ export default function Settings() {
           <div className="slot-title">
             <h3>Voice</h3>
             <span className="slot-note">
-              Four ready-made personalities, or any ElevenLabs voice your key can access.
+              Choose ElevenLabs or Cartesia Sonic 3.5, then select any voice your key can access.
             </span>
           </div>
 
-          {!configured.has('elevenlabs') && (
+          {!configured.has(models.tts?.provider || 'elevenlabs') && (
             <div className="notice bad voice-connect-note">
-              ElevenLabs is not connected. Paste your own key in Connections to enable previews and
-              spoken replies.
+              {catalog.tts_providers?.[models.tts?.provider || 'elevenlabs']?.label || 'Voice provider'} is
+              not connected. Paste a key in Connections to enable previews and spoken replies.
             </div>
           )}
 
-          <div className="voice-preset-grid">
-            {(catalog.voice_presets || []).map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className={`voice-preset ${models.tts?.preset === preset.id ? 'selected' : ''}`}
-                onClick={() => choosePreset(preset)}
+          <div className="slot-fields">
+            <div className="field">
+              <label>Speech provider</label>
+              <select
+                value={models.tts?.provider || 'elevenlabs'}
+                onChange={(e) => chooseTtsProvider(e.target.value)}
               >
-                <strong>{preset.label}</strong>
-                <span>{preset.note}</span>
-                <em>{preset.voice_name}</em>
-              </button>
-            ))}
+                {Object.entries(catalog.tts_providers || {}).map(([id, meta]) => (
+                  <option key={id} value={id}>
+                    {meta.label}
+                    {configured.has(meta.auth) ? '' : ' (no key)'}
+                  </option>
+                ))}
+              </select>
+              <span className="field-hint">
+                {catalog.tts_providers?.[models.tts?.provider || 'elevenlabs']?.blurb}
+              </span>
+            </div>
           </div>
+
+          {(models.tts?.provider || 'elevenlabs') === 'elevenlabs' && (
+            <div className="voice-preset-grid">
+              {(catalog.voice_presets || []).map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={`voice-preset ${models.tts?.preset === preset.id ? 'selected' : ''}`}
+                  onClick={() => choosePreset(preset)}
+                >
+                  <strong>{preset.label}</strong>
+                  <span>{preset.note}</span>
+                  <em>{preset.voice_name}</em>
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="slot-fields voice-advanced">
             <div className="field">
-              <label>Your ElevenLabs voices</label>
+              <label>
+                {(models.tts?.provider || 'elevenlabs') === 'cartesia'
+                  ? 'Cartesia voices'
+                  : 'Your ElevenLabs voices'}
+              </label>
               <select
                 value={
                   accountVoices.some((v) => v.id === models.tts?.voice_id)
                     ? models.tts.voice_id
                     : ''
                 }
-                disabled={!configured.has('elevenlabs') || !accountVoices.length}
+                disabled={!configured.has(models.tts?.provider || 'elevenlabs') || !accountVoices.length}
                 onChange={(e) => chooseAccountVoice(e.target.value)}
               >
                 <option value="">
-                  {configured.has('elevenlabs')
+                  {configured.has(models.tts?.provider || 'elevenlabs')
                     ? accountVoices.length
                       ? 'choose an account voice…'
                       : 'loading voices…'
@@ -460,7 +510,7 @@ export default function Settings() {
               <label>Custom voice ID</label>
               <input
                 value={models.tts?.voice_id || ''}
-                placeholder="paste an ElevenLabs voice ID"
+                placeholder={`paste a ${models.tts?.provider === 'cartesia' ? 'Cartesia' : 'ElevenLabs'} voice ID`}
                 spellCheck={false}
                 onChange={(e) => chooseAccountVoice(e.target.value.trim())}
               />
@@ -474,7 +524,7 @@ export default function Settings() {
                 value={models.tts?.model || ''}
                 onChange={(e) => updateSlot('tts', 'model', e.target.value)}
               >
-                {catalog.tts_models.map((m) => (
+                {(catalog.tts_providers?.[models.tts?.provider || 'elevenlabs']?.models || []).map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}
                     {m.note ? ` — ${m.note}` : ''}
@@ -500,7 +550,11 @@ export default function Settings() {
           <div className="row">
             <button
               className="btn sm"
-              disabled={!configured.has('elevenlabs') || busy === 'voice-preview'}
+              disabled={
+                !configured.has(models.tts?.provider || 'elevenlabs') ||
+                !models.tts?.voice_id ||
+                busy === 'voice-preview'
+              }
               onClick={previewVoice}
             >
               {busy === 'voice-preview' && <i className="spinner" />}
@@ -508,8 +562,8 @@ export default function Settings() {
             </button>
             <button
               className="btn sm ghost"
-              disabled={!configured.has('elevenlabs')}
-              onClick={() => loadAccountVoices()}
+              disabled={!configured.has(models.tts?.provider || 'elevenlabs')}
+              onClick={() => loadAccountVoices(models.tts?.provider || 'elevenlabs')}
             >
               Refresh account voices
             </button>

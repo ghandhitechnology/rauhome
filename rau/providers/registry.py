@@ -27,6 +27,7 @@ log = logging.getLogger("rau.providers.registry")
 EFFORT_LEVELS = ("low", "medium", "high", "max")
 CHAT_SLOTS = ("face", "subagent", "player", "dream")
 TTS_EFFECTS = ("none", "robot", "childlike")
+TTS_PROVIDERS = ("elevenlabs", "cartesia")
 STT_PROVIDERS = ("auto", "deepgram", "elevenlabs", "openai", "local")
 
 
@@ -220,8 +221,8 @@ def _validated_models(cfg: Dict[str, Any]) -> Dict[str, Any]:
     tts = checked.get("tts")
     if not isinstance(tts, dict):
         raise ValueError("tts model slot must be an object")
-    if tts.get("provider") != "elevenlabs":
-        raise ValueError("tts.provider must be elevenlabs")
+    if tts.get("provider") not in TTS_PROVIDERS:
+        raise ValueError(f"tts.provider must be one of {', '.join(TTS_PROVIDERS)}")
     for key, limit in (("voice_id", 128), ("model", 128), ("preset", 64)):
         value = tts.get(key, "")
         if (
@@ -403,6 +404,7 @@ def provider_status() -> Dict[str, Any]:
         "codex": "OPENAI_API_KEY",
         "openai": "OPENAI_API_KEY",
         "elevenlabs": "ELEVENLABS_API_KEY",
+        "cartesia": "CARTESIA_API_KEY",
         "deepgram": "DEEPGRAM_API_KEY",
         "firecrawl": "FIRECRAWL_API_KEY",
         "browserbase": "BROWSERBASE_API_KEY",

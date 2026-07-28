@@ -66,6 +66,7 @@ def render_preview(
     pcm = b"".join(
         synth_sentence(
             text,
+            provider="elevenlabs",
             voice_id=voice_id,
             model=model,
             voice_settings=voice_settings,

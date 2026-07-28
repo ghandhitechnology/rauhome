@@ -43,6 +43,7 @@ cd web && npm run dev
 ```
 OPENROUTER_API_KEY=
 ELEVENLABS_API_KEY=
+CARTESIA_API_KEY=  # optional alternative TTS provider (Sonic 3.5)
 COMPOSIO_API_KEY=
 DEEPSEEK_API_KEY=
 KIMI_API_KEY=
@@ -152,20 +153,22 @@ Whisper. The status endpoint and Settings show the backend actually selected.
 
 ### Speaking (text-to-speech)
 
-Needs `ELEVENLABS_API_KEY`. Replies are synthesised sentence by sentence, so
-Rau starts talking before he has finished thinking. Without the key, voice mode
-still listens and replies in text.
+Choose either ElevenLabs (`ELEVENLABS_API_KEY`) or Cartesia Sonic 3.5
+(`CARTESIA_API_KEY`) in Setup or Settings. Replies use provider-native
+streaming, including a persistent WebSocket in Hyper voice mode, so Rau starts
+talking before he has finished thinking. Without the selected provider's key,
+voice mode still listens and replies in text.
 
-Settings includes four tuned presets:
+ElevenLabs includes four tuned presets:
 
 - **Robotic** — synthetic pitch, bitcrush, and light reverb
 - **Grandfather** — older, warm, slower storyteller
 - **Girlfriend** — warm, playful adult conversational voice
 - **Childlike** — bright fictional-character voice with a gentle pitch lift
 
-You can also select any voice returned by your ElevenLabs account, paste a
-custom voice ID, choose the synthesis model/effect independently, and preview
-the exact result before saving.
+You can select any voice returned by either provider, paste a custom voice ID,
+choose the synthesis model/effect independently, and preview the exact result
+before saving. Cartesia currently offers the `sonic-3.5` model in the picker.
 
 ### Notes
 
