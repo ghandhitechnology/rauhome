@@ -132,6 +132,15 @@ def _finish(game: Game) -> None:
 
 
 def _record_tally(game: Game) -> None:
+    """
+    Fold this game into the running record, without flattening the file.
+
+    `games.json` stopped belonging to this game the day chess arrived. Writing
+    `{"kittens": record}` over the top of it erased the chess record — elo
+    included — on every finished hand, and chess doing the same from its side
+    would have erased this one. So the document is read, one key is replaced, and
+    the whole thing goes back down.
+    """
     record = tally()
     record["wins"] = int(record.get("wins", 0)) + (1 if game.winner == RAU else 0)
     record["losses"] = int(record.get("losses", 0)) + (1 if game.winner == USER else 0)
@@ -139,9 +148,15 @@ def _record_tally(game: Game) -> None:
     try:
         from rau.paths import GAMES_FILE
 
+        data: Dict[str, Any] = {}
+        if GAMES_FILE.exists():
+            loaded = json.loads(GAMES_FILE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        data["kittens"] = record
         GAMES_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = GAMES_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps({"kittens": record}, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp.replace(GAMES_FILE)
     except Exception:
         pass
@@ -162,9 +177,38 @@ def tally() -> Dict[str, Any]:
 # ------------------------------------------------------------------- moves
 
 
+def _clear_the_other_table() -> None:
+    """
+    Take the board away before the cards come down. There is only one table.
+
+    The mirror of `chess/session._clear_the_other_table`, and it exists for the
+    same reason: one surface in the room, one `game_state` channel to the page,
+    and a talker who would otherwise be told he is playing two games at once.
+    A chess game swept off like this keeps its saved position, so it is put away
+    rather than lost.
+
+    Called without this module's lock held. The chess side takes its own lock and
+    reaches back here the other way round, and holding one while asking for the
+    other is how those two would eventually deadlock.
+    """
+    try:
+        from rau.games.chess import session as chess_session
+
+        # `current`, not `active`: a finished game is still a board on the table
+        # and still the thing the other store is holding. Sweeping only live ones
+        # leaves a dead position under the cards.
+        if chess_session.current() is not None:
+            chess_session.end("the cards came out")
+    except Exception:
+        # A board that will not clear must not stop a hand being dealt. Broad
+        # because every way this can fail has the same answer.
+        pass
+
+
 def start(*, seed: Optional[int] = None) -> Dict[str, Any]:
     """Deal a new game, replacing any game already on the table."""
     global _game, _last_broadcast
+    _clear_the_other_table()
     with _lock:
         _last_broadcast = ""
         _game = Game(seed=seed)

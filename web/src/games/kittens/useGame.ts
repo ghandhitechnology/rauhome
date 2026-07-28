@@ -171,7 +171,16 @@ class GameStore {
 
 export const gameStore = new GameStore()
 
+/**
+ * The socket, filtered to this game.
+ *
+ * The `game` key is the whole point of the guard. There is a second table in
+ * the room now, pushing the same four event names down the same socket, and a
+ * store that accepted any of them would set a chess position as its hand of
+ * cards the first time somebody played the other game.
+ */
 live.subscribe((event) => {
+  if (event.game !== 'kittens') return
   if (event.kind === 'game_started' || event.kind === 'game_state' || event.kind === 'game_over') {
     if (event.state) gameStore.set(event.state as TableState)
   } else if (event.kind === 'game_ended') {

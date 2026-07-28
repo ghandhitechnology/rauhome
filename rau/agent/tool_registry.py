@@ -50,7 +50,7 @@ def _capability(name: str) -> str:
         return "memory"
     if name.endswith("_panel"):
         return "visual"
-    if "kittens" in name:
+    if "kittens" in name or "chess" in name:
         return "game"
     return "coordination"
 

@@ -12,21 +12,26 @@
  * every one of these states can be interrupted from outside — leave mid-walk,
  * socket drops mid-deal, game over lands while the camera is still moving —
  * and a chain of `await`s has nowhere to put that.
+ *
+ * None of the above is about cards, and that is the point of taking the game
+ * by construction. What differs between two tables is small and knowable: the
+ * surface he sits at, the clip each beat of the game maps to, and which of
+ * those beats outrank the queue or are meant to be held rather than tidied
+ * away. Everything between the perk and standing back up is identical, and
+ * had to stay that way — the second game gets the ritual that was tuned for
+ * the first, or it gets a worse one.
  */
 
 import { bodyController } from './body'
 import { damp } from './easing'
 import type { Director } from './director'
-import {
-  GAME_CAMERA,
-  GAME_DIM,
-} from './gameTableLayer'
 import { gameBridge, type GameResult, type GameVerb, type TableChoreo } from './gameBridge'
 import { DEAL_DURATION, DEAL_FLICKS } from './motionsGame'
 import type { MotionName } from './motions'
 import type { ClawdRig } from './rig'
 import { station } from './room'
 import type { Scene } from './scene'
+import type { TableShot, TableSurface } from './tableSurface'
 
 export type ChoreoState =
   | 'idle'
@@ -39,23 +44,26 @@ export type ChoreoState =
   | 'standing'
   | 'releasing'
 
-/** What each beat of the game does to his body. */
-const VERB_CLIPS: Record<GameVerb, MotionName> = {
-  draw: 'reachDraw',
-  play: 'flickPlay',
-  nope: 'slamNope',
-  kitten: 'kittenRecoil',
-  defuse: 'defuseRelief',
-  attack: 'smugLean',
-  cheer: 'sitCheer',
-  slump: 'slumpLoss',
+/** The body and the behaviour layer the ritual borrows while it runs. */
+export type ChoreoDeps = { rig: ClawdRig; director: Director }
+
+/** Everything about one game that the ritual itself cannot know. */
+export type TableGame = {
+  surface: TableSurface
+  /** Which clip each of this game's beats plays. */
+  verbClips: Record<string, MotionName>
+  /** Beats that wipe whatever was queued behind them. */
+  interrupting: Set<string>
+  /**
+   * Beats that are a state rather than an event.
+   *
+   * A finished one-shot holds its last frame for as long as you let it, and
+   * for most beats that is a bug — he ends up frozen mid-gesture. For these
+   * it is the whole point: the slump you are still looking at when you read
+   * the result, or the claw left hovering over a square while he decides.
+   */
+  terminal: Set<string>
 }
-
-/** Beats that wipe whatever was queued: nothing outranks the kitten. */
-const INTERRUPTING = new Set<GameVerb>(['kitten', 'cheer', 'slump'])
-
-/** Beats whose last frame is the point, and so must not be tidied away. */
-const TERMINAL = new Set<GameVerb>(['cheer', 'slump'])
 
 /**
  * Floor on the gap between beats, and how many may wait.
@@ -73,17 +81,6 @@ const TABLE_GAZE = { x: 0, y: 0.45, speed: 4, wander: 0.4 }
 const GLANCE_GAZE = { x: 0, y: -0.35, speed: 12, wander: 0.15 }
 const GLANCE_HOLD = 0.75
 
-/**
- * The same shot, approached slowly.
- *
- * Used while he is still walking, so the push-in has already begun by the
- * time he sits: one continuous move instead of a walk, a pause, and a zoom.
- */
-const APPROACH_CAMERA = { ...GAME_CAMERA, lambda: GAME_CAMERA.lambda * 0.28 }
-
-/** The last of the push, taken while he is on his way into the seat. */
-const SEATING_CAMERA = { ...GAME_CAMERA, lambda: GAME_CAMERA.lambda * 0.6 }
-
 /** How close he has to be before the table fades in around him. */
 const TABLE_NEAR = 14
 /** Past this, the walk is worth hurrying. */
@@ -95,10 +92,20 @@ export class GameChoreographer implements TableChoreo {
   presence = 0
   /** 0..1 — how dark the rest of the room is. */
   dim = 0
-  cameraTarget: typeof GAME_CAMERA | null = null
+  cameraTarget: TableShot | null = null
 
   private rig: ClawdRig
   private director: Director
+  private game: TableGame
+  /**
+   * The same shot, approached slowly.
+   *
+   * Used while he is still walking, so the push-in has already begun by the
+   * time he sits: one continuous move instead of a walk, a pause, and a zoom.
+   */
+  private approachShot: TableShot
+  /** The last of the push, taken while he is on his way into the seat. */
+  private seatingShot: TableShot
   private clock = 0
   private stateAt = 0
 
@@ -118,14 +125,23 @@ export class GameChoreographer implements TableChoreo {
   private lastChatSeen = 0
   private gazeIsGlance = false
 
-  constructor(rig: ClawdRig, director: Director) {
-    this.rig = rig
-    this.director = director
+  constructor(deps: ChoreoDeps, game: TableGame) {
+    this.rig = deps.rig
+    this.director = deps.director
+    this.game = game
+    const shot = game.surface.camera
+    this.approachShot = { ...shot, lambda: shot.lambda * 0.28 }
+    this.seatingShot = { ...shot, lambda: shot.lambda * 0.6 }
   }
 
   /** True while he owes the game his body. */
   get busy(): boolean {
     return this.state !== 'idle'
+  }
+
+  /** Which table this one seats him at. */
+  get surface(): TableSurface {
+    return this.game.surface
   }
 
   // ── the contract ────────────────────────────────────────────────────
@@ -162,8 +178,8 @@ export class GameChoreographer implements TableChoreo {
     this.rig.play('sitTable', { force: true, restart: true })
     this.rig.setGaze(TABLE_GAZE)
     this.presence = 1
-    this.dim = GAME_DIM
-    this.cameraTarget = GAME_CAMERA
+    this.dim = this.game.surface.dim
+    this.cameraTarget = this.game.surface.camera
     this.enter('playing')
     this.resolveSummon()
   }
@@ -200,12 +216,25 @@ export class GameChoreographer implements TableChoreo {
     return this.dismissPromise
   }
 
+  /**
+   * Drop whatever he is holding and go back to sitting there.
+   *
+   * Only from the seat: called during the walk it would be releasing a pose he
+   * has not struck yet, and during an exit it would be undoing the last beat of
+   * the game while he is still playing it.
+   */
+  settle() {
+    if (this.state !== 'playing') return
+    this.verbQueue.length = 0
+    this.holdingPose = false
+  }
+
   observe(verbs: GameVerb[]) {
     if (this.state === 'idle') return
     for (const v of verbs) {
       if (v === 'cheer') this.result = 'loss'
       if (v === 'slump') this.result = 'win'
-      if (INTERRUPTING.has(v)) this.verbQueue.length = 0
+      if (this.game.interrupting.has(v)) this.verbQueue.length = 0
       // A burst that repeats itself is one thing happening, not two.
       if (this.verbQueue[this.verbQueue.length - 1] === v) continue
       this.verbQueue.push(v)
@@ -224,6 +253,8 @@ export class GameChoreographer implements TableChoreo {
       return
     }
 
+    const shot = this.game.surface.camera
+    const fullDim = this.game.surface.dim
     const table = station('table')
     const distance = Math.abs(table.x - this.rig.worldX)
 
@@ -248,8 +279,8 @@ export class GameChoreographer implements TableChoreo {
           // the room dims around a character who is still walking into it.
           // Slow at this range on purpose, so the arrival is what finishes
           // the push rather than the push finishing before he does.
-          this.cameraTarget = APPROACH_CAMERA
-          this.dim = damp(this.dim, GAME_DIM * 0.55, 1.6, dt)
+          this.cameraTarget = this.approachShot
+          this.dim = damp(this.dim, fullDim * 0.55, 1.6, dt)
         }
         if (this.director.isArrived) {
           this.rig.play('sit', { force: true, restart: true })
@@ -259,11 +290,11 @@ export class GameChoreographer implements TableChoreo {
 
       case 'sitting':
         this.presence = damp(this.presence, 1, 3, dt)
-        this.dim = damp(this.dim, GAME_DIM, 2, dt)
+        this.dim = damp(this.dim, fullDim, 2, dt)
         // The camera closes the rest of the way as he goes down — quicker
         // than the approach, still slow enough that it is arriving *with*
         // him rather than waiting for him with the shot already set.
-        this.cameraTarget = SEATING_CAMERA
+        this.cameraTarget = this.seatingShot
         // The walk stops within a deadband of the station, which is fine for
         // standing about and not fine here: his hands are the middle of the
         // shot, so the last unit is closed while he is on his way down.
@@ -277,15 +308,15 @@ export class GameChoreographer implements TableChoreo {
 
       case 'framing':
         this.presence = damp(this.presence, 1, 3, dt)
-        this.dim = damp(this.dim, GAME_DIM, 2.2, dt)
+        this.dim = damp(this.dim, fullDim, 2.2, dt)
         // Tighter than the old 0.06: with the push already most of the way
         // done by the time he sits, a loose threshold would hand the deal a
         // camera that is still visibly moving.
-        if (Math.abs(scene.camera.zoom - GAME_CAMERA.zoom) < 0.02) {
+        if (Math.abs(scene.camera.zoom - shot.zoom) < 0.02) {
           // Back to the canonical shot now the slow approach has done its
           // work: anything that nudges the camera during the hand should get
           // the full response, not the walking-in one.
-          this.cameraTarget = GAME_CAMERA
+          this.cameraTarget = shot
           this.enter('playing')
           this.resolveSummon()
         }
@@ -293,7 +324,7 @@ export class GameChoreographer implements TableChoreo {
 
       case 'playing':
         this.presence = damp(this.presence, 1, 3, dt)
-        this.dim = damp(this.dim, GAME_DIM, 2.2, dt)
+        this.dim = damp(this.dim, fullDim, 2.2, dt)
         this.updateGaze()
         this.drainBeats()
         break
@@ -378,8 +409,9 @@ export class GameChoreographer implements TableChoreo {
     if (this.verbQueue.length === 0) {
       // A finished one-shot holds its last frame for as long as you let it,
       // so without this every beat ends with him frozen mid-gesture until the
-      // next one happens to arrive. The two end-of-game poses are the
-      // exception: he is meant to still be slumped when you read the result.
+      // next one happens to arrive. The terminal poses are the exception: he
+      // is meant to still be slumped when you read the result, and still
+      // reaching over the board while he decides where to put the piece.
       if (!this.rig.busy && !this.holdingPose && this.rig.currentMotion !== 'sitTable') {
         this.rig.play('sitTable', { force: true })
       }
@@ -388,8 +420,12 @@ export class GameChoreographer implements TableChoreo {
     if (this.rig.busy || this.clock < this.verbReadyAt) return
     const verb = this.verbQueue.shift()
     if (!verb) return
-    this.holdingPose = TERMINAL.has(verb)
-    this.rig.play(VERB_CLIPS[verb], { force: true, restart: true })
+    const clip = this.game.verbClips[verb]
+    // A verb this table has no clip for is a wiring bug on the game side, and
+    // silently doing nothing is better than throwing inside the render loop.
+    if (!clip) return
+    this.holdingPose = this.game.terminal.has(verb)
+    this.rig.play(clip, { force: true, restart: true })
     this.verbReadyAt = this.clock + BEAT_GAP
   }
 

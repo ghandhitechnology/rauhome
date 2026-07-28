@@ -413,6 +413,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(move),
     }),
+  // Chess. Nothing is redacted here — both players are looking at the same
+  // board — but the client is still only ever told, never asked: it sends a
+  // move and finds out whether it was one.
+  chess: () => req<{ ok: boolean; state: unknown; record: unknown }>('/api/game/chess'),
+  // An unfinished game on disk is resumed in preference to a new one, so
+  // `resumed` says which of the two just happened. Omitting the colour is the
+  // normal case, and it means the sides alternate from the last finished game.
+  startChess: (rauColor?: 'white' | 'black') =>
+    req<{ ok: boolean; state: unknown; resumed?: boolean }>('/api/game/chess', {
+      method: 'POST',
+      body: JSON.stringify(rauColor ? { rau_color: rauColor } : {}),
+    }),
+  endChess: () => req<{ ok: boolean }>('/api/game/chess', { method: 'DELETE' }),
+  chessMove: (move: unknown) =>
+    req<{ ok: boolean; state: unknown }>('/api/game/chess/move', {
+      method: 'POST',
+      body: JSON.stringify(move),
+    }),
   roomProps: () => req<{ layout: Record<string, string> }>('/api/room/props'),
   resetRoomProps: () =>
     req<{ ok: boolean; layout: Record<string, string> }>('/api/room/props/reset', {

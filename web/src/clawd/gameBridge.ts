@@ -1,12 +1,13 @@
 /**
- * The seam between the canvas room and the DOM cards.
+ * The seam between the canvas room and the DOM the game is made of.
  *
- * The cards are DOM — thirteen hand-drawn SVG faces, real buttons, real focus
- * order — but they have to behave like objects in the room: when the camera
- * pushes in, the deck has to push in with it, on the same frame. Positioning
- * them from React state would put them one frame behind the canvas, and one
- * frame of lag on a moving camera is exactly the difference between a card
- * lying on the table and a sticker stuck to the screen.
+ * The playing pieces are DOM — thirteen hand-drawn card faces, or a board of
+ * side-elevation chessmen, real buttons, real focus order — but they have to
+ * behave like objects in the room: when the camera pushes in, the deck has to
+ * push in with it, on the same frame. Positioning them from React state would
+ * put them one frame behind the canvas, and one frame of lag on a moving
+ * camera is exactly the difference between a card lying on the table and a
+ * sticker stuck to the screen.
  *
  * So this runs inside the canvas render loop, at the canvas frame rate, and
  * writes transforms directly. Two DOM writes per frame, both skipped when
@@ -17,32 +18,30 @@
  *
  * Everything else — the fan you are holding, the raised card, the countdown —
  * is screen-space and never touched from here.
+ *
+ * Nothing here knows which game is up. The active `TableSurface` names the
+ * places that matter — `deck` and `discard`, or the four corners of a board —
+ * and this projects whatever it finds. That is what lets a second game reuse
+ * the ritual instead of forking it.
  */
 
-import { GAME_CARD, GAME_TABLE } from './gameTableLayer'
 import type { ClawdRig } from './rig'
 import type { Scene } from './scene'
 import { clawdAnchors } from './sprite'
 import { FLOOR_Y } from './stage'
+import type { Pt, Rect, TableSurface } from './tableSurface'
 
-export type Pt = { x: number; y: number }
-export type Rect = { x: number; y: number; w: number; h: number }
+export type { Pt, Rect, TableSurface }
 
 /**
  * One readable beat of his body during a hand.
  *
  * Named for what the body does, not for who won: `cheer` is him cheering,
- * which is the moment *you* lost.
+ * which is the moment *you* lost. The vocabulary is per game — kittens has a
+ * `kitten`, chess has a `blunder` — so this is deliberately just a string,
+ * and each table declares the clip its own verbs map to.
  */
-export type GameVerb =
-  | 'draw'
-  | 'play'
-  | 'nope'
-  | 'kitten'
-  | 'defuse'
-  | 'attack'
-  | 'cheer'
-  | 'slump'
+export type GameVerb = string
 
 /** Which way a finished game went, from the player's side of the table. */
 export type GameResult = 'win' | 'loss' | null
@@ -51,7 +50,7 @@ export type GameResult = 'win' | 'loss' | null
  * What the choreography side promises the game side.
  *
  * The split is the whole contract: the game owns when phases change and where
- * the cards are, the choreographer owns where *he* is and what his body is
+ * the pieces are, the choreographer owns where *he* is and what his body is
  * doing. Neither reaches into the other.
  */
 export type TableChoreo = {
@@ -65,6 +64,18 @@ export type TableChoreo = {
   dismiss(opts?: { fast?: boolean; result?: GameResult }): Promise<void>
   /** Queue body beats derived from a table diff. */
   observe(verbs: GameVerb[]): void
+  /**
+   * Let go of a held pose, without standing him up.
+   *
+   * A terminal beat is meant to be still on his body when you read the result,
+   * so nothing tidies it away — the next beat does. A game that starts over
+   * from the same seat has no next beat: the position is simply replaced, and
+   * `diffBeats` says nothing across a new game. Without this he sets the board
+   * up again while still slumped over the last one. The card table gets the
+   * same release for free out of its dealing flourish; a table that does not
+   * deal has to ask.
+   */
+  settle(): void
 }
 
 type Snapshot = {
@@ -72,9 +83,11 @@ type Snapshot = {
   k: number
   tx: number
   ty: number
-  /** Screen-space rects, for drag hit-testing and flight endpoints. */
-  deck: Rect
-  discard: Rect
+  /**
+   * The surface's named anchors in screen pixels, for drag hit-testing,
+   * flight endpoints and positioning the DOM board.
+   */
+  spots: Record<string, Rect>
   /** Where his fan of backs currently is, in screen pixels. */
   rauHand: Pt
   head: Pt
@@ -86,23 +99,30 @@ type Snapshot = {
 const EPSILON = 0.01
 
 class GameBridge {
-  private isActive = false
+  private table: TableSurface | null = null
 
   /** True from the moment Play is pressed until the room is his again. */
   get active(): boolean {
-    return this.isActive
+    return this.table !== null
+  }
+
+  /** Which table is up, or null. The room draws whatever this says. */
+  get surface(): TableSurface | null {
+    return this.table
   }
 
   /**
-   * Setting this also publishes it to the document, because the render loop
-   * is upstream of the game and must not import it: the canvas hook reads a
+   * Put a table up, or take it away.
+   *
+   * This also publishes the fact to the document, because the render loop is
+   * upstream of the game and must not import it: the canvas hook reads a
    * dataset flag to know it should be running at the display's rate rather
    * than the room's idle rate. One flag, written where the fact changes.
    */
-  set active(on: boolean) {
-    this.isActive = on
+  activate(surface: TableSurface | null) {
+    this.table = surface
     if (typeof document === 'undefined') return
-    if (on) document.documentElement.dataset.rauTable = 'true'
+    if (surface) document.documentElement.dataset.rauTable = 'true'
     else delete document.documentElement.dataset.rauTable
   }
 
@@ -139,6 +159,32 @@ class GameBridge {
     this.worldDirty = true
   }
 
+  /**
+   * Give the layer back, but only if it is still yours.
+   *
+   * There is one bridge and two tables, and a handoff overlaps them: the
+   * arriving game mounts and attaches while the leaving one is still standing
+   * up, so the leaving table's cleanup runs *after* the arriving table has
+   * taken the layer. An unconditional `attachWorld(null)` there detaches
+   * somebody else's element, and because both tables attach from a callback ref
+   * that React has no reason to call again, nothing ever puts it back — the new
+   * table's DOM children silently stop tracking the camera for the rest of the
+   * game while the canvas underneath them keeps moving.
+   *
+   * Passing the element you attached makes that a no-op instead of a bug, and
+   * means neither table has to know the other exists.
+   */
+  releaseWorld(el: HTMLElement | null) {
+    if (el && this.worldEl !== el) return
+    this.worldEl = null
+    this.worldDirty = true
+  }
+
+  /** Who currently owns the camera-locked layer. Read-only; for tests. */
+  get world(): HTMLElement | null {
+    return this.worldEl
+  }
+
   /** The fan of backs in his claws. Follows him, not the room. */
   attachRauHand(el: HTMLElement | null) {
     this.rauEl = el
@@ -151,7 +197,7 @@ class GameBridge {
    * The counts cannot live in the world layer with the cards: text there is
    * laid out tiny, counter-scaled, and then magnified by the camera, and what
    * arrives on screen is a blur. So the labels stay in screen space and are
-   * told where to be.
+   * told where to be. A surface with no piles simply never gets written to.
    */
   attachTags(el: HTMLElement | null) {
     this.tagsEl = el
@@ -197,11 +243,17 @@ class GameBridge {
     return { x: p.x, y: head.y + (p.y - head.y) * 0.55 }
   }
 
-  /** Centre of a pile, in screen pixels — where a card flies from or to. */
-  spot(which: 'deck' | 'discard'): Pt {
-    const s = this.current
-    if (!s) return { x: 0, y: 0 }
-    const r = which === 'deck' ? s.deck : s.discard
+  /**
+   * Centre of one of the surface's named spots, in screen pixels.
+   *
+   * Where a card flies from or to; where a corner of the board lands. An
+   * unknown name is the origin rather than a throw — this is called from
+   * inside a render loop, and a game asking for a spot the table it is
+   * sitting at does not have is a wiring bug, not a reason to stop drawing.
+   */
+  spot(name: string): Pt {
+    const r = this.current?.spots[name]
+    if (!r) return { x: 0, y: 0 }
     return { x: r.x + r.w / 2, y: r.y + r.h / 2 }
   }
 
@@ -213,7 +265,8 @@ class GameBridge {
    * whole rest of the frame.
    */
   frame(scene: Scene, rig: ClawdRig, w: number, h: number) {
-    if (!this.active) {
+    const surface = this.table
+    if (!surface) {
       this.current = null
       return
     }
@@ -232,19 +285,20 @@ class GameBridge {
     const fanX = a.fan.x / u
     const fanY = a.fan.y / u
 
-    const cardRect = (cx: number): Rect => ({
-      x: (cx - GAME_CARD.w / 2) * k + tx,
-      y: GAME_TABLE.cardY * k + ty,
-      w: GAME_CARD.w * k,
-      h: GAME_CARD.h * k,
-    })
+    // The surface authored these in stage units once; every frame they get
+    // the same uniform scale the canvas just drew with, so the DOM and the
+    // paint can never drift apart by more than a rounding error.
+    const spots: Record<string, Rect> = {}
+    for (const name in surface.spots) {
+      const r = surface.spots[name]
+      spots[name] = { x: r.x * k + tx, y: r.y * k + ty, w: r.w * k, h: r.h * k }
+    }
 
     this.current = {
       k,
       tx,
       ty,
-      deck: cardRect(GAME_TABLE.deckX),
-      discard: cardRect(GAME_TABLE.discardX),
+      spots,
       rauHand: { x: fanX * k + tx, y: fanY * k + ty },
       head: { x: (a.head.x / u) * k + tx, y: (a.head.y / u) * k + ty },
       w,
@@ -252,12 +306,13 @@ class GameBridge {
     }
 
     // ── the labels on the piles ────────────────────────────────────────
-    if (this.tagsEl && (this.tagsDirty || Math.abs(k - this.lastK) > EPSILON ||
+    const deck = spots.deck
+    const discard = spots.discard
+    if (this.tagsEl && deck && discard &&
+        (this.tagsDirty || Math.abs(k - this.lastK) > EPSILON ||
         Math.abs(tx - this.lastTx) > EPSILON || Math.abs(ty - this.lastTy) > EPSILON)) {
       this.tagsDirty = false
       const style = this.tagsEl.style
-      const deck = this.current.deck
-      const discard = this.current.discard
       style.setProperty('--deck-x', `${deck.x + deck.w / 2}px`)
       style.setProperty('--deck-y', `${deck.y + deck.h}px`)
       style.setProperty('--disc-x', `${discard.x + discard.w / 2}px`)

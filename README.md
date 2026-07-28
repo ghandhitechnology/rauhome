@@ -43,6 +43,7 @@ Install optional subsystems explicitly; normal startup never installs or builds:
 ```bash
 scripts/setup.sh --voice
 scripts/setup.sh --computer-use
+scripts/setup.sh --chess          # python-chess + Stockfish, for the board
 scripts/setup.sh --pi --web
 python -m rau doctor
 python -m rau launch-agent install   # one supervisor, never one entry per schedule

@@ -1,0 +1,546 @@
+/**
+ * The board, dressed.
+ *
+ * Three rules hold everything together, and the first one explains most of the
+ * strange numbers below.
+ *
+ * The world layer is authored in *stage units*, the room's own coordinates,
+ * and carried onto the screen by one matrix written from the render loop. So a
+ * `px` inside `.ch-world` is a unit of the room — a whole square is four of
+ * them wide and half of one deep — and every border, shadow and offset in
+ * there is a fraction of a pixel on purpose. The camera magnifies this layer
+ * by roughly thirty, so `0.06px` is a hairline and `1px` would be a plank.
+ *
+ * The squares are parallelograms, which the DOM cannot lay out, so each one is
+ * a rectangle cut to shape with a `clip-path` computed in `board.ts` from the
+ * same two vectors the canvas paints with. A clip path clips *everything* the
+ * element draws, borders and outlines included — which is why a square says it
+ * is focused or picked up with a background wash rather than with an outline
+ * that would have its corners sliced off.
+ *
+ * And every motion here is either a real event in the game or feedback for a
+ * thing you just did. The check pulse is the single exception, and it earns it:
+ * a king in check is a state you are obliged to notice, not an event that has
+ * finished happening.
+ */
+
+/* ------------------------------------------------------------------- shell */
+
+.ch-room {
+  position: absolute;
+  inset: 0;
+  /* Two curves, used everywhere, so the whole board moves with one hand.
+     `--ch-out` leaves immediately and coasts in — what a control does when it
+     answers you. `--ch-settle` carries a little past and comes back — what an
+     object does when it lands. */
+  --ch-out: cubic-bezier(0.16, 0.84, 0.28, 1);
+  --ch-settle: cubic-bezier(0.22, 1.1, 0.36, 1);
+  /* The room shows through. Clicks that are not on the board fall past to the
+     canvas, so he can still be poked and the wall panels still open. */
+  pointer-events: none;
+  isolation: isolate;
+  color: var(--ink);
+}
+
+/* Camera-locked. One transform write per frame lands here and nowhere else. */
+.ch-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: 25;
+  transform-origin: 0 0;
+  /* No `will-change: transform`, however tempting it looks on a layer written
+     every frame: a promoted layer rasterises its contents once, at the scale
+     it first saw, and the camera magnifies this one thirtyfold on the way in.
+     Every piece would stay a blurry enlargement of that first bake. Left
+     unpromoted, the SVGs are re-rasterised from the vectors at the real
+     on-screen size on every paint. */
+  contain: layout style;
+  pointer-events: none;
+  animation: ch-world-in 420ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes ch-world-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Screen-locked. Never written to from the render loop. */
+.ch-screen {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  contain: layout style;
+  pointer-events: none;
+}
+
+.ch-screen button,
+.ch-screen a {
+  pointer-events: auto;
+}
+
+/* ------------------------------------------------------------ the squares */
+
+.ch-squares {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+  Keyboard and screen reader only. The mouse is served by `.ch-hit`, which
+  resolves a click by inverting the projection instead of by asking which of
+  these overlapping boxes it landed in — they overlap their neighbours by a
+  seventh of their width, because a sheared square has a wider bounding box
+  than the square itself.
+*/
+.ch-square {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+  transition: background 140ms ease;
+}
+
+.ch-square.is-under {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.ch-square.is-picked {
+  background: rgba(240, 202, 130, 0.24);
+}
+
+/* Not an outline: a clip path would cut the corners off one. */
+.ch-square:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* --------------------------------------------------------------- the marks */
+
+.ch-mark {
+  position: absolute;
+  pointer-events: none;
+}
+
+/* Where it came from is quieter than where it went. */
+.ch-mark.is-from {
+  background: rgba(224, 163, 46, 0.16);
+}
+
+.ch-mark.is-to {
+  background: rgba(224, 163, 46, 0.26);
+}
+
+.ch-mark.is-check {
+  background: rgba(214, 64, 47, 0.32);
+  animation: ch-check 1.6s ease-in-out infinite;
+}
+
+@keyframes ch-check {
+  50% {
+    background: rgba(214, 64, 47, 0.6);
+  }
+}
+
+/* ---------------------------------------------------------------- the men */
+
+.ch-men {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+  Sorted back to front by the component, so paint order is depth. A rank is
+  half a unit deep and a king is nearly five ranks tall — everything overlaps
+  everything behind it, and DOM order is the only thing saying which is which.
+
+  Nothing here sizes the SVG inside the box. The art sets its own `width`,
+  `height` and `preserveAspectRatio` and stands itself on the bottom edge; a
+  rule in this file fighting that would only be a second opinion about where a
+  piece's feet are.
+*/
+.ch-man {
+  position: absolute;
+  transition: transform 160ms var(--ch-out);
+}
+
+/* Picked up. Small, because a piece lifted a whole rank reads as a different
+   square rather than as a held one. */
+.ch-man.is-lifted {
+  transform: translateY(-0.45px);
+}
+
+/*
+  What he is looking at, while he is thinking.
+
+  Understated on purpose. This is not a marker and must not become one — he is
+  considering a square, and you are watching him consider it, which is a
+  different thing from the board telling you what he is going to play.
+*/
+.ch-man.is-considered {
+  transform: translateY(-0.16px);
+  transition: transform 900ms ease-in-out;
+}
+
+/* The piece that just landed. Settles rather than appears. */
+.ch-man.is-landed {
+  animation: ch-land 260ms var(--ch-settle) both;
+}
+
+@keyframes ch-land {
+  from {
+    transform: translateY(-0.7px);
+  }
+}
+
+/* Refused. The lift drops back on its own; this is the objection. */
+.ch-man.is-refused {
+  animation: ch-refuse 120ms ease-in-out 2;
+}
+
+@keyframes ch-refuse {
+  25% {
+    transform: translateX(-0.22px);
+  }
+  75% {
+    transform: translateX(0.22px);
+  }
+}
+
+/* The mouse's board. Exactly the playing area, so a click beside it still
+   reaches the room behind. */
+.ch-hit {
+  position: absolute;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.ch-hit.is-live {
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ strip */
+
+.ch-strip {
+  position: absolute;
+  top: 4.4rem;
+  left: 1.2rem;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  max-width: min(48ch, 62vw);
+  font-size: 0.82rem;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+}
+
+.ch-turn {
+  font-weight: 600;
+}
+
+.ch-turn.is-his {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.ch-alarm {
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--danger-a35);
+  border-radius: 999px;
+  background: var(--danger-a12);
+  color: var(--danger);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ch-log {
+  color: var(--faint);
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ch-quiet {
+  padding: 0.2rem 0.5rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.ch-quiet:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ch-leave {
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------- controls */
+
+/*
+  Resign and the draw, at the bottom of the screen rather than beside the
+  board. They are the two things in this game you do *to* the game instead of
+  on it, and a control that ends a match should not sit a centimetre from the
+  squares you are clicking.
+*/
+.ch-controls {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(28px, 5vh, 56px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.ch-offer {
+  padding-right: var(--s-2);
+  font-size: 0.8rem;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+}
+
+.ch-offer.is-waiting {
+  color: var(--faint);
+}
+
+/* -------------------------------------------------------------- promotion */
+
+.ch-promote {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(96px, 16vh, 190px);
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-5);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  background: rgba(14, 12, 16, 0.9);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  animation: ch-promote-in 220ms var(--ch-out) both;
+}
+
+@keyframes ch-promote-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+
+.ch-promote h3 {
+  margin: 0;
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: 1.1rem;
+  font-weight: 400;
+}
+
+.ch-promote-row {
+  display: flex;
+  gap: var(--s-2);
+}
+
+.ch-promote-pick {
+  display: grid;
+  justify-items: center;
+  gap: 0.2rem;
+  width: clamp(58px, 7vw, 82px);
+  padding: var(--s-2);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.ch-promote-pick svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.ch-promote-pick:hover:not(:disabled),
+.ch-promote-pick:focus-visible {
+  border-color: var(--line-2);
+  background: var(--surface-2);
+  color: var(--ink);
+  transform: translateY(-2px);
+}
+
+.ch-promote-pick:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* --------------------------------------------------------------- messages */
+
+/*
+  What he said when he refused the move. He says it out loud as well; this is
+  the same sentence in a form you can read twice.
+*/
+.ch-error {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(96px, 16vh, 190px);
+  transform: translateX(-50%);
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  border: 1px solid var(--danger-a35);
+  border-radius: 9px;
+  background: rgba(38, 12, 10, 0.86);
+  backdrop-filter: blur(6px);
+  color: var(--danger);
+  font-size: 0.8rem;
+  text-align: center;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: ch-shake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes ch-shake {
+  10%, 90% { transform: translate(calc(-50% - 2px), 0); }
+  20%, 80% { transform: translate(calc(-50% + 5px), 0); }
+  30%, 50%, 70% { transform: translate(calc(-50% - 8px), 0); }
+  40%, 60% { transform: translate(calc(-50% + 8px), 0); }
+}
+
+/* -------------------------------------------------------------- game over */
+
+.ch-over {
+  position: absolute;
+  inset: 0;
+  z-index: 14;
+  display: grid;
+  place-items: center;
+  /* Translucent rather than opaque: he is sitting right there, reacting to the
+     same result you are reading. */
+  background: radial-gradient(60% 60% at 50% 50%, rgba(6, 5, 8, 0.5), rgba(6, 5, 8, 0.86));
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+  animation: ch-over-in 420ms ease both;
+}
+
+@keyframes ch-over-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.ch-over-card {
+  display: grid;
+  justify-items: center;
+  gap: var(--s-3);
+  padding: var(--s-6) var(--s-7);
+  text-align: center;
+}
+
+.ch-over-card h2 {
+  margin: 0;
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  font-weight: 400;
+}
+
+.ch-over-card p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.88rem;
+}
+
+.ch-over-score {
+  color: var(--faint) !important;
+  font-size: 0.78rem !important;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+
+.ch-over-actions {
+  display: flex;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+.ch-btn {
+  padding: 0.45rem 0.9rem;
+  border-radius: 9px;
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.ch-btn:hover:not(:disabled) {
+  background: var(--surface);
+  transform: translateY(-1px);
+}
+
+.ch-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ch-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent-deep);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.ch-btn-primary:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.ch-btn-quiet {
+  background: transparent;
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ still */
+
+/*
+  The check mark stops pulsing and everything else stops moving. The mark stays
+  — it is the one thing on the board you are not allowed to miss — it simply
+  sits at its brighter value instead of breathing between two of them.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .ch-world,
+  .ch-man,
+  .ch-mark.is-check,
+  .ch-man.is-landed,
+  .ch-man.is-refused,
+  .ch-promote,
+  .ch-error,
+  .ch-over {
+    animation: none;
+    transition: none;
+  }
+
+  .ch-mark.is-check {
+    background: rgba(214, 64, 47, 0.5);
+  }
+}

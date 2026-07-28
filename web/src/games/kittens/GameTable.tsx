@@ -416,7 +416,10 @@ export default memo(function GameTable() {
   /** Tears down the window listeners for the gesture in progress, if any. */
   const endGesture = useRef<(() => void) | null>(null)
 
+  /** The layer we handed the bridge, so the cleanup can name what it returns. */
+  const ownedWorld = useRef<HTMLElement | null>(null)
   const attachWorld = useCallback((el: HTMLDivElement | null) => {
+    if (el) ownedWorld.current = el
     gameBridge.attachWorld(el)
   }, [])
   /** His fan, kept as a ref too: flight sizing measures a card off it. */
@@ -434,7 +437,8 @@ export default memo(function GameTable() {
     () => () => {
       gameBridge.hoverPoint = null
       endGesture.current?.()
-      gameBridge.attachWorld(null)
+      // Only if the board has not already taken it — see `releaseWorld`.
+      gameBridge.releaseWorld(ownedWorld.current)
       gameBridge.attachRauHand(null)
       gameBridge.attachTags(null)
     },
@@ -493,7 +497,7 @@ export default memo(function GameTable() {
     if (flightW <= 0) return 1
     const snap = gameBridge.current
     if (spot === 'deck' || spot === 'discard') {
-      const r = spot === 'deck' ? snap?.deck : snap?.discard
+      const r = snap?.spots[spot]
       return r && r.w > 0 ? r.w / flightW : 0.7
     }
     if (spot === 'rauHand') {
@@ -501,14 +505,14 @@ export default memo(function GameTable() {
       const w = his?.getBoundingClientRect().width ?? 0
       if (w > 0) return w / flightW
       // He is between hands. His backs are a little smaller than the pile.
-      const deck = snap?.deck
+      const deck = snap?.spots.deck
       return deck && deck.w > 0 ? (deck.w * 0.8) / flightW : 0.6
     }
     return 1
   }, [])
 
   const overDiscard = useCallback((x: number, y: number) => {
-    const r = gameBridge.current?.discard
+    const r = gameBridge.current?.spots.discard
     if (!r) return false
     // Generous: dropping *near* the pile is dropping on it.
     const pad = 28

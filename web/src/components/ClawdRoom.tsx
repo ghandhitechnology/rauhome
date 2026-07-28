@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { bodyController } from '../clawd/body'
+import { CHESS_GAME } from '../clawd/chessTableLayer'
 import { Director, EMPTY_SIGNALS, type Signals } from '../clawd/director'
 import { GameChoreographer } from '../clawd/gameChoreographer'
-import { gameBridge, type GameResult } from '../clawd/gameBridge'
+import { KITTENS_GAME } from '../clawd/gameTableLayer'
+import { gameBridge, type GameResult, type TableChoreo } from '../clawd/gameBridge'
 import { ClawdRig } from '../clawd/rig'
 import { drawBubble, Scene } from '../clawd/scene'
 import { STAGE, WALK_RANGE, type RoomState, type StationId } from '../clawd/room'
@@ -47,16 +49,21 @@ type Props = {
   onReady?: (api: ClawdRoomApi) => void
 }
 
+/** Sitting him down at one table, exposed so it can be run without a game. */
+export type TableRitual = {
+  begin: () => Promise<void>
+  end: (opts?: { fast?: boolean; result?: GameResult }) => Promise<void>
+}
+
 export type ClawdRoomApi = {
   play: (name: MotionName) => void
   goTo: (station: StationId) => void
   setManual: (manual: boolean) => void
   startle: () => void
-  /** The card-table ritual, exposed so it can be exercised without a game. */
-  game: {
-    begin: () => Promise<void>
-    end: (opts?: { fast?: boolean; result?: GameResult }) => Promise<void>
-  }
+  /** The card-table ritual. */
+  game: TableRitual
+  /** The same ritual, at the chess board. */
+  chess: TableRitual
 }
 
 function unionRect(a: HitRect, b: HitRect): HitRect {
@@ -82,8 +89,21 @@ export default function ClawdRoom({
   const rig = useMemo(() => new ClawdRig(), [])
   const director = useMemo(() => new Director(rig, 'room'), [rig])
   const scene = useMemo(() => new Scene(), [])
-  const choreographer = useMemo(
-    () => new GameChoreographer(rig, director),
+
+  /**
+   * One ritual per table, sharing the one body.
+   *
+   * The walk, the seat and the push-in are the same machine, but the shot it
+   * settles on and the clip each beat plays are not, and those are fixed when
+   * the choreographer is built. So there is one per game rather than one that
+   * is reconfigured mid-hand — a table being swapped underneath a character
+   * who is halfway into a chair is not a state worth being able to represent.
+   */
+  const choreographers = useMemo(
+    () => ({
+      kittens: new GameChoreographer({ rig, director }, KITTENS_GAME),
+      chess: new GameChoreographer({ rig, director }, CHESS_GAME),
+    }),
     [rig, director],
   )
 
@@ -91,13 +111,53 @@ export default function ClawdRoom({
   // put one on. Registering here rather than in the game keeps the contract
   // one-directional: the game asks the room for choreography, never the
   // other way round.
+  //
+  // What gets registered is a router rather than one of the two, because the
+  // question the game side actually asks is "the choreography for the table
+  // that is up" — and the bridge already knows which that is, since nothing
+  // can be up without having told it.
   useEffect(() => {
     if (!showRoom) return
-    gameBridge.registerChoreo(choreographer)
+    const busy = (): GameChoreographer | null => {
+      if (choreographers.chess.busy) return choreographers.chess
+      if (choreographers.kittens.busy) return choreographers.kittens
+      return null
+    }
+    /*
+      Which table the question is about.
+
+      A raised surface is the game saying which table it means, and it is right
+      about that even while the other one is still being cleared away — Rau can
+      set the board out himself in the middle of a hand of cards, and for a
+      second or so the room is putting one table away and fetching the other.
+      Falling back to whoever is on their feet covers the opposite end of that
+      second, where the surface has already been handed back but the character
+      it belonged to is still standing up.
+    */
+    const forTable = (): GameChoreographer => {
+      if (gameBridge.surface) {
+        return gameBridge.surface.id === 'chess'
+          ? choreographers.chess
+          : choreographers.kittens
+      }
+      return busy() ?? choreographers.kittens
+    }
+    const router: TableChoreo = {
+      summon: () => forTable().summon(),
+      seatInstantly: () => forTable().seatInstantly(),
+      startDeal: (cards) => forTable().startDeal(cards),
+      // The one question that is not about the table that is up. By the time a
+      // game asks to be put away the surface may already belong to the game
+      // replacing it, and the standing-up is still owed by the one leaving.
+      dismiss: (opts) => (busy() ?? forTable()).dismiss(opts),
+      observe: (verbs) => forTable().observe(verbs),
+      settle: () => forTable().settle(),
+    }
+    gameBridge.registerChoreo(router)
     return () => {
       gameBridge.registerChoreo(null)
     }
-  }, [choreographer, showRoom])
+  }, [choreographers, showRoom])
 
   useEffect(() => {
     scene.roomVisual = roomVisual
@@ -146,8 +206,23 @@ export default function ClawdRoom({
     // put away first — otherwise he walks off to the shelf still seated, with
     // a card table left standing in an empty room.
     const clearTable = () => {
-      if (choreographer.busy) void choreographer.dismiss({ fast: true })
+      for (const c of Object.values(choreographers)) {
+        if (c.busy) void c.dismiss({ fast: true })
+      }
     }
+    // Exercised from the motion tester there is no game to raise the surface,
+    // so the ritual raises it itself: without one the room would draw the
+    // wrong table, or the right one at the wrong shot.
+    const ritual = (c: GameChoreographer): TableRitual => ({
+      begin: () => {
+        gameBridge.activate(c.surface)
+        return c.summon()
+      },
+      end: async (opts) => {
+        await c.dismiss(opts)
+        if (gameBridge.surface === c.surface) gameBridge.activate(null)
+      },
+    })
     onReady?.({
       // Anything a human asks for outranks the model's plan, and cancels the
       // rest of it — playing out the remaining cues over the top of what they
@@ -172,12 +247,10 @@ export default function ClawdRoom({
         bodyController.humanTakeover()
         director.startle()
       },
-      game: {
-        begin: () => choreographer.summon(),
-        end: (opts) => choreographer.dismiss(opts),
-      },
+      game: ritual(choreographers.kittens),
+      chess: ritual(choreographers.chess),
     })
-  }, [choreographer, director, onReady])
+  }, [choreographers, director, onReady])
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
@@ -213,8 +286,13 @@ export default function ClawdRoom({
       room.screen += (wantScreen - room.screen) * Math.min(1, dt * 3)
 
       // Before the director, so a ritual in progress owns the walk this tick
-      // rather than a tick behind it.
-      if (showRoom) choreographer.update(dt, scene)
+      // rather than a tick behind it. Both are ticked whether or not either is
+      // doing anything: an idle one is a pair of damped values settling to
+      // zero, and skipping it is how a dismissed table stops halfway out.
+      if (showRoom) {
+        choreographers.kittens.update(dt, scene)
+        choreographers.chess.update(dt, scene)
+      }
 
       director.update(dt, s)
       rig.update(dt, {
@@ -233,7 +311,36 @@ export default function ClawdRoom({
         ctx.clearRect(0, 0, w, h)
       }
 
-      const cameraTarget = showRoom ? choreographer.cameraTarget : null
+      // Only one table can be up at a time, so combining the two is a way of
+      // saying "whichever of them has something to say this frame" without
+      // having to decide which that is.
+      const kit = choreographers.kittens
+      const chs = choreographers.chess
+      const cameraTarget = showRoom ? kit.cameraTarget ?? chs.cameraTarget : null
+      /*
+        Presence is the exception, because it is the one of these that belongs to
+        a specific piece of furniture. `drawGameTable` paints whichever surface
+        the bridge is holding, so during a handoff — where both choreographers
+        are running, one rising and one still standing up — the maximum is the
+        *outgoing* table's number applied to the *incoming* table's drawing, and
+        the new table appears fully formed instead of rising into place. Asking
+        the choreographer that owns the surface being painted keeps the number
+        and the furniture describing the same thing. The max survives as the
+        fallback for the frames after a surface is handed back, which is the case
+        it was always right for.
+      */
+      const owner =
+        gameBridge.surface?.id === 'chess'
+          ? chs
+          : gameBridge.surface?.id === 'kittens'
+            ? kit
+            : null
+      const tablePresence = showRoom
+        ? owner
+          ? owner.presence
+          : Math.max(kit.presence, chs.presence)
+        : 0
+      const tableDim = showRoom ? Math.max(kit.dim, chs.dim) : 0
       scene.layout(w, h, 1, { showRoom, charScale })
       scene.update(dt, rig.worldX, {
         follow: cinematic && showRoom,
@@ -246,8 +353,8 @@ export default function ClawdRoom({
         follow: cinematic && showRoom,
         showRoom,
         charScale,
-        gameTable: showRoom ? choreographer.presence : 0,
-        gameDim: showRoom ? choreographer.dim : 0,
+        gameTable: tablePresence,
+        gameDim: tableDim,
       })
 
       // Publish the camera and his claws to the DOM cards. After the render,
@@ -286,7 +393,7 @@ export default function ClawdRoom({
       rig,
       director,
       scene,
-      choreographer,
+      choreographers,
       cinematic,
       hourOverride,
       lampOn,
@@ -321,7 +428,7 @@ export default function ClawdRoom({
           // Poking him at the table startles him *in his seat*. The standing
           // startle would eject him out of it for a second and drop the hand
           // he is holding.
-          if (choreographer.busy) {
+          if (choreographers.kittens.busy || choreographers.chess.busy) {
             rig.play('kittenRecoil', { force: true, restart: true })
             return
           }

@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
+import { gameBridge } from './gameBridge'
 import { GAME_CAMERA } from './gameTableLayer'
 import { Scene } from './scene'
 
@@ -93,5 +94,48 @@ describe('the table framing', () => {
     expect(head.y / 900).toBeGreaterThan(0.2)
     expect(head.y / 900).toBeLessThan(0.45)
     expect(surface.y / 900).toBeLessThan(0.7)
+  })
+})
+
+/**
+ * Handing the camera-locked layer back.
+ *
+ * There is one bridge and two tables, and a handoff overlaps them: the arriving
+ * game mounts and attaches while the leaving one is still standing up, so the
+ * leaving table's cleanup runs *after* the arriving table has taken the layer.
+ * An unconditional detach there takes somebody else's element away, and since
+ * both tables attach from a callback ref React has no reason to call twice,
+ * nothing ever puts it back — the new table's DOM children stop tracking the
+ * camera for the rest of the game while the canvas under them keeps moving.
+ *
+ * The failure is silent and looks like a rendering bug an hour later, which is
+ * why it is worth a test rather than a comment.
+ */
+describe('releasing the world layer', () => {
+  const el = (name: string) => ({ name, style: { setProperty() {} } }) as unknown as HTMLElement
+
+  it('gives the layer back when it is still yours', () => {
+    const mine = el('mine')
+    gameBridge.attachWorld(mine)
+    gameBridge.releaseWorld(mine)
+    expect(gameBridge.world).toBe(null)
+  })
+
+  it('leaves the layer alone once the other table has taken it', () => {
+    const leaving = el('chess')
+    const arriving = el('kittens')
+    gameBridge.attachWorld(leaving)
+    // The handoff: the new table mounts and attaches before the old one's
+    // cleanup gets to run.
+    gameBridge.attachWorld(arriving)
+    gameBridge.releaseWorld(leaving)
+    expect(gameBridge.world).toBe(arriving)
+  })
+
+  it('still clears on a plain departure, where nothing else has claimed it', () => {
+    const only = el('only')
+    gameBridge.attachWorld(only)
+    gameBridge.releaseWorld(null)
+    expect(gameBridge.world).toBe(null)
   })
 })
