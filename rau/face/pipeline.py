@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import subprocess
 import queue
-import threading
 import time
 from threading import Event, Thread
 from typing import Optional

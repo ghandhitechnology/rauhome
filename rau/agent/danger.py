@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 from rau.agent.sandbox import PathEscape, resolve_in_root
 from rau.paths import SKILLS_DIR

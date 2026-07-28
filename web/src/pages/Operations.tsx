@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   type AgentStep,
@@ -38,46 +38,68 @@ export default function Operations() {
   const [onceAt, setOnceAt] = useState('')
   const [timezone, setTimezone] = useState('Asia/Seoul')
   const [profile, setProfile] = useState<'eco' | 'balanced' | 'performance'>('balanced')
+  /**
+   * Live events arrive in bursts (one job transition can emit several). Fold
+   * those into at most one active request and one trailing refresh, instead of
+   * racing full snapshots and an N+1 schedule-history load against each other.
+   */
+  const refreshState = useRef({ running: false, queued: false, includeRuns: false })
 
-  const refresh = useCallback(async () => {
-    try {
-      const [jobData, scheduleData, pending, sessions] = await Promise.all([
-        api.jobs(),
-        api.schedules(),
-        api.confirmations(),
-        api.computerSessions(),
-      ])
-      setJobs(jobData.jobs || [])
-      setSchedules(scheduleData.schedules || [])
-      setConfirmations(pending.confirmations || [])
-      setComputer(sessions.sessions || [])
-      const histories = await Promise.all(
-        (scheduleData.schedules || []).map(async (schedule) => [
-          schedule.id,
-          (await api.scheduleRuns(schedule.id)).runs || [],
-        ] as const),
-      )
-      setRuns(Object.fromEntries(histories))
-      setError('')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not load operations')
-    } finally {
-      // Even a failed load has to leave the skeleton, or the error banner it
-      // just set would never be reachable.
-      setLoaded(true)
+  const refresh = useCallback(async (includeRuns = false) => {
+    const state = refreshState.current
+    state.queued = true
+    state.includeRuns ||= includeRuns
+    if (state.running) return
+    state.running = true
+
+    while (state.queued) {
+      const loadRuns = state.includeRuns
+      state.queued = false
+      state.includeRuns = false
+      try {
+        const [jobData, scheduleData, pending, sessions] = await Promise.all([
+          api.jobs(),
+          api.schedules(),
+          api.confirmations(),
+          api.computerSessions(),
+        ])
+        const nextSchedules = scheduleData.schedules || []
+        setJobs(jobData.jobs || [])
+        setSchedules(nextSchedules)
+        setConfirmations(pending.confirmations || [])
+        setComputer(sessions.sessions || [])
+        if (loadRuns) {
+          const histories = await Promise.all(
+            nextSchedules.map(async (schedule) => [
+              schedule.id,
+              (await api.scheduleRuns(schedule.id)).runs || [],
+            ] as const),
+          )
+          setRuns(Object.fromEntries(histories))
+        }
+        setError('')
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Could not load operations')
+      } finally {
+        // Even a failed load has to leave the skeleton, or the error banner it
+        // just set would never be reachable.
+        setLoaded(true)
+      }
     }
+    state.running = false
   }, [])
 
   useEffect(() => {
-    void refresh()
+    void refresh(true)
     const off = live.subscribe((event) => {
-      if (
+      if (event.kind.startsWith('schedule_')) {
+        void refresh(true)
+      } else if (
         event.kind.startsWith('job_') ||
-        event.kind.startsWith('schedule_') ||
         event.kind.startsWith('computer_') ||
         event.kind.startsWith('confirm_')
       ) {
-        void refresh()
+        void refresh(false)
       }
     })
     return off
@@ -90,7 +112,10 @@ export default function Operations() {
     else if (kind === 'interval') {
       trigger = { kind, seconds: interval, anchor: new Date().toISOString() }
     } else {
-      trigger = { kind, at: new Date(onceAt).toISOString() }
+      // `datetime-local` has no offset. Send the wall time intact so the hub
+      // can interpret it in the IANA timezone selected below; converting here
+      // would silently use the browser's timezone instead.
+      trigger = { kind, at: onceAt }
     }
     try {
       await api.createSchedule({
@@ -104,7 +129,7 @@ export default function Operations() {
       })
       setName('')
       setGoal('')
-      await refresh()
+      await refresh(true)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not create schedule')
     }
@@ -126,7 +151,7 @@ export default function Operations() {
           <h1>Operations</h1>
           <p>Durable jobs, schedules, approvals, and machine control.</p>
         </div>
-        <button className="btn" onClick={() => void refresh()}>Refresh snapshot</button>
+        <button className="btn" onClick={() => void refresh(true)}>Refresh snapshot</button>
       </div>
       {error ? <p className="ops-error">{error}</p> : null}
 
@@ -190,8 +215,8 @@ export default function Operations() {
                 <p>{confirmation.summary}</p>
                 <small>Expires {when(confirmation.expires)}</small>
                 <div className="row">
-                  <button className="btn sm danger" onClick={() => api.confirm(false, confirmation.id).then(refresh).catch(() => {})}>Deny</button>
-                  <button className="btn sm primary" onClick={() => api.confirm(true, confirmation.id).then(refresh).catch(() => {})}>Approve exact action</button>
+                  <button className="btn sm danger" onClick={() => api.confirm(false, confirmation.id).then(() => refresh(false)).catch(() => {})}>Deny</button>
+                  <button className="btn sm primary" onClick={() => api.confirm(true, confirmation.id).then(() => refresh(false)).catch(() => {})}>Approve exact action</button>
                 </div>
               </div>
             ))}
@@ -223,11 +248,11 @@ export default function Operations() {
                 Next: {when(schedule.next_run_at)} · {schedule.resource_profile}
               </small>
               <div className="row">
-                <button className="btn sm" onClick={() => api.runSchedule(schedule.id).then(refresh).catch(() => {})}>Run now</button>
-                <button className="btn sm" onClick={() => (schedule.enabled ? api.pauseSchedule(schedule.id) : api.resumeSchedule(schedule.id)).then(refresh).catch(() => {})}>
+                <button className="btn sm" onClick={() => api.runSchedule(schedule.id).then(() => refresh(true)).catch(() => {})}>Run now</button>
+                <button className="btn sm" onClick={() => (schedule.enabled ? api.pauseSchedule(schedule.id) : api.resumeSchedule(schedule.id)).then(() => refresh(true)).catch(() => {})}>
                   {schedule.enabled ? 'Pause' : 'Resume'}
                 </button>
-                <button className="btn sm danger" onClick={() => api.deleteSchedule(schedule.id).then(refresh).catch(() => {})}>Delete</button>
+                <button className="btn sm danger" onClick={() => api.deleteSchedule(schedule.id).then(() => refresh(true)).catch(() => {})}>Delete</button>
               </div>
               <div className="run-strip">
                 {(runs[schedule.id] || []).slice(0, 8).map((run) => (

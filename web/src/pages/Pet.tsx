@@ -27,7 +27,7 @@ export default function Pet() {
 
   const refresh = useCallback(async () => {
     try {
-      const [log, emo, status] = await Promise.all([api.log(), api.emotion(), api.status()])
+      const [log, emo, status] = await Promise.all([api.log(), api.emotion(), api.health()])
       const entries: { role?: string; text?: string; time?: string }[] = log.log || []
       const idx = entries.map((m) => m.role !== 'user').lastIndexOf(true)
       const reply = idx >= 0 ? entries[idx] : null

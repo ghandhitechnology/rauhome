@@ -6,13 +6,13 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from rau.control.store import ControlStore, control_store
 from rau.events import BUS
-from rau.scheduler.cron import CronError, CronSpec, nominal_key
+from rau.scheduler.cron import CronSpec, nominal_key
 
 TRIGGER_KINDS = ("once", "interval", "cron")
 RESOURCE_PROFILES = ("eco", "balanced", "performance")
@@ -25,7 +25,7 @@ MAX_CATCHUP_SCAN = 100_000
 RETRY_BACKOFF_SEC = (30, 120, 600)
 
 
-def _timestamp(value: Any, name: str) -> float:
+def _timestamp(value: Any, name: str, timezone_name: Optional[str] = None) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a timestamp")
     if isinstance(value, (int, float)):
@@ -35,9 +35,23 @@ def _timestamp(value: Any, name: str) -> float:
         if not text:
             raise ValueError(f"{name} is required")
         try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError as exc:
             raise ValueError(f"{name} must be ISO-8601 or epoch seconds") from exc
+        if moment.tzinfo is None and timezone_name:
+            zone = ZoneInfo(timezone_name)
+            local = moment.replace(tzinfo=zone)
+            parsed = local.timestamp()
+            # `zoneinfo` normalizes a wall time that never existed during a
+            # DST jump. Reject that typo instead of silently moving the job
+            # an hour away from what the form displayed.
+            round_trip = datetime.fromtimestamp(parsed, zone).replace(tzinfo=None)
+            if round_trip != moment:
+                raise ValueError(
+                    f"{name} is not a real local time in {timezone_name}"
+                )
+        else:
+            parsed = moment.timestamp()
     else:
         raise ValueError(f"{name} must be ISO-8601 or epoch seconds")
     if not math.isfinite(parsed) or parsed <= 0:
@@ -63,11 +77,14 @@ def _normalize_trigger(
     if kind not in TRIGGER_KINDS:
         raise ValueError(f"trigger.kind must be one of {', '.join(TRIGGER_KINDS)}")
     if kind == "once":
-        at = _timestamp(trigger.get("at"), "trigger.at")
+        at = _timestamp(trigger.get("at"), "trigger.at", timezone_name)
         return kind, {"kind": kind, "at": at}, at
     if kind == "interval":
+        raw_seconds = trigger.get("seconds")
+        if raw_seconds is None or isinstance(raw_seconds, bool):
+            raise ValueError("trigger.seconds must be an integer")
         try:
-            seconds = int(trigger.get("seconds"))
+            seconds = int(raw_seconds)
         except (TypeError, ValueError) as exc:
             raise ValueError("trigger.seconds must be an integer") from exc
         if not MIN_INTERVAL_SEC <= seconds <= MAX_INTERVAL_SEC:
@@ -194,7 +211,10 @@ class SchedulerService:
         if not goal or len(goal) > MAX_GOAL_CHARS:
             raise ValueError(f"goal must contain 1-{MAX_GOAL_CHARS} characters")
         tz = _timezone(body.get("timezone"))
-        kind, trigger, next_run = _normalize_trigger(body.get("trigger"), tz, stamp)
+        raw_trigger = body.get("trigger")
+        if not isinstance(raw_trigger, dict):
+            raise ValueError("trigger must be an object")
+        kind, trigger, next_run = _normalize_trigger(raw_trigger, tz, stamp)
         profile = str(body.get("resource_profile") or "balanced").lower()
         if profile not in RESOURCE_PROFILES:
             raise ValueError("invalid resource_profile")

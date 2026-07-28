@@ -1,7 +1,6 @@
 """Local tools available to the subagent."""
 from __future__ import annotations
 
-import json
 import os
 import signal
 import subprocess
@@ -18,9 +17,8 @@ from rau.agent.sandbox import (
     resolve_in_root,
     shell_argv,
 )
-from rau.computer.cua import execute_action
 from rau.mcp.client import MCP
-from rau.memory.store import append_diary, append_trace, recent_context, write_daily_log
+from rau.memory.store import append_diary, append_trace, recent_context
 from rau.paths import ROOT
 
 SHELL_TIMEOUT_SEC = 120.0

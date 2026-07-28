@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- SVG definitions and their shared geometry form one piece set */
 /* ─────────────────────────────────────────────────────────────
    Chess — the blank, the lathe and the light
 

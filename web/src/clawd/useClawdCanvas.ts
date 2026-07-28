@@ -22,7 +22,6 @@ export function useClawdCanvas(
     if (!ctx) return
 
     let raf = 0
-    let timer: ReturnType<typeof setTimeout> | null = null
     let last = performance.now()
     let width = 0
     let height = 0
@@ -89,29 +88,28 @@ export function useClawdCanvas(
     }
 
     const scheduleFrame = () => {
-      // A hidden tab stops firing rAF, so the slow path keeps a heartbeat
-      // going: it is how the loop notices it has been un-hidden.
-      if (document.hidden) {
-        timer = setTimeout(() => {
-          timer = null
-          raf = requestAnimationFrame(frame)
-        }, 250)
-        return
-      }
+      // Visibility events restart the loop. Do no work while hidden: even a
+      // 250ms timer becomes thousands of needless wakeups in a background tab.
+      if (document.hidden) return
       raf = requestAnimationFrame(frame)
     }
 
     scheduleFrame()
 
     const onVisible = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(raf)
+        raf = 0
+        return
+      }
       last = performance.now()
+      if (!raf) scheduleFrame()
     }
     document.addEventListener('visibilitychange', onVisible)
 
     return () => {
       disposed = true
       cancelAnimationFrame(raf)
-      if (timer) clearTimeout(timer)
       ro.disconnect()
       document.removeEventListener('visibilitychange', onVisible)
     }

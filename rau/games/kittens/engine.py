@@ -182,7 +182,9 @@ class Game:
         try:
             self.hands[seat].remove(card)
         except ValueError:
-            raise IllegalMove(f"you are not holding {deck_mod.label(card)}", "not_held")
+            raise IllegalMove(
+                f"you are not holding {deck_mod.label(card)}", "not_held"
+            ) from None
 
     def _give(self, seat: str, card: str) -> None:
         self.hands[seat].append(card)

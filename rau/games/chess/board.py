@@ -306,7 +306,9 @@ class ChessGame:
             origin = chess.parse_square(str(from_sq).strip().lower())
             target = chess.parse_square(str(to_sq).strip().lower())
         except (ValueError, AttributeError):
-            raise IllegalMove("that isn't a square on this board", "bad_square")
+            raise IllegalMove(
+                "that isn't a square on this board", "bad_square"
+            ) from None
 
         piece = self.board.piece_at(origin)
         if piece is None:

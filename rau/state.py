@@ -30,7 +30,7 @@ _state: Dict[str, Any] = {
 
 _chat_log: List[Dict[str, Any]] = []
 MAX_LOG = 100
-_control_queue = deque(maxlen=256)
+_control_queue: deque[Dict[str, Any]] = deque(maxlen=256)
 _browser_voice_sessions = 0
 _listening_before_browser_voice: Optional[bool] = None
 

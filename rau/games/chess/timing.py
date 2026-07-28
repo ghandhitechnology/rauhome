@@ -215,7 +215,7 @@ def _hovers(
     scale = total / sum(weights)
     steps = [
         HoverStep(square=square, dwell=round(max(MIN_DWELL, weight * scale), 2))
-        for square, weight in zip(squares, weights)
+        for square, weight in zip(squares, weights, strict=True)
     ]
 
     # Rounding and the dwell floor can both push the script past the pause it is

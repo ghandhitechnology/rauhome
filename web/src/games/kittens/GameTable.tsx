@@ -362,6 +362,13 @@ function GameOverScene({ table, onAgain, onLeave }: {
 export default memo(function GameTable() {
   const { table, busy, error } = useGame()
   const phase = usePhase()
+  const gameId = table?.game_id ?? ''
+  const tablePhase = table?.phase ?? ''
+  const awaitingYou = table?.awaiting_you ?? false
+  const handSignature = table?.hand.join(',') ?? ''
+  const playerHandCount = table?.hand.length ?? 0
+  const rauHandCount = table?.hand_counts.rau ?? 0
+  const defuseIndex = table?.hand.indexOf('defuse') ?? -1
   const [hand, rawDispatch] = useReducer(handReducer, IDLE_HAND)
   /*
     The gesture cannot be read out of the render closure.
@@ -452,23 +459,26 @@ export default memo(function GameTable() {
     dispatch({ type: 'reset' })
     setNamed(null)
     setHint('')
-  }, [table?.hand.join(','), table?.phase, dispatch])
+  }, [handSignature, tablePhase, dispatch])
 
   // The server asking for something raises the card itself: being told to
   // defuse and then having to find the Defuse in your own fan is a puzzle
   // nobody wanted.
   useEffect(() => {
-    if (!table || !table.awaiting_you) return
-    if (table.phase === 'awaiting_defuse') {
-      const i = table.hand.indexOf('defuse')
-      dispatch({ type: 'raise', indices: i >= 0 ? [i] : [], picker: 'defuse' })
+    if (!awaitingYou) return
+    if (tablePhase === 'awaiting_defuse') {
+      dispatch({
+        type: 'raise',
+        indices: defuseIndex >= 0 ? [defuseIndex] : [],
+        picker: 'defuse',
+      })
       setInsertAt(0)
     }
     // The hand signature is in here as well as in the reset above, and has to
     // be: the reset fires on any change to the hand, so without re-raising
     // afterwards a Defuse prompt would quietly disappear the moment anything
     // else about your cards moved.
-  }, [table?.phase, table?.awaiting_you, table?.game_id, table?.hand.join(','), dispatch])
+  }, [tablePhase, awaitingYou, gameId, handSignature, defuseIndex, dispatch])
 
   /* ── where things are, in screen pixels ─────────────────────────── */
 
@@ -522,16 +532,16 @@ export default memo(function GameTable() {
   /* ── the deal ───────────────────────────────────────────────────── */
 
   useEffect(() => {
-    if (phase !== 'dealing' || !table) return
+    if (phase !== 'dealing' || !gameId) return
     let cancelled = false
     setDealtCount(0)
     setDealtRau(0)
 
     // Alternating, the way anyone deals: one to you, one to him, round again.
     const order: ('you' | 'him')[] = []
-    for (let i = 0; i < Math.max(table.hand.length, table.hand_counts.rau); i++) {
-      if (i < table.hand.length) order.push('you')
-      if (i < table.hand_counts.rau) order.push('him')
+    for (let i = 0; i < Math.max(playerHandCount, rauHandCount); i++) {
+      if (i < playerHandCount) order.push('you')
+      if (i < rauHandCount) order.push('him')
     }
     const flicks = gameBridge.choreography?.startDeal(order.length) ?? []
 
@@ -593,7 +603,7 @@ export default memo(function GameTable() {
       cancelled = true
       cancelAnimationFrame(raf)
     }
-  }, [phase, table?.game_id, pointOf, scaleOf])
+  }, [phase, gameId, playerHandCount, rauHandCount, pointOf, scaleOf])
 
   /* ── everything else that moves ─────────────────────────────────── */
 

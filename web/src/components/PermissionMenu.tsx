@@ -30,15 +30,6 @@ export default function PermissionMenu() {
 
   const hydrate = useCallback(async () => {
     try {
-      const s = await api.status()
-      if (s?.permission_mode) {
-        setMode(parseMode(s.permission_mode))
-        return
-      }
-      if (s?.permissions) {
-        setMode(parseMode(s.permissions.room || s.permissions.subagents))
-        return
-      }
       const p = await api.getPermissions()
       setMode(parseMode(p.mode ?? p.permissions?.room))
     } catch {

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 import { api } from './api'
 import { ModeProvider, useMode } from './mode'
 import { useGlobalHotkey } from './hooks/useGlobalHotkey'
@@ -37,6 +37,7 @@ export default function App() {
 
 function Shell() {
   const [ready, setReady] = useState<boolean | null>(null)
+  const [bootError, setBootError] = useState('')
   const loc = useLocation()
   const isTalk = loc.pathname === '/'
   const isSetup = loc.pathname.startsWith('/setup')
@@ -48,14 +49,22 @@ function Shell() {
   // composer — hence the intercept, which also eats the space that would land.
   useGlobalHotkey('shift+space', toggleMode, { allowInInput: true, preventDefault: true })
 
-  useEffect(() => {
+  const checkIdentity = useCallback(() => {
+    setBootError('')
     api
       .identity()
       .then((d) => setReady(!!d.ready))
-      // A hub blip must not throw a configured app back into the setup
-      // wizard — only fail closed when we never knew better.
-      .catch(() => setReady((r) => (r === null ? false : r)))
-  }, [loc.pathname])
+      // An unreachable hub says nothing about whether setup is complete.
+      // Keep that state distinct so a restart never sends an existing user
+      // into a wizard whose own API calls cannot work either.
+      .catch((error) => {
+        setBootError(error instanceof Error ? error.message : 'Could not reach the hub')
+      })
+  }, [])
+
+  useEffect(() => {
+    checkIdentity()
+  }, [checkIdentity])
 
   useEffect(() => {
     // The tier is a startup fact for CSS as much as for the canvas.
@@ -69,6 +78,20 @@ function Shell() {
   }, [])
 
   if (ready === null) {
+    if (bootError) {
+      return (
+        <div className="boot boot-error" role="alert">
+          <div className="boot-inner">
+            <span className="boot-word">Rau</span>
+            <strong>Can’t reach the hub</strong>
+            <span className="muted">{bootError}</span>
+            <button className="btn primary" onClick={checkIdentity}>
+              Try again
+            </button>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="boot">
         <div className="boot-inner">
@@ -174,6 +197,6 @@ function RoutePage({
     case '/settings':
       return <Settings />
     default:
-      return null
+      return <Navigate to="/" replace />
   }
 }

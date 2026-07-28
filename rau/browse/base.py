@@ -92,6 +92,7 @@ class BrowseProvider(ABC):
 
     def close(self) -> None:
         """Release anything held open. Safe to call more than once."""
+        return None
 
 
 def post_json(

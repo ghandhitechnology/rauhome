@@ -240,10 +240,16 @@ export function useCountdownVar(
     const step = () => {
       const left = Math.max(0, deadline * 1000 - Date.now())
       el.style.setProperty(name, String(Math.min(1, left / total)))
+      if (left <= 0) {
+        frame = 0
+        return
+      }
       frame = requestAnimationFrame(step)
     }
     step()
-    return () => cancelAnimationFrame(frame)
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+    }
   }, [deadline, total, name])
   return ref
 }

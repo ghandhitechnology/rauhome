@@ -282,7 +282,7 @@ def take_turn(game: Game) -> None:
     say = ""
     correction = ""
 
-    for attempt in range(2):
+    for _attempt in range(2):
         try:
             raw = _ask_model(_turn_prompt(game, correction=correction))
         except Exception as exc:

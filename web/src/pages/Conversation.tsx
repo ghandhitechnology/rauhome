@@ -282,7 +282,7 @@ export default function Conversation() {
     if (refreshingRef.current) return
     refreshingRef.current = true
     try {
-      const [l, e, s] = await Promise.all([api.log(), api.emotion(), api.status()])
+      const [l, e, s] = await Promise.all([api.log(), api.emotion(), api.health()])
       setLog(l.log || [])
       setEmotion((e.emotion || 'idle').toLowerCase())
       setConfirm(s.confirm || null)

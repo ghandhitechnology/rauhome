@@ -5,7 +5,6 @@ import json
 import os
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from rau.paths import ACTIVE_GOAL, ensure_dirs
