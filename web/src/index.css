@@ -946,6 +946,13 @@ h3 {
 
 /* Talk locks to the viewport: thread scrolls, composer stays put. */
 .app-shell.talk-mode {
+  /*
+    One rail measurement drives the drawer, the corner controls, and the chat
+    offset. Keeping the offset at half the rail width centers the unchanged
+    chat column in the viewport space left beside the drawer.
+  */
+  --activity-rail-width: clamp(17rem, 22vw, 19rem);
+  --activity-chat-shift: clamp(8.5rem, 11vw, 9.5rem);
   height: 100%;
   min-height: 100%;
   overflow: hidden;
@@ -960,8 +967,12 @@ h3 {
   padding: 1.15rem 1.25rem 0;
 }
 
-.app-shell.talk-mode .main-talk:has(.convo.has-activity) {
-  max-width: min(1240px, 100%);
+.app-shell.talk-mode .convo-main {
+  transition: transform var(--dur-3) var(--ease);
+}
+
+.app-shell.talk-mode.activity-open .convo-main {
+  transform: translate3d(calc(0px - var(--activity-chat-shift)), 0, 0);
 }
 
 .app-shell.talk-mode .main-talk > .route-fade {
@@ -991,6 +1002,169 @@ html[data-view-transitions='on'] .route-fade {
 
 ::view-transition-new(root) {
   animation: fade-in var(--dur-page) var(--ease);
+}
+
+/*
+  Room navigation is spatial rather than a page cross-fade. The old/new route
+  roots stay fixed beneath one shared portal while its browser-generated bounds
+  animation grows the avatar panel into the viewport (and reverses on return).
+*/
+html[data-route-transition] .convo-room-launcher .clawd-avatar,
+html[data-route-transition] .face {
+  view-transition-name: rau-room-portal;
+}
+
+html[data-route-transition] {
+  --room-transition-duration: 400ms;
+}
+
+html[data-route-transition] .face {
+  animation: none;
+}
+
+html[data-route-fallback] .face,
+html[data-route-fallback] .route-fade {
+  animation: room-route-fallback 180ms var(--ease) both;
+}
+
+html[data-route-transition] .face-top {
+  view-transition-name: rau-room-chrome;
+}
+
+html[data-route-transition]::view-transition-group(rau-room-portal) {
+  z-index: 1;
+  animation-duration: var(--room-transition-duration);
+  animation-timing-function: var(--ease-in-out);
+}
+
+html[data-route-transition]::view-transition-image-pair(rau-room-portal) {
+  overflow: hidden;
+  animation-duration: var(--room-transition-duration);
+  animation-timing-function: var(--ease-in-out);
+  animation-fill-mode: both;
+}
+
+html[data-route-transition]::view-transition-group(rau-room-chrome) {
+  z-index: 2;
+  animation-duration: var(--room-transition-duration);
+}
+
+html[data-route-transition='room-open']::view-transition-old(root),
+html[data-route-transition='room-close']::view-transition-new(root) {
+  animation: none;
+  opacity: 1;
+}
+
+html[data-route-transition='room-open']::view-transition-new(root),
+html[data-route-transition='room-close']::view-transition-old(root) {
+  animation: none;
+  opacity: 0;
+}
+
+html[data-route-transition='room-open']::view-transition-image-pair(rau-room-portal) {
+  animation-name: room-portal-round-open;
+}
+
+html[data-route-transition='room-close']::view-transition-image-pair(rau-room-portal) {
+  animation-name: room-portal-round-close;
+}
+
+html[data-route-transition='room-open']::view-transition-old(rau-room-portal) {
+  animation: room-portal-old-open var(--room-transition-duration) var(--ease-in-out) both;
+}
+
+html[data-route-transition='room-open']::view-transition-new(rau-room-portal) {
+  animation: room-portal-new-open var(--room-transition-duration) var(--ease-in-out) both;
+}
+
+html[data-route-transition='room-close']::view-transition-old(rau-room-portal) {
+  animation: room-portal-old-close var(--room-transition-duration) var(--ease-in-out) both;
+}
+
+html[data-route-transition='room-close']::view-transition-new(rau-room-portal) {
+  animation: room-portal-new-close var(--room-transition-duration) var(--ease-in-out) both;
+}
+
+html[data-route-transition='room-open']::view-transition-new(rau-room-chrome) {
+  animation: room-chrome-in var(--room-transition-duration) var(--ease) both;
+}
+
+html[data-route-transition='room-close']::view-transition-old(rau-room-chrome) {
+  animation: room-chrome-out var(--room-transition-duration) var(--ease) both;
+}
+
+@keyframes room-portal-round-open {
+  from { border-radius: var(--r-lg); }
+  to { border-radius: 0; }
+}
+
+@keyframes room-portal-round-close {
+  from { border-radius: 0; }
+  to { border-radius: var(--r-lg); }
+}
+
+@keyframes room-portal-old-open {
+  0%,
+  32% { opacity: 1; }
+  72%,
+  100% { opacity: 0; }
+}
+
+@keyframes room-portal-new-open {
+  0% {
+    opacity: 0;
+    clip-path: circle(0 at var(--room-ripple-x) var(--room-ripple-y));
+  }
+  12% { opacity: 0.18; }
+  100% {
+    opacity: 1;
+    clip-path: circle(
+      var(--room-ripple-radius) at var(--room-ripple-x) var(--room-ripple-y)
+    );
+  }
+}
+
+@keyframes room-portal-old-close {
+  0% {
+    opacity: 1;
+    clip-path: circle(
+      var(--room-ripple-radius) at var(--room-ripple-x) var(--room-ripple-y)
+    );
+  }
+  88% { opacity: 0.18; }
+  100% {
+    opacity: 0;
+    clip-path: circle(0 at var(--room-ripple-x) var(--room-ripple-y));
+  }
+}
+
+@keyframes room-portal-new-close {
+  0%,
+  58% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes room-chrome-in {
+  0%,
+  70% {
+    opacity: 0;
+    transform: translateY(-0.45rem);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes room-chrome-out {
+  0% { opacity: 1; }
+  24%,
+  100% { opacity: 0; }
+}
+
+@keyframes room-route-fallback {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* The nav indicator is a single element that slides between items rather than
@@ -1057,13 +1231,36 @@ html[data-view-transitions='on'] .route-fade {
   }
 }
 
-/* ── corner link (talk view) ───────────────────────────────── */
+/* ── corner controls (talk view) ───────────────────────────── */
 
-.dash-corner {
+.talk-corners {
   position: fixed;
   top: 1rem;
   right: 1.1rem;
   z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: right var(--dur-3) var(--ease);
+}
+
+.talk-corners.open {
+  right: calc(1.1rem + var(--activity-rail-width));
+}
+
+.talk-activity-chip {
+  height: 2.2rem;
+  padding: 0 0.78rem;
+  backdrop-filter: blur(10px);
+  background: rgba(16, 16, 21, 0.6);
+  box-shadow: var(--shadow-1);
+}
+
+.dash-corner {
+  position: relative;
+  top: auto;
+  right: auto;
+  z-index: auto;
   width: 2.2rem;
   height: 2.2rem;
   display: grid;
@@ -1090,6 +1287,27 @@ html[data-view-transitions='on'] .route-fade {
 .dash-corner svg {
   width: 15px;
   height: 15px;
+}
+
+/*
+  Below this width there is not enough room for the full 820px chat frame and
+  the rail side by side. Let the rail overlay instead of clipping or shrinking
+  the conversation.
+*/
+@media (max-width: 1100px) {
+  .app-shell.talk-mode.activity-open .convo-main {
+    transform: none;
+  }
+}
+
+@media (max-width: 540px) {
+  .app-shell.talk-mode {
+    --activity-rail-width: min(18rem, 86vw);
+  }
+
+  .talk-corners.open {
+    right: 1.1rem;
+  }
 }
 
 /* ── buttons ───────────────────────────────────────────────── */

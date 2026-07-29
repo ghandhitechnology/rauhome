@@ -31,6 +31,10 @@ type Props = {
   busy?: boolean
   /** Follow the pointer with the eyes. */
   trackPointer?: boolean
+  /** Whether pressing the canvas pokes and startles Rau. */
+  interactive?: boolean
+  /** Called after the canvas has painted its first frame. */
+  onFirstFrame?: () => void
   className?: string
 }
 
@@ -63,6 +67,8 @@ export default function ClawdAvatar({
   emotion = 'idle',
   busy = false,
   trackPointer = true,
+  interactive = true,
+  onFirstFrame,
   className = '',
 }: Props) {
   const rigRef = useRef<ClawdRig | null>(null)
@@ -199,7 +205,7 @@ export default function ClawdAvatar({
     }
 
     drawClawd(ctx, rig.params, { unit, x, y })
-  }, [rig, trackPointer])
+  }, [rig, trackPointer], { onFirstFrame })
 
   // Resize and scroll move the canvas, but so does content reflowing without a
   // scroll — a thread growing above the avatar pushes it down silently. These
@@ -230,11 +236,15 @@ export default function ClawdAvatar({
     <div className={`clawd-avatar ${className}`}>
       <canvas
         ref={canvasRef}
-        onPointerDown={() => {
-          // A poke is human input, and outranks the model's plan.
-          bodyController.humanTakeover()
-          rig.play('startle', { force: true, restart: true })
-        }}
+        onPointerDown={
+          interactive
+            ? () => {
+                // A poke is human input, and outranks the model's plan.
+                bodyController.humanTakeover()
+                rig.play('startle', { force: true, restart: true })
+              }
+            : undefined
+        }
         aria-hidden
       />
       <span className="sr-only">{tr('avatar.state', { emotion: moodWord(emotion) })}</span>

@@ -48,6 +48,8 @@ type Props = {
   onHitRect?: (rect: HitRect) => void
   /** Exposes the director so a parent can drive it (motion tester). */
   onReady?: (api: ClawdRoomApi) => void
+  /** Called after the room canvas has painted its first frame. */
+  onFirstFrame?: () => void
 }
 
 /** Sitting him down at one table, exposed so it can be run without a game. */
@@ -86,6 +88,7 @@ export default function ClawdRoom({
   charScale = 1,
   onHitRect,
   onReady,
+  onFirstFrame,
 }: Props) {
   const rig = useMemo(() => new ClawdRig(), [])
   const director = useMemo(() => new Director(rig, 'room'), [rig])
@@ -425,6 +428,7 @@ export default function ClawdRoom({
     // props here tore the RAF loop down and rebuilt it on every hover or
     // hour scrub, a one-frame blank each time.
     [rig, director, scene, choreographers],
+    { onFirstFrame },
   )
 
   return (

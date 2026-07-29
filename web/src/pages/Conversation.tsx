@@ -8,18 +8,18 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from 'react'
-import { Link } from '../router'
+import { Link, preloadRoute } from '../router'
 import ChatMarkdown from '../components/ChatMarkdown'
-import ActivityInspector, {
-  ActivityChip,
-} from '../components/ActivityInspector'
+import ActivityInspector from '../components/ActivityInspector'
 import ClawdAvatar from '../components/ClawdAvatar'
 import PermissionMenu from '../components/PermissionMenu'
 import SlashMenu from '../components/SlashMenu'
 import { HyperToggle } from '../components/HyperMode'
 import { ThreadSkeleton } from '../components/PageSkeleton'
 import { api } from '../api'
+import { activityStore, useActivity } from '../activity'
 import { live } from '../live'
+import { signalRouteCanvasReady } from '../routeTransition'
 import {
   useMode,
   modeListens,
@@ -38,6 +38,10 @@ import {
   type SlashCmd,
 } from '../slash'
 import './Conversation.css'
+
+function preloadRoom() {
+  void preloadRoute('/face')
+}
 
 /**
  * Rubber-band overscroll: past the bottom, compress/repulse the composer.
@@ -622,7 +626,12 @@ export default function Conversation() {
   const [streaming, setStreaming] = useState<{ turnId: string; text: string } | null>(null)
   const [offline, setOffline] = useState(false)
   const [deskWorking, setDeskWorking] = useState(() => live.isWorking())
-  const [activityOpen, setActivityOpen] = useState(false)
+  const { panelOpen: activityOpen } = useActivity()
+
+  // Touch has no hover signal, and a first click should not spend its opening
+  // beat fetching the room chunk. Warm it as soon as Talk becomes interactive.
+  useEffect(preloadRoom, [])
+
   /*
     The draft is the page's, not the composer's: cycling the mode through
     `space-talk` unmounts the composer, and unsent text has to survive that.
@@ -881,7 +890,7 @@ export default function Conversation() {
   const working = hardState === 'running' || hardState === 'awaiting_confirm'
 
   return (
-    <div className={`convo${activityOpen ? ' has-activity' : ''}`}>
+    <div className="convo">
       <div className="convo-main">
       <header className="convo-hero">
         <div className="convo-brand">
@@ -892,15 +901,37 @@ export default function Conversation() {
           </p>
         </div>
         <div className="convo-eyes">
-          <ClawdAvatar emotion={emotion} busy={sending} />
-          <Link to="/face" className="convo-room-link">
-            {t('talk.openRoom')}
+          <Link
+            to="/face"
+            className="convo-room-launcher"
+            aria-label={t('talk.openRoom')}
+            onPointerEnter={preloadRoom}
+            onPointerDown={preloadRoom}
+            onFocus={preloadRoom}
+            transition={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect()
+              const keyboard = event.detail === 0
+              return {
+                kind: 'room-open',
+                origin: keyboard
+                  ? {
+                      x: rect.left + rect.width / 2,
+                      y: rect.top + rect.height / 2,
+                    }
+                  : { x: event.clientX, y: event.clientY },
+              }
+            }}
+          >
+            <ClawdAvatar
+              emotion={emotion}
+              busy={sending}
+              interactive={false}
+              onFirstFrame={signalRouteCanvasReady}
+            />
+            <span className="convo-room-link" aria-hidden>
+              {t('talk.openRoom')}
+            </span>
           </Link>
-          <ActivityChip
-            open={activityOpen}
-            onToggle={() => setActivityOpen((value) => !value)}
-            className="convo-activity-chip"
-          />
           {mode === 'space-talk' && (
             <div className="space-talk-controls" role="status">
               <span data-hyper-wake="">
@@ -1012,15 +1043,17 @@ export default function Conversation() {
       )}
       </div>
 
-      {activityOpen && (
-        <aside className="convo-activity-sidebar" aria-label={t('talk.sidebarLabel')}>
-          <ActivityInspector
-            global
-            variant="sidebar"
-            onClose={() => setActivityOpen(false)}
-          />
-        </aside>
-      )}
+      <aside
+        className={`convo-activity-sidebar${activityOpen ? ' is-open' : ''}`}
+        aria-label={t('talk.sidebarLabel')}
+        aria-hidden={!activityOpen}
+      >
+        <ActivityInspector
+          global
+          variant="sidebar"
+          onClose={() => activityStore.setPanelOpen(false)}
+        />
+      </aside>
     </div>
   )
 }

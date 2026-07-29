@@ -28,6 +28,7 @@ import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
 import { HyperToggle } from '../components/HyperMode'
 import { panelStore, type PanelSummary } from '../panels'
+import { signalRouteCanvasReady } from '../routeTransition'
 
 import { gameStore, useGame } from '../games/kittens/useGame'
 import { phaseStore, usePhase } from '../games/kittens/phase'
@@ -601,6 +602,7 @@ export default function Face() {
         roomVisual={roomVisual}
         onHitRect={placeTourAnchor}
         onReady={onReady}
+        onFirstFrame={signalRouteCanvasReady}
       />
       <div ref={tourAnchorRef} className="tour-room-anchor" data-tour="room" aria-hidden />
 
@@ -671,7 +673,12 @@ export default function Face() {
 
       <header className="face-top">
         <div className="face-top-left">
-          <Link to="/" className="face-back" aria-label={t('face.backLabel')}>
+          <Link
+            to="/"
+            className="face-back"
+            aria-label={t('face.backLabel')}
+            transition={{ kind: 'room-close' }}
+          >
             {t('face.back')}
           </Link>
           <div
