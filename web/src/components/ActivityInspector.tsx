@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, type ActivitySpan, type AgentStep, type Job } from '../api'
-import { activityFor, activityStore, useActivity } from '../activity'
+import {
+  activityFor,
+  activityStore,
+  type ActivityAgent,
+  useActivity,
+} from '../activity'
 import { live } from '../live'
+import { useLocale } from '../i18n'
 import './ActivityInspector.css'
 
 const ACTIVE = new Set(['queued', 'running', 'awaiting_confirm'])
@@ -15,11 +21,13 @@ export function ActivityChip({
   onToggle: () => void
   className?: string
 }) {
+  const { t } = useLocale()
   const { all, visible } = useActivity()
   const active = all.filter((span) => ACTIVE.has(span.status))
   return (
     <button
       type="button"
+      data-tour="activity"
       className={`activity-chip ${open ? 'on' : ''} ${className}`}
       aria-expanded={open}
       onClick={() => {
@@ -28,9 +36,9 @@ export function ActivityChip({
       }}
       title={visible ? 'Open agent activity' : 'Show agent activity'}
     >
-      Activity
+      {t('activity.label')}
       {!visible ? (
-        <span className="activity-off">off</span>
+        <span className="activity-off">{t('activity.off')}</span>
       ) : active.length > 0 ? (
         <span className="activity-badge">{active.length}</span>
       ) : null}
@@ -178,7 +186,13 @@ function AgentWorkTree() {
   )
 }
 
-function ActivityTimeline({ items }: { items: ActivitySpan[] }) {
+function ActivityTimeline({
+  items,
+  label = 'Rau activity timeline',
+}: {
+  items: ActivitySpan[]
+  label?: string
+}) {
   const listRef = useRef<HTMLOListElement>(null)
   /** Stick to the newest edge (top) unless the user scrolls down into history. */
   const stickRef = useRef(true)
@@ -209,7 +223,7 @@ function ActivityTimeline({ items }: { items: ActivitySpan[] }) {
     <ol
       ref={listRef}
       className="activity-timeline"
-      aria-label="Rau activity timeline"
+      aria-label={label}
     >
       {items.map((span) => (
         <li key={span.id} className={`activity-item status-${span.status}`}>
@@ -259,6 +273,7 @@ export default function ActivityInspector({
 }) {
   const { all, visible } = useActivity()
   const [open, setOpen] = useState(defaultOpen || variant === 'sidebar')
+  const [agent, setAgent] = useState<ActivityAgent>('main')
   const sidebar = variant === 'sidebar'
 
   useEffect(() => {
@@ -269,10 +284,25 @@ export default function ActivityInspector({
   }, [jobId])
 
   const items = useMemo(() => {
-    const filtered = activityFor(all, { turnId, jobId, global })
+    const filtered = activityFor(all, {
+      turnId,
+      jobId,
+      global,
+      // Per-turn activity belongs beside the main reply. Deep Work has its
+      // own selectable panel; a job-specific inspector remains job-only.
+      agent: global ? agent : jobId ? 'deep-work' : 'main',
+    })
     // Newest first — keep the latest window, then reverse for the rail.
     return filtered.slice(-160).reverse()
-  }, [all, global, jobId, turnId])
+  }, [agent, all, global, jobId, turnId])
+
+  const globalCounts = useMemo(() => {
+    if (!global) return { main: 0, deepWork: 0 }
+    return {
+      main: activityFor(all, { global: true, agent: 'main' }).length,
+      deepWork: activityFor(all, { global: true, agent: 'deep-work' }).length,
+    }
+  }, [all, global])
 
   if (!visible) return null
   if (!sidebar && items.length === 0) return null
@@ -312,6 +342,53 @@ export default function ActivityInspector({
     </div>
   )
 
+  const agentSelector = global ? (
+    <div className="activity-agent-tabs" role="tablist" aria-label="Activity source">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={agent === 'main'}
+        className={agent === 'main' ? 'is-active' : ''}
+        onClick={() => setAgent('main')}
+      >
+        Main agent
+        {globalCounts.main > 0 && <span>{globalCounts.main}</span>}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={agent === 'deep-work'}
+        className={agent === 'deep-work' ? 'is-active' : ''}
+        onClick={() => setAgent('deep-work')}
+      >
+        Deep work
+        {globalCounts.deepWork > 0 && <span>{globalCounts.deepWork}</span>}
+      </button>
+    </div>
+  ) : null
+
+  const activityPanel = (
+    <div
+      className={`activity-agent-panel activity-agent-panel-${agent}`}
+      role={global ? 'tabpanel' : undefined}
+      aria-label={global ? (agent === 'main' ? 'Main agent activity' : 'Deep work activity') : undefined}
+    >
+      {global && agent === 'deep-work' && <AgentWorkTree />}
+      {items.length > 0 ? (
+        <ActivityTimeline
+          items={items}
+          label={agent === 'deep-work' ? 'Deep work activity timeline' : 'Main agent activity timeline'}
+        />
+      ) : (
+        <p className="activity-empty">
+          {global && agent === 'deep-work'
+            ? 'No Deep Work activity yet — subagent work will show up here.'
+            : 'No main-agent activity yet — it will show up here when Rau works.'}
+        </p>
+      )}
+    </div>
+  )
+
   if (sidebar) {
     return (
       <section className={`activity-inspector activity-sidebar ${className}`}>
@@ -323,15 +400,11 @@ export default function ActivityInspector({
               {counts ? <em>{counts}</em> : null}
             </div>
           </div>
+          {agentSelector}
           {toolbar}
         </header>
         <div className="activity-body">
-          {global && <AgentWorkTree />}
-          {items.length > 0 ? (
-            <ActivityTimeline items={items} />
-          ) : (
-            <p className="activity-empty">No activity yet — it will show up here when Rau works.</p>
-          )}
+          {activityPanel}
         </div>
       </section>
     )
@@ -352,9 +425,9 @@ export default function ActivityInspector({
       </button>
       {open && (
         <div className="activity-body">
+          {agentSelector}
           {toolbar}
-          {global && <AgentWorkTree />}
-          <ActivityTimeline items={items} />
+          {activityPanel}
         </div>
       )}
     </section>

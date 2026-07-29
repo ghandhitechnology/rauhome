@@ -409,6 +409,24 @@
   pointer-events: auto;
 }
 
+.face-game-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tour-room-anchor {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  top: 48%;
+  width: min(250px, 34vw);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
 .mode-pill {
   display: inline-flex;
   align-items: center;

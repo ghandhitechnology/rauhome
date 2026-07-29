@@ -150,6 +150,10 @@ class Game:
 
         self.current: str = USER
         self.turns_to_take: int = 1
+        # Number of ordinary action/combo plays made in the current turn. The
+        # player half uses this to avoid sleepwalking straight to Draw while
+        # still allowing a deliberate draw after it has done something useful.
+        self.actions_this_turn: int = 0
         self.phase: str = PHASE_PLAYING
         self.pending: Optional[Pending] = None
         #: Set only for the player who is being asked something (Favor, naming a
@@ -217,6 +221,7 @@ class Game:
         if self.turns_to_take <= 0:
             self.current = other(self.current)
             self.turns_to_take = 1
+        self.actions_this_turn = 0
         self._note(self.current, "Your turn." if self.current == USER else "Rau's turn.")
 
     # ------------------------------------------------------------ nope window
@@ -305,6 +310,7 @@ class Game:
             owed = self.turns_to_take
             self.current = victim
             self.turns_to_take = ATTACK_TURNS if owed <= 1 else owed + ATTACK_TURNS
+            self.actions_this_turn = 0
             self._note(actor, f"Attack — {victim} now owes {self.turns_to_take} turns.")
             return
 
@@ -353,6 +359,7 @@ class Game:
                 )
             self._take_from_hand(seat, card)
             self.discard.append(card)
+            self.actions_this_turn += 1
             self._note(seat, f"Played {deck_mod.label(card)}.")
             self._open_window(
                 Pending(
@@ -409,6 +416,7 @@ class Game:
             for card in cards:
                 self._take_from_hand(seat, card)
             self.discard.extend(cards)
+            self.actions_this_turn += 1
             self._note(seat, f"Played {len(cards)} cards as a set.")
             self._open_window(
                 Pending(
@@ -613,6 +621,7 @@ class Game:
                 "phase": self.phase,
                 "current": self.current,
                 "turns_to_take": self.turns_to_take,
+                "actions_this_turn": self.actions_this_turn,
                 "draw": list(self.draw),
                 "hands": {s: list(h) for s, h in self.hands.items()},
                 "discard": list(self.discard),

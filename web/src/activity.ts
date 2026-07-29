@@ -111,14 +111,27 @@ function init() {
 
 export function activityFor(
   items: ActivitySpan[],
-  filter: { turnId?: string; jobId?: string; global?: boolean },
+  filter: {
+    turnId?: string
+    jobId?: string
+    global?: boolean
+    agent?: ActivityAgent
+  },
 ) {
   return items.filter((span) => {
-    if (filter.turnId) return span.turn_id === filter.turnId
-    if (filter.jobId) return span.job_id === filter.jobId
-    return !!filter.global
+    const correlated = filter.turnId
+      ? span.turn_id === filter.turnId
+      : filter.jobId
+        ? span.job_id === filter.jobId
+        : !!filter.global
+    if (!correlated) return false
+    if (filter.agent === 'main') return !span.job_id
+    if (filter.agent === 'deep-work') return !!span.job_id
+    return true
   })
 }
+
+export type ActivityAgent = 'main' | 'deep-work'
 
 export const activityStore = {
   subscribe(listener: () => void) {

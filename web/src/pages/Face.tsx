@@ -23,6 +23,7 @@ import {
 import { useMode, modeLabel, modeListens, modeSupportsHyper, modeUsesVoice } from '../mode'
 import { useVoiceSession } from '../voice'
 import { api } from '../api'
+import { useLocale } from '../i18n'
 import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
 import { HyperToggle } from '../components/HyperMode'
@@ -136,6 +137,9 @@ export async function reseatIntoGame(): Promise<void> {
 }
 
 export default function Face() {
+  const { t } = useLocale()
+  const tourAnchorRef = useRef<HTMLDivElement>(null)
+  const tourRectRef = useRef('')
   const [signals, setSignals] = useState<Signals>(EMPTY_SIGNALS)
   const [panel, setPanel] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
@@ -158,6 +162,19 @@ export default function Face() {
   /** Whether the first look at the server has come back yet. */
   const gameSeeded = useRef(false)
   const chessSeeded = useRef(false)
+
+  const placeTourAnchor = useCallback((rect: { x: number; y: number; w: number; h: number }) => {
+    const el = tourAnchorRef.current
+    if (!el || rect.w <= 0 || rect.h <= 0) return
+    const signature = `${Math.round(rect.x)}:${Math.round(rect.y)}:${Math.round(rect.w)}:${Math.round(rect.h)}`
+    if (signature === tourRectRef.current) return
+    tourRectRef.current = signature
+    el.style.left = `${rect.x}px`
+    el.style.top = `${rect.y}px`
+    el.style.width = `${rect.w}px`
+    el.style.height = `${rect.h}px`
+    el.style.transform = 'none'
+  }, [])
 
   /*
     A game survives a reload, and it survives you walking off to another route
@@ -584,8 +601,10 @@ export default function Face() {
         lampOn={lamp}
         conversing={isVoice}
         roomVisual={roomVisual}
+        onHitRect={placeTourAnchor}
         onReady={onReady}
       />
+      <div ref={tourAnchorRef} className="tour-room-anchor" data-tour="room" aria-hidden />
 
       {wall.length > 0 && (
         <div className="face-wall" role="group" aria-label="Panels on the wall">
@@ -652,7 +671,7 @@ export default function Face() {
       <header className="face-top">
         <div className="face-top-left">
           <Link to="/" className="face-back" aria-label="Back to talk">
-            ← Rau
+            {t('face.back')}
           </Link>
           <div
             className="room-style-seg"
@@ -721,7 +740,7 @@ export default function Face() {
             were in the middle of.
           */}
           {roomFree && (
-            <>
+            <div className="face-game-actions" data-tour="games">
               <button
                 className="face-toggle face-play"
                 onClick={() => {
@@ -732,7 +751,7 @@ export default function Face() {
                 }}
                 title="Set the chess board up"
               >
-                Chess
+                {t('face.chess')}
               </button>
               <button
                 className="face-toggle face-play"
@@ -744,9 +763,9 @@ export default function Face() {
                 }}
                 title="Deal a hand of Exploding Kittens"
               >
-                Play
+                {t('face.play')}
               </button>
-            </>
+            </div>
           )}
           <button
             className={`face-toggle ${panel ? 'on' : ''}`}
@@ -756,7 +775,7 @@ export default function Face() {
             }}
             aria-expanded={panel}
           >
-            Direct
+            {t('face.direct')}
           </button>
         </div>
       </header>

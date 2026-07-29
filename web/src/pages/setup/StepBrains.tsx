@@ -2,10 +2,12 @@ import { useState } from 'react'
 import { api } from '../../api'
 import AuthCard, { VerifyLine } from '../../components/AuthCard'
 import { CHAT_AUTH_IDS, type StepProps } from './types'
+import { useLocale } from '../../i18n'
 
 const RECOMMENDED = 'openrouter'
 
 export default function StepBrains({ state, catalog, reload, verify, setVerify }: StepProps) {
+  const { locale } = useLocale()
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState('')
   const [open, setOpen] = useState<string | null>(null)
@@ -67,11 +69,14 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
   return (
     <div className="step">
       <header className="step-head">
-        <p className="eyebrow">Step three</p>
-        <h2>Give Rau something to think with</h2>
+        <p className="eyebrow">{locale === 'ko' ? '세 번째 단계' : 'Step three'}</p>
+        <h2>{locale === 'ko' ? 'Rau에게 생각할 두뇌를 주세요' : 'Give Rau something to think with'}</h2>
         <p className="step-lede">
-          Keys are checked against the live provider before anything is written, then stored in{' '}
-          <span className="mono">.env</span> on this machine only. One provider is enough to finish.
+          {locale === 'ko' ? (
+            <>키는 저장 전에 실제 제공자에서 확인하고 이 컴퓨터의 <span className="mono">.env</span>에만 보관합니다. 제공자 하나면 충분합니다.</>
+          ) : (
+            <>Keys are checked against the live provider before anything is written, then stored in{' '}<span className="mono">.env</span> on this machine only. One provider is enough to finish.</>
+          )}
         </p>
       </header>
 
@@ -129,18 +134,18 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
                       onClick={() => checkAndSave(p.id)}
                     >
                       {busy === p.id && <i className="spinner" />}
-                      {busy === p.id ? 'Checking…' : 'Check & save'}
+                      {busy === p.id ? (locale === 'ko' ? '확인 중…' : 'Checking…') : (locale === 'ko' ? '확인하고 저장' : 'Check & save')}
                     </button>
                     {p.configured && (
                       <button className="btn sm" disabled={busy === p.id} onClick={() => recheck(p.id)}>
-                        Re-check
+                        {locale === 'ko' ? '다시 확인' : 'Re-check'}
                       </button>
                     )}
                     <button
                       className="btn sm ghost"
                       onClick={() => window.open(p.docs_url, '_blank', 'noopener,noreferrer')}
                     >
-                      Get a key ↗
+                      {locale === 'ko' ? '키 받기 ↗' : 'Get a key ↗'}
                     </button>
                     {p.configured && (
                       <button
@@ -148,7 +153,7 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
                         disabled={busy === p.id}
                         onClick={() => disconnect(p.id)}
                       >
-                        Disconnect
+                        {locale === 'ko' ? '연결 해제' : 'Disconnect'}
                       </button>
                     )}
                   </div>

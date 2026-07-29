@@ -1,6 +1,8 @@
 import { Suspense, useCallback, useEffect, useState } from 'react'
 import { api } from './api'
 import { ModeProvider, useMode } from './mode'
+import { LocaleProvider, useLocale } from './i18n'
+import { TutorialProvider, useTutorial } from './tutorial'
 import { useGlobalHotkey } from './hooks/useGlobalHotkey'
 import { Link, Navigate, useLocation } from './router'
 import { live } from './live'
@@ -19,21 +21,16 @@ import {
   normalizePath,
 } from './routes'
 
-const NAV = [
-  { to: '/', label: 'Talk' },
-  { to: '/face', label: 'Face' },
-  { to: '/dashboard', label: 'Dashboard' },
-  { to: '/operations', label: 'Operations' },
-  { to: '/identity', label: 'Identity' },
-  { to: '/settings', label: 'Settings' },
-]
-
 export default function App() {
   return (
-    <ModeProvider>
-      <HyperActivationRipple />
-      <Shell />
-    </ModeProvider>
+    <LocaleProvider>
+      <TutorialProvider>
+        <ModeProvider>
+          <HyperActivationRipple />
+          <Shell />
+        </ModeProvider>
+      </TutorialProvider>
+    </LocaleProvider>
   )
 }
 
@@ -46,6 +43,16 @@ function Shell() {
   const isFace = loc.pathname.startsWith('/face')
   const isPet = loc.pathname.startsWith('/pet')
   const { toggleMode } = useMode()
+  const { t } = useLocale()
+  const tutorial = useTutorial()
+  const nav = [
+    { to: '/', label: t('nav.talk') },
+    { to: '/face', label: t('nav.face') },
+    { to: '/dashboard', label: t('nav.dashboard') },
+    { to: '/operations', label: t('nav.operations') },
+    { to: '/identity', label: t('nav.identity') },
+    { to: '/settings', label: t('nav.settings') },
+  ]
 
   // Chat/voice is a whole-app switch, so it stays reachable mid-sentence in the
   // composer — hence the intercept, which also eats the space that would land.
@@ -85,10 +92,10 @@ function Shell() {
         <div className="boot boot-error" role="alert">
           <div className="boot-inner">
             <span className="boot-word">Rau</span>
-            <strong>Can’t reach the hub</strong>
+            <strong>{t('boot.unreachable')}</strong>
             <span className="muted">{bootError}</span>
             <button className="btn primary" onClick={checkIdentity}>
-              Try again
+              {t('boot.retry')}
             </button>
           </div>
         </div>
@@ -101,7 +108,7 @@ function Shell() {
           <span className="boot-bar">
             <i />
           </span>
-          <span className="muted">waking up</span>
+          <span className="muted">{t('boot.waking')}</span>
         </div>
       </div>
     )
@@ -138,7 +145,7 @@ function Shell() {
             Rau
           </Link>
           <nav className="nav">
-            {NAV.map((n) => (
+            {nav.map((n) => (
               <Link key={n.to} to={n.to} className={loc.pathname === n.to ? 'active' : ''}>
                 <span>{n.label}</span>
               </Link>
@@ -154,7 +161,11 @@ function Shell() {
               stands in for the route's own body, so a chunk fetch never wipes
               the chrome the user is already looking at. */}
           <Suspense fallback={<PageSkeleton pathname={loc.pathname} />}>
-            <RoutePage pathname={loc.pathname} onSetupDone={() => setReady(true)} />
+            <RoutePage
+              pathname={loc.pathname}
+              onSetupReady={() => setReady(true)}
+              onSetupFinished={tutorial.start}
+            />
           </Suspense>
         </div>
       </main>
@@ -175,10 +186,12 @@ function Shell() {
 
 function RoutePage({
   pathname,
-  onSetupDone,
+  onSetupReady,
+  onSetupFinished,
 }: {
   pathname: string
-  onSetupDone: () => void
+  onSetupReady: () => void
+  onSetupFinished: () => void
 }) {
   const path = normalizePath(pathname)
   switch (path) {
@@ -193,7 +206,7 @@ function RoutePage({
     case '/operations':
       return <Operations />
     case '/setup':
-      return <Setup onDone={onSetupDone} />
+      return <Setup onReady={onSetupReady} onFinished={onSetupFinished} />
     case '/identity':
       return <Identity />
     case '/settings':

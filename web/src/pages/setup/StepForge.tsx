@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api'
 import type { StepProps } from './types'
+import { useLocale } from '../../i18n'
 
 type TaskState = 'pending' | 'running' | 'done' | 'failed'
 type Task = { id: string; label: string; state: TaskState; detail?: string }
@@ -21,6 +22,7 @@ export default function StepForge({
   reload,
   onForged,
 }: StepProps & { onForged: (soul: string) => void }) {
+  const { locale } = useLocale()
   const [tasks, setTasks] = useState<Task[]>(BASE_TASKS)
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
@@ -91,9 +93,9 @@ export default function StepForge({
   return (
     <div className="step step-center">
       <header className="step-head">
-        <p className="eyebrow">Almost</p>
-        <h2>Bringing Rau up</h2>
-        <p className="step-lede">Writing files, wiring models, and compiling the operating self.</p>
+        <p className="eyebrow">{locale === 'ko' ? '거의 다 됐어요' : 'Almost'}</p>
+        <h2>{locale === 'ko' ? 'Rau를 깨우는 중' : 'Bringing Rau up'}</h2>
+        <p className="step-lede">{locale === 'ko' ? '파일을 쓰고, 모델을 연결하고, Rau의 자아를 완성하고 있습니다.' : 'Writing files, wiring models, and compiling the operating self.'}</p>
       </header>
 
       <ol className="forge-list">
@@ -115,7 +117,7 @@ export default function StepForge({
 
       {error && (
         <div className="notice bad" style={{ marginTop: '1.25rem' }}>
-          <strong>That did not finish.</strong>
+          <strong>{locale === 'ko' ? '작업을 마치지 못했습니다.' : 'That did not finish.'}</strong>
           <p style={{ margin: '0.35rem 0 0' }}>{error}</p>
           <div className="row" style={{ marginTop: '0.8rem' }}>
             <button
@@ -126,7 +128,7 @@ export default function StepForge({
                 setAttempt((a) => a + 1)
               }}
             >
-              Try again
+              {locale === 'ko' ? '다시 시도' : 'Try again'}
             </button>
           </div>
         </div>

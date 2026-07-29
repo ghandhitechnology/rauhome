@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from '../router'
+import { useLocale } from '../i18n'
+import { useTutorial } from '../tutorial'
 import {
   api,
   type AuthProvider,
@@ -22,6 +24,8 @@ const SLOTS: SlotKey[] = ['face', 'subagent', 'dream']
 type Check = { status: 'idle' | 'checking' | 'ok' | 'bad'; detail?: string }
 
 export default function Settings() {
+  const { locale, setLocale, t } = useLocale()
+  const tutorial = useTutorial()
   const [models, setModels] = useState<any>(null)
   const [browseStatus, setBrowseStatus] = useState<BrowseStatus | null>(null)
   const [catalog, setCatalog] = useState<Catalog | null>(null)
@@ -320,6 +324,58 @@ export default function Settings() {
 
   return (
     <div className="settings grid-2">
+      <section className="panel settings-experience">
+        <div className="panel-head">
+          <div>
+            <h2>{t('settings.experience')}</h2>
+            <p className="muted panel-sub">{t('settings.languageHelp')}</p>
+          </div>
+        </div>
+        <div className="experience-row">
+          <div>
+            <strong>{t('settings.language')}</strong>
+            <p>{t('settings.languageHelp')}</p>
+          </div>
+          <div className="locale-seg" role="radiogroup" aria-label={t('settings.language')}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={locale === 'en'}
+              className={locale === 'en' ? 'active' : ''}
+              onClick={() =>
+                void setLocale('en')
+                  .then(() => flash(t('settings.saved')))
+                  .catch((error) => flash(error?.message || String(error)))
+              }
+            >
+              {t('common.english')}
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={locale === 'ko'}
+              className={locale === 'ko' ? 'active' : ''}
+              onClick={() =>
+                void setLocale('ko')
+                  .then(() => flash(t('settings.saved')))
+                  .catch((error) => flash(error?.message || String(error)))
+              }
+            >
+              {t('common.korean')}
+            </button>
+          </div>
+        </div>
+        <div className="experience-row">
+          <div>
+            <strong>{t('settings.replay')}</strong>
+            <p>{t('settings.replayHelp')}</p>
+          </div>
+          <button type="button" className="btn" onClick={tutorial.start}>
+            {t('settings.replay')}
+          </button>
+        </div>
+      </section>
+
       <section className="panel">
         <div className="panel-head">
           <div>

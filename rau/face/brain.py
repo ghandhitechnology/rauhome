@@ -739,6 +739,7 @@ def _tools_for_turn(*, voice: bool, round_idx: int, user_text: str) -> List[Dict
 def _system_prompt(
     extra: str = "", *, voice: bool = False, hyper: bool = False
 ) -> str:
+    from rau.language import response_language_instruction
     from rau.heartbeat.presence import (
         SPEECH_HABITS_PROMPT,
         between_sessions_block,
@@ -757,6 +758,7 @@ def _system_prompt(
                 soul,
                 SPEECH_HABITS_PROMPT,
                 HYPER_CONVERSATION_PROMPT,
+                response_language_instruction(),
             ]
         )
 
@@ -772,6 +774,7 @@ def _system_prompt(
     life = between_sessions_block()
     parts = [
         soul,
+        "\n" + response_language_instruction(),
         hard,
         "\n" + time_context_block(),
         "\n" + mood_context_block(),

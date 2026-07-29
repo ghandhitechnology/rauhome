@@ -271,6 +271,8 @@ export type Permissions = {
   heartbeats: PermissionMode
 }
 
+export type Locale = 'en' | 'ko'
+
 export const api = {
   status: () => req<any>('/api/status'),
   health: () => req<HealthStatus>('/api/health'),
@@ -295,6 +297,13 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getLanguage: () =>
+    req<{ language: Locale; configured: boolean }>('/api/preferences/language'),
+  putLanguage: (language: Locale) =>
+    req<{ ok: boolean; language: Locale }>('/api/preferences/language', {
+      method: 'PUT',
+      body: JSON.stringify({ language }),
+    }),
   identity: () => req<any>('/api/identity'),
   fresh: () => req<any>('/api/identity/fresh', { method: 'POST', body: '{}' }),
   hard: (identity: string, backstory: string) =>

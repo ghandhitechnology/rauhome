@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { StepProps } from './types'
+import { useLocale } from '../../i18n'
 
 const MIN_IDENTITY = 40
 const MIN_BACKSTORY = 80
@@ -26,6 +27,7 @@ function Meter({ value, min, label }: { value: string; min: number; label: strin
 }
 
 export default function StepIdentity({ draft, patch, state }: StepProps) {
+  const { locale } = useLocale()
   const [loaded, setLoaded] = useState('')
   const examples = state?.examples || {}
   const existing = state?.identity
@@ -50,24 +52,26 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
   return (
     <div className="step">
       <header className="step-head">
-        <p className="eyebrow">Step two</p>
-        <h2>Write the self</h2>
+        <p className="eyebrow">{locale === 'ko' ? '두 번째 단계' : 'Step two'}</p>
+        <h2>{locale === 'ko' ? '자아를 적어 주세요' : 'Write the self'}</h2>
         <p className="step-lede">
-          <span className="mono">identity.md</span> is the short public self Rau speaks from.{' '}
-          <span className="mono">backstory.md</span> is the long private lore behind it. DeepSeek
-          V4 Pro distills both into soul.md — you never paste them in by hand.
+          {locale === 'ko' ? (
+            <><span className="mono">identity.md</span>는 Rau가 드러내는 짧은 자아이고, <span className="mono">backstory.md</span>는 그 뒤의 긴 이야기입니다. 둘은 자동으로 soul.md에 정리됩니다.</>
+          ) : (
+            <><span className="mono">identity.md</span> is the short public self Rau speaks from.{' '}<span className="mono">backstory.md</span> is the long private lore behind it. DeepSeek V4 Pro distills both into soul.md — you never paste them in by hand.</>
+          )}
         </p>
       </header>
 
       <div className="row" style={{ marginBottom: '1.1rem' }}>
         {(examples.identity || examples.backstory) && (
           <button className="btn sm" onClick={loadExamples}>
-            Load example lore
+            {locale === 'ko' ? '예시 이야기 불러오기' : 'Load example lore'}
           </button>
         )}
         {existing?.has_identity && (
           <button className="btn sm ghost" onClick={loadExisting}>
-            Load what is on disk
+            {locale === 'ko' ? '디스크의 내용 불러오기' : 'Load what is on disk'}
           </button>
         )}
         {(draft.identity || draft.backstory) && (
@@ -78,7 +82,7 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
               setLoaded('')
             }}
           >
-            Clear
+            {locale === 'ko' ? '비우기' : 'Clear'}
           </button>
         )}
       </div>
@@ -86,7 +90,7 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
       {loaded && <p className="step-note">{loaded}</p>}
 
       <div className="field">
-        <label>identity.md — who Rau is, out loud</label>
+        <label>{locale === 'ko' ? 'identity.md — Rau가 드러내는 모습' : 'identity.md — who Rau is, out loud'}</label>
         <textarea
           rows={7}
           value={draft.identity}
@@ -97,7 +101,7 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
       </div>
 
       <div className="field">
-        <label>backstory.md — where Rau came from</label>
+        <label>{locale === 'ko' ? 'backstory.md — Rau가 어디에서 왔는지' : 'backstory.md — where Rau came from'}</label>
         <textarea
           rows={12}
           value={draft.backstory}

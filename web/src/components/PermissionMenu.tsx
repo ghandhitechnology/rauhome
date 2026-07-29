@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { api, type PermissionMode } from '../api'
 import { live } from '../live'
+import { useLocale } from '../i18n'
 import './PermissionMenu.css'
-
-const MODES: { id: PermissionMode; label: string; detail: string }[] = [
-  { id: 'auto', label: 'Auto', detail: 'Ask when something needs confirmation' },
-  { id: 'bypass', label: 'Full bypass', detail: 'Run without asking — full trust' },
-  { id: 'readonly', label: 'Read only', detail: 'No writes, shell, or side effects' },
-]
 
 function parseMode(raw: unknown): PermissionMode {
   const v = String(raw || 'auto').toLowerCase()
@@ -16,11 +11,13 @@ function parseMode(raw: unknown): PermissionMode {
   return 'auto'
 }
 
-function labelFor(mode: PermissionMode): string {
-  return MODES.find((m) => m.id === mode)?.label ?? 'Auto'
-}
-
 export default function PermissionMenu() {
+  const { t } = useLocale()
+  const modes = [
+    { id: 'auto' as const, label: t('permissions.auto'), detail: t('permissions.autoDetail') },
+    { id: 'bypass' as const, label: t('permissions.bypass'), detail: t('permissions.bypassDetail') },
+    { id: 'readonly' as const, label: t('permissions.readonly'), detail: t('permissions.readonlyDetail') },
+  ]
   const [mode, setMode] = useState<PermissionMode>('auto')
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -101,9 +98,9 @@ export default function PermissionMenu() {
         aria-controls={listId}
         disabled={saving}
         onClick={() => setOpen((v) => !v)}
-        title="Permissions"
+        title={t('permissions.title')}
       >
-        <span>{labelFor(mode)}</span>
+        <span>{modes.find((item) => item.id === mode)?.label || t('permissions.auto')}</span>
         <svg viewBox="0 0 12 12" aria-hidden className="perm-chevron">
           <path
             d="M3 4.5 L6 7.5 L9 4.5"
@@ -117,10 +114,10 @@ export default function PermissionMenu() {
       </button>
 
       {open && (
-        <div className="perm-popover" role="listbox" id={listId} aria-label="Permissions">
-          <div className="perm-popover-head">Permissions</div>
+        <div className="perm-popover" role="listbox" id={listId} aria-label={t('permissions.title')}>
+          <div className="perm-popover-head">{t('permissions.title')}</div>
           <ul className="perm-popover-list">
-            {MODES.map((item) => {
+            {modes.map((item) => {
               const active = item.id === mode
               return (
                 <li key={item.id}>

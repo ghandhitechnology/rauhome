@@ -7,6 +7,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import PermissionMenu from '../components/PermissionMenu'
+import { useLocale } from '../i18n'
 
 type Props = {
   inGame: boolean
@@ -22,6 +23,7 @@ export default function FaceComposer({
   onOpenChange,
   onSend,
 }: Props) {
+  const { t } = useLocale()
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
@@ -63,6 +65,7 @@ export default function FaceComposer({
   return (
     <footer
       className={`face-compose ${showChip ? 'is-chip' : ''}`}
+      data-tour="room-composer"
     >
       {showChip ? (
         <button
@@ -97,7 +100,7 @@ export default function FaceComposer({
                   onOpenChange(false)
                 }
               }}
-              placeholder="Say something to Rau…"
+              placeholder={t('face.say')}
               aria-label="Message Rau"
               autoComplete="off"
               enterKeyHint="send"
@@ -108,8 +111,8 @@ export default function FaceComposer({
                 type="button"
                 className="face-collapse"
                 onClick={() => onOpenChange(false)}
-                aria-label="Hide chat"
-                title="Hide chat"
+                aria-label={t('face.hideChat')}
+                title={t('face.hideChat')}
               >
                 ⌄
               </button>
@@ -119,7 +122,7 @@ export default function FaceComposer({
               className="face-send"
               disabled={!draft.trim() || sending}
               onClick={() => void send()}
-              aria-label="Send"
+              aria-label={t('talk.send')}
             >
               {sending ? <i className="spinner" /> : '→'}
             </button>

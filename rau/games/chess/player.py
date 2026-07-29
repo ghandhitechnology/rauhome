@@ -94,10 +94,20 @@ TABLE_LINES: Dict[str, Tuple[str, ...]] = {
     ),
 }
 
+TABLE_LINES_KO: Dict[str, Tuple[str, ...]] = {
+    "resign": ("좋아, 여기까지. 네가 이겼어.", "끝이 보이네. 잘 뒀어.", "이건 네 판이야. 인정할게."),
+    "offer_draw": ("더 갈 데가 없네. 무승부 어때?", "이쯤에서 비길까?", "둘 다 뚫을 길이 없어. 무승부를 제안할게."),
+    "accept_draw": ("그래, 무승부로 하자.", "좋아. 누구도 뚫지 못했네.", "좋아, 여기서 나누자."),
+    "decline_draw": ("아니, 계속 두자.", "아직 게임이 남았어.", "그렇게 쉽게 끝내긴 싫은데. 계속해."),
+}
+
 
 def table_line(kind: str) -> str:
     """One canned line for a table courtesy. Empty string for an unknown kind."""
-    lines = TABLE_LINES.get(kind) or ()
+    from rau.language import get_locale
+
+    source = TABLE_LINES_KO if get_locale() == "ko" else TABLE_LINES
+    lines = source.get(kind) or ()
     return _rng.choice(lines) if lines else ""
 
 _lock = threading.RLock()
@@ -312,9 +322,12 @@ def _worth_a_line(choice: Any) -> bool:
 
 
 def _prompt(read: str) -> str:
+    from rau.language import response_language_instruction
+
     return "\n".join(
         [
             "You are Rau, playing chess against them, out loud. You have just moved.",
+            response_language_instruction(),
             "",
             read.strip(),
             "",
@@ -384,7 +397,13 @@ def _maybe_say(game_id: str, choice: Any) -> None:
         if line.upper() == "SKIP":
             line = ""
         if not line and choice.is_check:
-            line = _rng.choice(_CHECK_LINES)
+            from rau.language import get_locale
+
+            line = (
+                _rng.choice(("체크.", "왕 조심해.", "체크야."))
+                if get_locale() == "ko"
+                else _rng.choice(_CHECK_LINES)
+            )
         if not line:
             return
         # The board can have moved on entirely while the model was thinking.

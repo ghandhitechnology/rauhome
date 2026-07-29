@@ -116,6 +116,128 @@ class TakeTurn(unittest.TestCase):
         self._real_take(game)
         self.assertNotEqual(game.current, before)
 
+    def test_fallback_plays_attack_instead_of_blindly_drawing(self):
+        self._player._ask_model = lambda prompt: "not json"
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [ATTACK]
+        game.hands[USER] = [SKIP]
+        game.draw = [SKIP, SKIP]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+
+        self._real_take(game)
+
+        self.assertNotIn(ATTACK, game.hands[RAU])
+        self.assertIn(ATTACK, game.discard)
+        self.assertNotIn(SKIP, game.hands[RAU], "blind draw fallback still ran")
+
+    def test_fallback_does_not_stall_waiting_for_a_human_favor_choice(self):
+        self._player._ask_model = lambda prompt: "not json"
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [deck_mod.FAVOR]
+        game.hands[USER] = [SKIP]
+        game.draw = [SKIP, ATTACK]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+
+        self._real_take(game)
+
+        self.assertIn(deck_mod.FAVOR, game.hands[RAU])
+        self.assertIn(SKIP, game.hands[RAU])
+        self.assertEqual(game.current, USER)
+
+    def test_passive_model_draw_can_be_replaced_by_favor(self):
+        self._player._ask_model = lambda prompt: (
+            '{"move": {"move": "draw"}, "say": "I guess I draw."}'
+        )
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [deck_mod.FAVOR]
+        game.hands[USER] = [SKIP]
+        game.draw = [SKIP, ATTACK]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+
+        self._real_take(game)
+
+        self.assertIn(deck_mod.FAVOR, game.discard)
+        self.assertEqual(game.awaiting_seat, USER)
+
+    def test_passive_model_draw_is_replaced_by_first_proactive_move(self):
+        self._player._ask_model = lambda prompt: (
+            '{"move": {"move": "draw"}, "say": "I guess I draw."}'
+        )
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [ATTACK]
+        game.hands[USER] = [SKIP]
+        game.draw = [SKIP, SKIP]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+
+        self._real_take(game)
+
+        self.assertIn(ATTACK, game.discard)
+        self.assertNotIn(SKIP, game.hands[RAU])
+
+    def test_after_an_action_the_model_may_draw(self):
+        self._player._ask_model = lambda prompt: (
+            '{"move": {"move": "draw"}, "say": "now I draw."}'
+        )
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [ATTACK]
+        game.hands[USER] = [SKIP]
+        game.draw = [SKIP, ATTACK]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        game.actions_this_turn = 1
+
+        self._real_take(game)
+
+        self.assertIn(SKIP, game.hands[RAU])
+        self.assertIn(ATTACK, game.hands[RAU], "a second proactive move was forced")
+
+    def test_known_kitten_overrides_draw_even_after_an_earlier_action(self):
+        self._player._ask_model = lambda prompt: (
+            '{"move": {"move": "draw"}, "say": "now I draw."}'
+        )
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [SKIP]
+        game.hands[USER] = [ATTACK]
+        game.draw = [EXPLODING_KITTEN, ATTACK]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        game.actions_this_turn = 1
+        game.known_top[RAU] = [EXPLODING_KITTEN, ATTACK]
+
+        self._real_take(game)
+
+        self.assertIn(SKIP, game.discard)
+        self.assertEqual(game.draw[0], EXPLODING_KITTEN)
+        self.assertEqual(game.current, USER)
+
     def test_say_is_recorded_in_the_journal(self):
         self._player._ask_model = lambda prompt: (
             '{"move": {"move": "draw"}, "say": "watching you."}'

@@ -113,6 +113,23 @@ class BypassSkipConfirmTests(unittest.TestCase):
                 "allow",
             )
 
+    def test_scheduled_subagent_also_skips_confirm_in_full_bypass(self) -> None:
+        from rau.agent import orchestrator
+
+        job = orchestrator.Job(
+            id="scheduled-bypass-test",
+            goal="run maintenance",
+            scheduled_run_id="schedule-1",
+            permission_policy="approval",
+        )
+        with mock.patch("rau.permissions.mode_for", return_value="bypass"):
+            self.assertEqual(
+                orchestrator._job_tool_decision(
+                    job, "run_shell", {"command": "echo hi"}
+                ),
+                "allow",
+            )
+
 
 class PersistPermissionsTests(unittest.TestCase):
     def test_set_global_mode_locksteps_scopes(self) -> None:
@@ -175,18 +192,22 @@ class ScopeIsolationTests(unittest.TestCase):
         with self._stored(room="bypass", subagents="bypass", heartbeats="bypass"):
             self.assertEqual(mode_for("does_not_exist"), "auto")
 
-    def test_global_mode_reports_the_riskiest_scope(self) -> None:
+    def test_global_mode_only_reports_bypass_when_every_scope_bypasses(self) -> None:
         from rau.permissions import global_mode
 
-        # A pill reading "Auto" while subagents are on bypass is an assurance
-        # that is not true, so divergence reports the most permissive mode.
+        # "Full bypass" is a global promise: a mixed configuration must not
+        # display it while one of its scopes can still ask for permission.
         self.assertEqual(
             global_mode({"room": "auto", "subagents": "bypass", "heartbeats": "readonly"}),
-            "bypass",
+            "auto",
         )
         self.assertEqual(
             global_mode({"room": "readonly", "subagents": "auto", "heartbeats": "readonly"}),
             "auto",
+        )
+        self.assertEqual(
+            global_mode({"room": "bypass", "subagents": "bypass", "heartbeats": "bypass"}),
+            "bypass",
         )
         self.assertEqual(
             global_mode({"room": "auto", "subagents": "auto", "heartbeats": "auto"}),
