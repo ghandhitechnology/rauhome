@@ -7,6 +7,8 @@ const spans = new Map<string, ActivitySpan>()
 const listeners = new Set<() => void>()
 let snapshot: ActivitySpan[] = []
 let visible = true
+/** Talk-page activity drawer open state (not persisted). */
+let panelOpen = false
 let initialized = false
 
 function publish() {
@@ -154,6 +156,15 @@ export const activityStore = {
     }
     publish()
   },
+  panelOpen() {
+    init()
+    return panelOpen
+  },
+  setPanelOpen(next: boolean) {
+    if (panelOpen === next) return
+    panelOpen = next
+    publish()
+  },
   async ensureTurn(turnId: string) {
     if (!turnId) return
     try {
@@ -180,5 +191,9 @@ export function useActivity() {
     activityStore.snapshot,
     activityStore.snapshot,
   )
-  return { all, visible: activityStore.visible() }
+  return {
+    all,
+    visible: activityStore.visible(),
+    panelOpen: activityStore.panelOpen(),
+  }
 }

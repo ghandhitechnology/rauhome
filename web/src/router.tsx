@@ -13,9 +13,18 @@ import {
 } from 'react'
 import { flushSync } from 'react-dom'
 import { routeLoader } from './routes'
+import {
+  centerOf,
+  rippleRadius,
+  roomTransitionBetween,
+  waitForRouteCanvas,
+  type RouteTransition,
+} from './routeTransition'
 
 type ViewTransitionCapableDocument = Document & {
-  startViewTransition?: (update: () => void) => { finished: Promise<void> }
+  startViewTransition?: (
+    update: () => void | Promise<void>,
+  ) => { finished: Promise<void> }
 }
 
 /**
@@ -25,6 +34,7 @@ type ViewTransitionCapableDocument = Document & {
  * skeleton, because a frozen UI is worse than a visible loading state.
  */
 const CHUNK_WAIT_MS = 250
+const ROOM_FALLBACK_MS = 180
 
 function prefersReducedMotion(): boolean {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
@@ -32,6 +42,15 @@ function prefersReducedMotion(): boolean {
 
 function canViewTransition(): boolean {
   return typeof (document as ViewTransitionCapableDocument).startViewTransition === 'function'
+}
+
+/** Warm a lazy route for intent signals such as hover or keyboard focus. */
+export async function preloadRoute(pathname: string): Promise<void> {
+  try {
+    await routeLoader(pathname)?.()
+  } catch {
+    // Navigation still owns the visible loading/error path if preloading fails.
+  }
 }
 
 /** Resolve once the chunk is warm, or once we have waited long enough. */
@@ -55,8 +74,9 @@ export type Location = {
   hash: string
 }
 
-type NavigateOptions = {
+export type NavigateOptions = {
   replace?: boolean
+  transition?: RouteTransition
 }
 
 type RouterValue = {
@@ -74,6 +94,44 @@ function readLocation(): Location {
   }
 }
 
+function launcherRect(): DOMRect | null {
+  return document.querySelector<HTMLElement>('.convo-room-launcher')?.getBoundingClientRect() ?? null
+}
+
+function configureRoomTransition(transition: RouteTransition) {
+  const root = document.documentElement
+  root.dataset.routeTransition = transition.kind
+  if (transition.kind !== 'room-open') return
+  root.style.setProperty('--room-ripple-x', `${transition.origin.x}px`)
+  root.style.setProperty('--room-ripple-y', `${transition.origin.y}px`)
+  root.style.setProperty(
+    '--room-ripple-radius',
+    `${rippleRadius(transition.origin, window.innerWidth, window.innerHeight)}px`,
+  )
+}
+
+function configureCloseOrigin() {
+  const rect = launcherRect()
+  if (!rect) return
+  const origin = centerOf(rect)
+  const root = document.documentElement
+  root.style.setProperty('--room-ripple-x', `${origin.x}px`)
+  root.style.setProperty('--room-ripple-y', `${origin.y}px`)
+  root.style.setProperty(
+    '--room-ripple-radius',
+    `${rippleRadius(origin, window.innerWidth, window.innerHeight)}px`,
+  )
+}
+
+function clearRoomTransition(kind: RouteTransition['kind']) {
+  const root = document.documentElement
+  if (root.dataset.routeTransition !== kind) return
+  delete root.dataset.routeTransition
+  root.style.removeProperty('--room-ripple-x')
+  root.style.removeProperty('--room-ripple-y')
+  root.style.removeProperty('--room-ripple-radius')
+}
+
 /**
  * The app only needs browser history, links, redirects, and a location value.
  * Keeping that small surface local avoids shipping a data/RSC router for a
@@ -81,6 +139,9 @@ function readLocation(): Location {
  */
 export function BrowserRouter({ children }: { children: ReactNode }) {
   const [location, setLocation] = useState(readLocation)
+  const locationRef = useRef(location)
+  const fallbackSeq = useRef(0)
+  locationRef.current = location
   /**
    * Monotonic navigation counter. A slow chunk load must not let an earlier
    * click commit after a newer one — last-clicked wins, not last-settled.
@@ -100,23 +161,59 @@ export function BrowserRouter({ children }: { children: ReactNode }) {
    * returns, so the update has to be synchronous or it captures the old tree
    * twice and nothing appears to animate.
    */
-  const commit = useCallback((apply: () => void) => {
-    const doc = document as ViewTransitionCapableDocument
-    if (!doc.startViewTransition || prefersReducedMotion()) {
-      apply()
-      return
-    }
-    doc.startViewTransition(() => flushSync(apply))
-  }, [])
+  const commit = useCallback(
+    (apply: () => void, transition?: RouteTransition) => {
+      const doc = document as ViewTransitionCapableDocument
+      if (!doc.startViewTransition || prefersReducedMotion()) {
+        if (!transition) {
+          apply()
+          return
+        }
+        const fallback = ++fallbackSeq.current
+        document.documentElement.dataset.routeFallback = transition.kind
+        apply()
+        window.setTimeout(() => {
+          if (fallback !== fallbackSeq.current) return
+          delete document.documentElement.dataset.routeFallback
+        }, ROOM_FALLBACK_MS)
+        return
+      }
+      if (!transition) {
+        doc.startViewTransition(() => flushSync(apply))
+        return
+      }
+
+      configureRoomTransition(transition)
+      const canvasReady = waitForRouteCanvas()
+      const viewTransition = doc.startViewTransition(async () => {
+        flushSync(apply)
+        // The reverse ripple ends at the pill's actual incoming position,
+        // including responsive and activity-rail layout shifts.
+        if (transition.kind === 'room-close') configureCloseOrigin()
+        await canvasReady
+      })
+      void viewTransition.finished
+        .catch(() => {
+          // A newer navigation can legitimately skip an in-flight transition.
+        })
+        .finally(() => clearRoomTransition(transition.kind))
+    },
+    [],
+  )
 
   useEffect(() => {
     const onPopState = () => {
       // Back should feel identical to a click, chunk preload included.
       const target = readLocation()
+      const transition = roomTransitionBetween(
+        locationRef.current.pathname,
+        target.pathname,
+        launcherRect(),
+      )
       const seq = ++navSeq.current
       void settleRoute(target.pathname).then(() => {
         if (seq !== navSeq.current) return
-        commit(() => setLocation(target))
+        commit(() => setLocation(target), transition)
       })
     }
     window.addEventListener('popstate', onPopState)
@@ -132,6 +229,9 @@ export function BrowserRouter({ children }: { children: ReactNode }) {
       }
 
       const next = `${url.pathname}${url.search}${url.hash}`
+      const transition =
+        options.transition ??
+        roomTransitionBetween(locationRef.current.pathname, url.pathname, launcherRect())
       // The history entry is written inside the transition alongside the render
       // so the address bar and the pixels change together — pushing first would
       // leave the URL pointing at a page not yet on screen for the whole
@@ -140,11 +240,14 @@ export function BrowserRouter({ children }: { children: ReactNode }) {
       void settleRoute(url.pathname).then(() => {
         // A newer navigation started while this chunk loaded — it wins.
         if (seq !== navSeq.current) return
-        commit(() => {
-          if (options.replace) window.history.replaceState(null, '', next)
-          else window.history.pushState(null, '', next)
-          setLocation(readLocation())
-        })
+        commit(
+          () => {
+            if (options.replace) window.history.replaceState(null, '', next)
+            else window.history.pushState(null, '', next)
+            setLocation(readLocation())
+          },
+          transition,
+        )
       })
     },
     [commit],
@@ -170,9 +273,17 @@ export function useNavigate(): RouterValue['navigate'] {
 
 type LinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'> & {
   to: string
+  transition?: RouteTransition | ((event: MouseEvent<HTMLAnchorElement>) => RouteTransition)
 }
 
-export function Link({ to, onClick, target, children, ...props }: LinkProps) {
+export function Link({
+  to,
+  onClick,
+  target,
+  transition,
+  children,
+  ...props
+}: LinkProps) {
   const navigate = useNavigate()
 
   const follow = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -193,7 +304,10 @@ export function Link({ to, onClick, target, children, ...props }: LinkProps) {
     const url = new URL(to, window.location.href)
     if (url.origin !== window.location.origin) return
     event.preventDefault()
-    navigate(to)
+    navigate(to, {
+      transition:
+        typeof transition === 'function' ? transition(event) : transition,
+    })
   }
 
   return (
