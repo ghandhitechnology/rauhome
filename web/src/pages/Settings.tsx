@@ -874,6 +874,11 @@ export default function Settings() {
                         Kimi Code ↗
                       </button>
                     )}
+                    {p.id === 'zai_code' && p.connect_url && (
+                      <button className="btn sm ghost" onClick={() => openUrl(p.connect_url)}>
+                        Z.AI ↗
+                      </button>
+                    )}
                     {p.configured && (
                       <button
                         className="btn sm danger"

@@ -21,6 +21,9 @@ _OPENAI_COMPAT_LIST: Dict[str, str] = {
     "kimi": "https://api.moonshot.ai/v1/models",
     "codex": "https://api.openai.com/v1/models",
     "openai": "https://api.openai.com/v1/models",
+    "zai_code": "https://api.z.ai/api/coding/paas/v4/models",
+    "xai": "https://api.x.ai/v1/models",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/models",
 }
 
 
@@ -90,6 +93,23 @@ def _verify_kimi_code(key: str) -> Dict[str, Any]:
     )
     return {"ok": True, "detail": f"responded as {body.get('model') or 'kimi-for-coding'}", "models": []}
 
+
+def _verify_anthropic(key: str) -> Dict[str, Any]:
+    # Claude Console: list models (read-only, no token spend).
+    body = _get_json(
+        "https://api.anthropic.com/v1/models",
+        {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+    )
+    ids = _model_ids(body)
+    return {
+        "ok": True,
+        "detail": f"{len(ids)} models reachable" if ids else "authenticated",
+        "models": ids,
+    }
 
 def _verify_elevenlabs(key: str) -> Dict[str, Any]:
     body = _get_json("https://api.elevenlabs.io/v1/user", {"xi-api-key": key})
@@ -187,6 +207,8 @@ def verify(slot_id: str, key: Optional[str] = None) -> Dict[str, Any]:
             result = _verify_openai_compat(slot_id, secret)
         elif slot_id == "kimi_code":
             result = _verify_kimi_code(secret)
+        elif slot_id == "anthropic":
+            result = _verify_anthropic(secret)
         elif slot_id == "elevenlabs":
             result = _verify_elevenlabs(secret)
         elif slot_id == "cartesia":

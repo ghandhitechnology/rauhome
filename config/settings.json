@@ -6,11 +6,14 @@
   "confirm_timeout_sec": 45,
   "presence_backoff_after_misses": 2,
   "hard_task_progress_interval_sec": 25,
+  "resource_profile": "balanced",
+  "pi_executor_enabled": true,
   "trace_ttl_days": 7,
   "face_history_turns": 24,
   "permissions": {
     "subagents": "auto",
     "room": "bypass",
     "heartbeats": "bypass"
-  }
+  },
+  "language": "en"
 }

@@ -38,12 +38,20 @@ describe('bilingual onboarding', () => {
   })
 
   it('ships optimized colored-pencil art and archival sources for all three pages', () => {
-    for (const name of ['dreaming', 'deep-work', 'presence']) {
+    for (const name of ['presence', 'dreaming', 'deep-work']) {
       const webp = resolve('public/onboarding', `${name}-colored-pencil.webp`)
       const png = resolve('public/onboarding/source', `${name}-colored-pencil.png`)
       expect(readFileSync(webp, { encoding: null }).subarray(0, 4).toString()).toBe('RIFF')
       expect(readFileSync(png, { encoding: null }).subarray(1, 4).toString()).toBe('PNG')
       expect(statSync(webp).size).toBeLessThan(statSync(png).size)
     }
+  })
+
+  it('ships transparent congrats art for the post-tour finale', () => {
+    const webp = resolve('public/onboarding', 'congrats-colored-pencil.webp')
+    const png = resolve('public/onboarding/source', 'congrats-colored-pencil.png')
+    expect(readFileSync(webp, { encoding: null }).subarray(0, 4).toString()).toBe('RIFF')
+    expect(readFileSync(png, { encoding: null }).subarray(1, 4).toString()).toBe('PNG')
+    expect(statSync(webp).size).toBeLessThan(statSync(png).size)
   })
 })

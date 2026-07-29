@@ -502,10 +502,11 @@
 
 .welcome-lede {
   color: var(--muted);
-  max-width: 40ch;
+  max-width: min(54ch, 92vw);
   font-size: 1.05rem;
-  line-height: 1.6;
-  margin: 1.25rem 0 0;
+  line-height: 1.65;
+  margin: 1.25rem auto 0;
+  text-wrap: pretty;
   animation: rise var(--dur-4) var(--ease) 160ms both;
 }
 

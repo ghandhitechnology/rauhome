@@ -338,7 +338,10 @@ class StatusAndSnapshotTests(unittest.TestCase):
         self.assertEqual(status["deepgram"]["env"], "DEEPGRAM_API_KEY")
         self.assertEqual(status["firecrawl"]["env"], "FIRECRAWL_API_KEY")
         self.assertEqual(status["browserbase"]["env"], "BROWSERBASE_API_KEY")
-
+        self.assertEqual(status["zai_code"]["env"], "ZAI_API_KEY")
+        self.assertEqual(status["anthropic"]["env"], "ANTHROPIC_API_KEY")
+        self.assertEqual(status["xai"]["env"], "XAI_API_KEY")
+        self.assertEqual(status["gemini"]["env"], "GEMINI_API_KEY")
     def test_effort_snapshot_includes_player(self) -> None:
         from rau.providers.reasoning import effort_snapshot
 

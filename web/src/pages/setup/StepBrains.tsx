@@ -12,7 +12,8 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
   const [busy, setBusy] = useState('')
   const [open, setOpen] = useState<string | null>(null)
 
-  const providers = (state?.providers || []).filter((p) => CHAT_AUTH_IDS.includes(p.id))
+  const byId = Object.fromEntries((state?.providers || []).map((p) => [p.id, p]))
+  const providers = CHAT_AUTH_IDS.map((id) => byId[id]).filter(Boolean)
   const connected = providers.filter((p) => p.configured).length
 
   /** Prove the key works before writing it to .env — a bad key never gets saved. */

@@ -92,6 +92,7 @@ function initialActive() {
 export function TutorialProvider({ children }: { children: ReactNode }) {
   const [active, setActive] = useState(initialActive)
   const [index, setIndex] = useState(0)
+  const [finale, setFinale] = useState(false)
   const nav = useNavigate()
   const loc = useLocation()
   const { t } = useLocale()
@@ -109,6 +110,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
   const start = useCallback(() => {
     writeState('pending')
     setIndex(0)
+    setFinale(false)
     setActive(true)
     nav('/face')
   }, [nav, writeState])
@@ -117,20 +119,23 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
     (value: 'completed' | 'skipped') => {
       writeState(value)
       setActive(false)
+      setFinale(false)
       setRect(null)
+      nav('/face')
     },
-    [writeState],
+    [nav, writeState],
   )
 
   const advance = useCallback(() => {
     if (index >= TOUR_STEPS.length - 1) {
-      finish('completed')
+      setRect(null)
+      setFinale(true)
       return
     }
     const next = TOUR_STEPS[index + 1]
     setIndex((value) => value + 1)
     if (loc.pathname !== next.route) nav(next.route)
-  }, [finish, index, loc.pathname, nav])
+  }, [index, loc.pathname, nav])
 
   useEffect(() => {
     document.documentElement.dataset.tutorial = active ? 'on' : 'off'
@@ -140,7 +145,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
   }, [active])
 
   useEffect(() => {
-    if (!active || !step) return
+    if (!active || finale || !step) return
     if (loc.pathname !== step.route) {
       nav(step.route)
       return
@@ -190,7 +195,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('scroll', onViewport, true)
       document.removeEventListener('click', onClick, true)
     }
-  }, [active, advance, loc.pathname, nav, step])
+  }, [active, advance, finale, loc.pathname, nav, step])
 
   const value = useMemo(() => ({ active, start }), [active, start])
 
@@ -213,7 +218,23 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
   return (
     <TutorialContext.Provider value={value}>
       {children}
-      {active && step && rect && (
+      {active && finale && (
+        <div className="tour-layer tour-finale" aria-live="polite">
+          <aside className="tour-card tour-congrats" aria-label={t('tour.congrats.title')}>
+            <figure className="tour-congrats-art">
+              <img src="/onboarding/congrats-colored-pencil.webp" alt="" />
+            </figure>
+            <h2>{t('tour.congrats.title')}</h2>
+            <p>{t('tour.congrats.body')}</p>
+            <div className="tour-card-actions tour-congrats-actions">
+              <button type="button" className="btn primary" onClick={() => finish('completed')}>
+                {t('tour.congrats.begin')}
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+      {active && !finale && step && rect && (
         <div className="tour-layer" aria-live="polite">
           <div
             className="tour-orbit"
@@ -246,7 +267,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
               </div>
               {step.action === 'next' && (
                 <button type="button" className="btn primary" onClick={advance}>
-                  {index === TOUR_STEPS.length - 1 ? t('tour.finish') : t('tour.next')}
+                  {t('tour.next')}
                 </button>
               )}
             </div>
