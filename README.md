@@ -108,6 +108,33 @@ whole thing. Which normaliser runs depends on the script:
   the voice is never handed a character it cannot pronounce. Particles are
   corrected to match the new sound — `H2O와` becomes 물과, not 물와.
 
+### The interface in Korean
+
+**Settings → Experience → Language** switches the whole product, not just the
+labels. The choice is stored on the hub, so Rau also answers in that language,
+and every string a person reads follows it:
+
+- the interface itself, from `web/src/locales/{en,ko}.ts` — one key set, with
+  the Korean file typed as a total map over it, so a string added without a
+  translation fails the build rather than showing through in English;
+- the copy the hub owns — provider blurbs, slot guidance, voice presets,
+  connection help — translated in `rau/providers/korean.py` as an overlay keyed
+  by the English text, so a model added upstream never silently disappears;
+- the activity plane, in `rau/face/phrases.py`: what a tool is called while it
+  runs, what a turn summarised, what Rau says out loud between long tool calls.
+
+Model ids, env var names, file paths and provider errors stay in English on
+purpose. They are identifiers, and a translated identifier is a wrong one.
+
+Typography is in `web/src/hangul.css`. Two things there matter more than the
+rest. `word-break: keep-all` is global rather than Korean-only, because Rau can
+answer in Korean while the interface is still English, and without it a line can
+end in the middle of a word — 다시 arriving as 다 / 시. And Hangul gets its own
+pair of faces: Pretendard beside DM Sans, Nanum Myeongjo beside Instrument
+Serif, chosen so their x-height and cap height land within a percent of the
+Latin they sit next to. Both are subset to the Hangul blocks with a matching
+`unicode-range`, so an English session never downloads either file.
+
 ### Always-available skills
 
 Skills live in `skills/*/SKILL.md` and are always injectable. In talk:

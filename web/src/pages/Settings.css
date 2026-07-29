@@ -199,7 +199,7 @@ a.btn:hover {
   color: var(--ink-2);
   font-size: 0.88rem;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   animation: pop-in var(--dur-3) var(--spring) both;
 }
 .settings-experience {

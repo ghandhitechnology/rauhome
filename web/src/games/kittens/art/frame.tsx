@@ -9,6 +9,7 @@
 
 import type { ReactElement, ReactNode } from "react";
 import { PALETTE, CARD_W, CARD_H } from "./defs";
+import { tr } from '../../../i18n'
 
 export type CardKind = "cat" | "action" | "kitten" | "defuse";
 
@@ -284,7 +285,7 @@ export function CardBack(): ReactElement {
       width="100%"
       height="100%"
       role="img"
-      aria-label="Face-down card"
+      aria-label={tr('ek.faceDown')}
       style={{ display: "block", overflow: "visible" }}
     >
       <title>Face-down card</title>

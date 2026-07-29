@@ -7,11 +7,12 @@ import {
   type ScheduleRun,
 } from '../api'
 import { live } from '../live'
+import { useLocale, tr } from '../i18n'
 import PageSkeleton from '../components/PageSkeleton'
 import './Operations.css'
 
 function when(timestamp?: number | null) {
-  if (!timestamp) return 'not scheduled'
+  if (!timestamp) return tr('ops.notScheduled')
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
@@ -20,6 +21,7 @@ function when(timestamp?: number | null) {
 }
 
 export default function Operations() {
+  const { t } = useLocale()
   const [jobs, setJobs] = useState<Job[]>([])
   const [schedules, setSchedules] = useState<Schedule[]>([])
   const [runs, setRuns] = useState<Record<string, ScheduleRun[]>>({})
@@ -79,7 +81,7 @@ export default function Operations() {
         }
         setError('')
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : 'Could not load operations')
+        setError(reason instanceof Error ? reason.message : tr('ops.loadFailed'))
       } finally {
         // Even a failed load has to leave the skeleton, or the error banner it
         // just set would never be reachable.
@@ -131,7 +133,7 @@ export default function Operations() {
       setGoal('')
       await refresh(true)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not create schedule')
+      setError(reason instanceof Error ? reason.message : t('ops.createFailed'))
     }
   }
 
@@ -148,123 +150,144 @@ export default function Operations() {
     <div className="operations">
       <div className="ops-head">
         <div>
-          <h1>Operations</h1>
-          <p>Durable jobs, schedules, approvals, and machine control.</p>
+          <h1>{t('ops.title')}</h1>
+          <p>{t('ops.lede')}</p>
         </div>
-        <button className="btn" onClick={() => void refresh(true)}>Refresh snapshot</button>
+        <button className="btn" onClick={() => void refresh(true)}>
+          {t('ops.refresh')}
+        </button>
       </div>
       {error ? <p className="ops-error">{error}</p> : null}
 
       <section className="panel ops-wide">
         <div className="dash-head">
-          <h2>Job plans</h2>
-          <span className="pill">{jobs.length} persisted</span>
+          <h2>{t('ops.jobPlans')}</h2>
+          <span className="pill">{t('ops.persisted', { count: jobs.length })}</span>
         </div>
         <div className="ops-list">
           {roots.map((job) => (
             <JobTree key={job.id} job={job} jobs={jobs} />
           ))}
-          {!roots.length ? <p className="muted">No jobs yet.</p> : null}
+          {!roots.length ? <p className="muted">{t('ops.noJobs')}</p> : null}
         </div>
       </section>
 
       <div className="ops-grid">
         <section className="panel">
-          <h2>New schedule</h2>
-          <label className="field">Name<input value={name} onChange={(e) => setName(e.target.value)} /></label>
-          <label className="field">Goal<textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={4} /></label>
+          <h2>{t('ops.newSchedule')}</h2>
+          <label className="field">{t('ops.name')}<input value={name} onChange={(e) => setName(e.target.value)} /></label>
+          <label className="field">{t('ops.goal')}<textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={4} /></label>
           <div className="ops-form-row">
-            <label className="field">Trigger
+            <label className="field">{t('ops.trigger')}
               <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
-                <option value="cron">Cron</option>
-                <option value="interval">Interval</option>
-                <option value="once">Once</option>
+                <option value="cron">{t('ops.cron')}</option>
+                <option value="interval">{t('ops.interval')}</option>
+                <option value="once">{t('ops.once')}</option>
               </select>
             </label>
-            <label className="field">Profile
+            <label className="field">{t('ops.profile')}
               <select value={profile} onChange={(e) => setProfile(e.target.value as typeof profile)}>
-                <option value="eco">Eco</option>
-                <option value="balanced">Balanced</option>
-                <option value="performance">Performance</option>
+                <option value="eco">{t('ops.eco')}</option>
+                <option value="balanced">{t('ops.balanced')}</option>
+                <option value="performance">{t('ops.performance')}</option>
               </select>
             </label>
           </div>
           {kind === 'cron' ? (
-            <label className="field">Five-field POSIX cron<input value={expression} onChange={(e) => setExpression(e.target.value)} /></label>
+            <label className="field">{t('ops.cronField')}<input value={expression} onChange={(e) => setExpression(e.target.value)} /></label>
           ) : kind === 'interval' ? (
-            <label className="field">Seconds<input type="number" min={60} value={interval} onChange={(e) => setIntervalValue(Number(e.target.value))} /></label>
+            <label className="field">{t('ops.seconds')}<input type="number" min={60} value={interval} onChange={(e) => setIntervalValue(Number(e.target.value))} /></label>
           ) : (
-            <label className="field">Run at<input type="datetime-local" value={onceAt} onChange={(e) => setOnceAt(e.target.value)} /></label>
+            <label className="field">{t('ops.runAt')}<input type="datetime-local" value={onceAt} onChange={(e) => setOnceAt(e.target.value)} /></label>
           )}
-          <label className="field">IANA timezone<input value={timezone} onChange={(e) => setTimezone(e.target.value)} /></label>
+          <label className="field">{t('ops.timezone')}<input value={timezone} onChange={(e) => setTimezone(e.target.value)} /></label>
           <button
             className="btn primary"
             onClick={() => void createSchedule()}
             disabled={!name.trim() || !goal.trim() || (kind === 'once' && !onceAt)}
           >
-            Create with approval policy
+            {t('ops.create')}
           </button>
         </section>
 
         <section className="panel">
-          <h2>Pending scheduled approvals</h2>
+          <h2>{t('ops.approvals')}</h2>
           <div className="ops-list">
             {confirmations.map((confirmation) => (
               <div className="ops-card warning" key={confirmation.id}>
-                <b>{confirmation.tool || 'Action approval'}</b>
+                <b>{confirmation.tool || t('ops.actionApproval')}</b>
                 <p>{confirmation.summary}</p>
-                <small>Expires {when(confirmation.expires)}</small>
+                <small>{t('ops.expires', { when: when(confirmation.expires) })}</small>
                 <div className="row">
-                  <button className="btn sm danger" onClick={() => api.confirm(false, confirmation.id).then(() => refresh(false)).catch(() => {})}>Deny</button>
-                  <button className="btn sm primary" onClick={() => api.confirm(true, confirmation.id).then(() => refresh(false)).catch(() => {})}>Approve exact action</button>
+                  <button className="btn sm danger" onClick={() => api.confirm(false, confirmation.id).then(() => refresh(false)).catch(() => {})}>{t('ops.deny')}</button>
+                  <button className="btn sm primary" onClick={() => api.confirm(true, confirmation.id).then(() => refresh(false)).catch(() => {})}>{t('ops.approve')}</button>
                 </div>
               </div>
             ))}
-            {!confirmations.length ? <p className="muted">Nothing is waiting on you.</p> : null}
+            {!confirmations.length ? <p className="muted">{t('ops.nothingWaiting')}</p> : null}
           </div>
-          <h3 className="section-title">Computer session</h3>
+          <h3 className="section-title">{t('ops.computerSession')}</h3>
           {activeComputer ? (
             <div className="ops-card">
-              <b>{activeComputer.app?.name || 'Frontmost app'}</b>
-              <p>{activeComputer.state} · effect {activeComputer.effect_state}</p>
-              <small>Observation {activeComputer.latest_observation_id || 'not captured'}<br />Verification {String(activeComputer.result?.verified ?? 'pending')}</small>
-              {activeComputer.state === 'awaiting_review' ? <strong className="takeover">Takeover/review required</strong> : null}
+              <b>{activeComputer.app?.name || t('ops.frontmost')}</b>
+              <p>
+                {t('ops.effect', {
+                  state: activeComputer.state,
+                  effect: activeComputer.effect_state,
+                })}
+              </p>
+              <small>
+                {t('ops.observation', {
+                  id: activeComputer.latest_observation_id || t('ops.notCaptured'),
+                })}
+                <br />
+                {t('ops.verification', {
+                  value: String(activeComputer.result?.verified ?? t('ops.pending')),
+                })}
+              </small>
+              {activeComputer.state === 'awaiting_review' ? (
+                <strong className="takeover">{t('ops.takeover')}</strong>
+              ) : null}
             </div>
-          ) : <p className="muted">No machine-control lease.</p>}
+          ) : <p className="muted">{t('ops.noLease')}</p>}
         </section>
       </div>
 
       <section className="panel ops-wide">
-        <h2>Schedules and occurrence history</h2>
+        <h2>{t('ops.schedules')}</h2>
         <div className="ops-list">
           {schedules.map((schedule) => (
             <div className="ops-card" key={schedule.id}>
               <div className="ops-card-head">
                 <div><b>{schedule.name}</b><p>{schedule.goal}</p></div>
-                <span className={`pill ${schedule.enabled ? 'on' : 'off'}`}>{schedule.enabled ? 'enabled' : 'paused'}</span>
+                <span className={`pill ${schedule.enabled ? 'on' : 'off'}`}>
+                  {schedule.enabled ? t('ops.enabled') : t('ops.paused')}
+                </span>
               </div>
               <small>
                 {schedule.trigger_kind} · {JSON.stringify(schedule.trigger)} · {schedule.timezone}<br />
-                Next: {when(schedule.next_run_at)} · {schedule.resource_profile}
+                {t('ops.next', { when: when(schedule.next_run_at) })} · {schedule.resource_profile}
               </small>
               <div className="row">
-                <button className="btn sm" onClick={() => api.runSchedule(schedule.id).then(() => refresh(true)).catch(() => {})}>Run now</button>
+                <button className="btn sm" onClick={() => api.runSchedule(schedule.id).then(() => refresh(true)).catch(() => {})}>{t('ops.runNow')}</button>
                 <button className="btn sm" onClick={() => (schedule.enabled ? api.pauseSchedule(schedule.id) : api.resumeSchedule(schedule.id)).then(() => refresh(true)).catch(() => {})}>
-                  {schedule.enabled ? 'Pause' : 'Resume'}
+                  {schedule.enabled ? t('ops.pause') : t('ops.resume')}
                 </button>
-                <button className="btn sm danger" onClick={() => api.deleteSchedule(schedule.id).then(() => refresh(true)).catch(() => {})}>Delete</button>
+                <button className="btn sm danger" onClick={() => api.deleteSchedule(schedule.id).then(() => refresh(true)).catch(() => {})}>{t('ops.delete')}</button>
               </div>
               <div className="run-strip">
                 {(runs[schedule.id] || []).slice(0, 8).map((run) => (
                   <span key={run.id} title={JSON.stringify(run.outcome)}>
-                    {when(run.nominal_at)} · {run.state} · attempt {run.attempt}
-                    {run.coalesced_count > 1 ? ` · ${run.coalesced_count} coalesced` : ''}
+                    {when(run.nominal_at)} · {run.state} · {t('ops.attempt', { attempt: run.attempt })}
+                    {run.coalesced_count > 1
+                      ? t('ops.coalesced', { count: run.coalesced_count })
+                      : ''}
                   </span>
                 ))}
               </div>
             </div>
           ))}
-          {!schedules.length ? <p className="muted">No schedules yet.</p> : null}
+          {!schedules.length ? <p className="muted">{t('ops.noSchedules')}</p> : null}
         </div>
       </section>
     </div>
@@ -272,6 +295,7 @@ export default function Operations() {
 }
 
 function JobTree({ job, jobs }: { job: Job; jobs: Job[] }) {
+  const { t } = useLocale()
   const steps = (job.plan?.steps || []) as AgentStep[]
   const children = jobs.filter((candidate) => candidate.parent_id === job.id)
   return (
@@ -283,7 +307,21 @@ function JobTree({ job, jobs }: { job: Job; jobs: Job[] }) {
       {steps.map((step) => (
         <div className="step-row" key={step.id}>
           <span>{step.ordinal + 1}</span>
-          <div><b>{step.title}</b><small>{step.state} · attempt {step.attempt} · {step.executor}<br />Evidence: {step.evidence?.length || 0} · Budget: {JSON.stringify(job.budget || {})}</small></div>
+          <div>
+            <b>{step.title}</b>
+            <small>
+              {t('ops.stepMeta', {
+                state: step.state,
+                attempt: step.attempt,
+                executor: step.executor,
+              })}
+              <br />
+              {t('ops.evidence', {
+                count: step.evidence?.length || 0,
+                budget: JSON.stringify(job.budget || {}),
+              })}
+            </small>
+          </div>
         </div>
       ))}
       {children.length ? <div className="job-children">{children.map((child) => <JobTree key={child.id} job={child} jobs={jobs} />)}</div> : null}

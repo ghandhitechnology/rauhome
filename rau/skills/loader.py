@@ -250,11 +250,40 @@ def load_skill(name: str) -> Optional[Skill]:
     return next((skill for skill in skills if skill.slash.lstrip("/") == wanted), None)
 
 
+#: What the slash menu calls each built-in skill, for a Korean session.
+#:
+#: Only the menu line is translated. `Skill.description` is also part of the
+#: prompt block handed to the model, and the body it introduces is English —
+#: swapping one half of that pair would leave the model reading a sentence in
+#: one language about instructions in another. A user-authored skill with no
+#: entry here keeps its own description, in whichever language it was written.
+_KO_DESCRIPTIONS: Dict[str, str] = {
+    "grill-me": "한 번에 하나씩, 날카로운 질문으로 생각을 시험합니다.",
+    "plan": "목표를 실행 가능한 순서의 계획으로 바꿉니다.",
+    "read": "판단하기 전에 로컬 파일을 안전하게 확인합니다.",
+    "write": "확인을 거쳐 프로젝트 파일을 만들거나 고칩니다.",
+    "goal": "Rau의 진행 중인 목표를 정하고, 살피고, 지우고, 진척시킵니다.",
+    "shell": "로컬 셸 명령을 신중하게 실행하고 결과를 확인합니다.",
+    "search": "추측 대신 근거를 찾아 정리해서 답합니다.",
+    "remember": "최근 기억을 꺼내거나 오래 남길 메모를 저장합니다.",
+    "computer": "사용자가 시킨 일을 이 컴퓨터에서 조심스럽게 처리합니다.",
+    "summarize": "결정과 근거, 단서를 잃지 않고 압축합니다.",
+}
+
+
 def skills_public() -> List[Dict[str, Any]]:
+    """The skill list as the interface shows it, in the reader's language."""
+    from rau.language import get_locale
+
+    korean = get_locale() == "ko"
     return [
         {
             "name": skill.name,
-            "description": skill.description,
+            "description": (
+                (_KO_DESCRIPTIONS.get(skill.name) or skill.description)
+                if korean
+                else skill.description
+            ),
             "slash": skill.slash,
             "always": skill.always,
         }

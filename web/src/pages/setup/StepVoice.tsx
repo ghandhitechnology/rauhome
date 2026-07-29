@@ -13,7 +13,7 @@ export default function StepVoice({
   verify,
   setVerify,
 }: StepProps) {
-  const { locale } = useLocale()
+  const { t } = useLocale()
   const [keys, setKeys] = useState({ elevenlabs: '', cartesia: '', deepgram: '' })
   const [busy, setBusy] = useState('')
   const [voices, setVoices] = useState<TtsVoice[]>([])
@@ -40,15 +40,15 @@ export default function StepVoice({
     if (!key) return
     setBusy(id)
     const label = id === 'elevenlabs' ? 'ElevenLabs' : id === 'cartesia' ? 'Cartesia' : 'Deepgram'
-    setVerify(id, { status: 'checking', detail: `Asking ${label}…` })
+    setVerify(id, { status: 'checking', detail: t('voiceStep.asking', { provider: label }) })
     try {
       const result = await api.verifyAuth(id, key)
       if (!result.ok) {
-        setVerify(id, { status: 'bad', detail: result.detail || 'Key rejected.' })
+        setVerify(id, { status: 'bad', detail: result.detail || t('settings.rejected') })
         return
       }
       await api.setAuth(id, key)
-      setVerify(id, { status: 'ok', detail: result.detail || 'Connected.' })
+      setVerify(id, { status: 'ok', detail: result.detail || t('settings.connectedOk') })
       setKeys((current) => ({ ...current, [id]: '' }))
       patch({ voiceSkipped: false })
       await reload()
@@ -106,7 +106,7 @@ export default function StepVoice({
               type="password"
               autoComplete="off"
               spellCheck={false}
-              placeholder={provider?.configured ? 'paste a new key to replace' : 'paste your API key'}
+              placeholder={provider?.configured ? t('settings.pasteReplace') : t('settings.pasteKey')}
               value={keys[id]}
               onChange={(event) => setKeys((current) => ({ ...current, [id]: event.target.value }))}
               onKeyDown={(event) => {
@@ -125,13 +125,13 @@ export default function StepVoice({
               onClick={() => connect(id)}
             >
               {busy === id && <i className="spinner" />}
-              {busy === id ? 'Checking…' : 'Check & save'}
+              {busy === id ? t('settings.checking') : t('settings.checkSave')}
             </button>
             <button
               className="btn sm ghost"
               onClick={() => window.open(provider?.docs_url, '_blank', 'noopener,noreferrer')}
             >
-              Get a key ↗
+              {t('settings.getKey')}
             </button>
           </div>
       </AuthCard>
@@ -144,24 +144,20 @@ export default function StepVoice({
   return (
     <div className="step">
       <header className="step-head">
-        <p className="eyebrow">{locale === 'ko' ? '다섯 번째 단계 — 목소리' : 'Step five — voice'}</p>
-        <h2>{locale === 'ko' ? 'Rau에게 목소리와 귀를 주세요' : 'Give Rau a voice and ears'}</h2>
-        <p className="step-lede">
-          {locale === 'ko'
-            ? '말하기에는 ElevenLabs 또는 Cartesia Sonic 3.5를, 실시간 듣기에는 Deepgram을 사용할 수 있습니다. 두 키는 서로 독립적입니다.'
-            : 'Choose ElevenLabs or Cartesia Sonic 3.5 for speech. Deepgram hears in real time. Speaking and hearing keys are independent.'}
-        </p>
+        <p className="eyebrow">{t('voiceStep.eyebrow')}</p>
+        <h2>{t('voiceStep.title')}</h2>
+        <p className="step-lede">{t('voiceStep.lede')}</p>
       </header>
 
-      {authCard('elevenlabs', 'ElevenLabs', el, 'Text-to-speech and optional Scribe speech-to-text.')}
-      {authCard('cartesia', 'Cartesia', cartesia, 'Low-latency Sonic 3.5 text-to-speech.')}
+      {authCard('elevenlabs', 'ElevenLabs', el, t('voiceStep.elevenHelp'))}
+      {authCard('cartesia', 'Cartesia', cartesia, t('voiceStep.cartesiaHelp'))}
 
       {(el?.configured || cartesia?.configured) && (
         <section className="voice-setup-card">
-          <h3>{locale === 'ko' ? '말하기 서비스와 목소리 선택' : 'Choose a speaking service and voice'}</h3>
+          <h3>{t('voiceStep.chooseTitle')}</h3>
           <div className="voice-picks">
             <div className="field">
-              <label>{locale === 'ko' ? '음성 제공자' : 'Speech provider'}</label>
+              <label>{t('settings.speechProvider')}</label>
               <select
                 value={draft.tts.provider}
                 onChange={(event) => {
@@ -182,7 +178,7 @@ export default function StepVoice({
                 {Object.entries(catalog?.tts_providers || {}).map(([id, meta]) => (
                   <option key={id} value={id}>
                     {meta.label}
-                    {providers.some((p) => p.id === meta.auth && p.configured) ? '' : ' (no key)'}
+                    {providers.some((p) => p.id === meta.auth && p.configured) ? '' : t('settings.noKey')}
                   </option>
                 ))}
               </select>
@@ -206,7 +202,11 @@ export default function StepVoice({
           )}
           <div className="voice-picks">
             <div className="field">
-              <label>{draft.tts.provider === 'cartesia' ? 'Cartesia voices' : 'Your account voices'}</label>
+              <label>
+                {draft.tts.provider === 'cartesia'
+                  ? t('settings.cartesiaVoices')
+                  : t('voiceStep.accountVoices')}
+              </label>
               <select
                 value={voices.some((voice) => voice.id === draft.tts.voice_id) ? draft.tts.voice_id : ''}
                 onChange={(event) =>
@@ -220,7 +220,7 @@ export default function StepVoice({
                   })
                 }
               >
-                <option value="">choose a voice…</option>
+                <option value="">{t('voiceStep.chooseVoice')}</option>
                 {voices.map((voice) => (
                   <option key={voice.id} value={voice.id}>
                     {voice.label}
@@ -230,7 +230,7 @@ export default function StepVoice({
               </select>
             </div>
             <div className="field">
-              <label>Custom voice ID</label>
+              <label>{t('settings.customVoiceId')}</label>
               <input
                 value={draft.tts.voice_id}
                 spellCheck={false}
@@ -246,27 +246,27 @@ export default function StepVoice({
               />
             </div>
             <div className="field">
-              <label>TTS model</label>
+              <label>{t('settings.ttsModel')}</label>
               <select
                 value={draft.tts.model}
                 onChange={(event) => patch({ tts: { ...draft.tts, model: event.target.value } })}
               >
                 {(catalog?.tts_providers?.[draft.tts.provider]?.models || []).map((model) => (
                   <option key={model.id} value={model.id}>
-                    {model.label} — {model.note}
+                    {model.label}{t('common.optionSep')}{model.note}
                   </option>
                 ))}
               </select>
             </div>
             <div className="field">
-              <label>Voice effect</label>
+              <label>{t('settings.voiceEffect')}</label>
               <select
                 value={draft.tts.effect}
                 onChange={(event) => patch({ tts: { ...draft.tts, effect: event.target.value } })}
               >
                 {(catalog?.voice_effects || []).map((effect) => (
                   <option key={effect.id} value={effect.id}>
-                    {effect.label} — {effect.note}
+                    {effect.label}{t('common.optionSep')}{effect.note}
                   </option>
                 ))}
               </select>
@@ -281,18 +281,18 @@ export default function StepVoice({
             onClick={preview}
           >
             {busy === 'preview' && <i className="spinner" />}
-            {busy === 'preview' ? (locale === 'ko' ? '생성 중…' : 'Generating…') : (locale === 'ko' ? '이 목소리 미리 듣기' : 'Preview this voice')}
+            {busy === 'preview' ? t('voiceStep.generating') : t('voiceStep.preview')}
           </button>
         </section>
       )}
 
-      {authCard('deepgram', 'Deepgram', dg, 'Low-latency streaming speech-to-text with live partials.')}
+      {authCard('deepgram', 'Deepgram', dg, t('voiceStep.deepgramHelp'))}
 
       <section className="voice-setup-card">
-        <h3>{locale === 'ko' ? '듣기' : 'Hearing'}</h3>
+        <h3>{t('voiceStep.hearing')}</h3>
         <div className="voice-picks">
           <div className="field">
-            <label>{locale === 'ko' ? '음성 인식 제공자' : 'STT provider'}</label>
+            <label>{t('settings.provider')}</label>
             <select
               value={draft.stt.provider}
               onChange={(event) => {
@@ -310,42 +310,42 @@ export default function StepVoice({
                 <option key={id} value={id}>
                   {meta.label}
                   {meta.auth && !providers.some((p) => p.id === meta.auth && p.configured)
-                    ? ' (no key)'
+                    ? t('settings.noKey')
                     : ''}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
-            <label>{locale === 'ko' ? '음성 인식 모델' : 'STT model'}</label>
+            <label>{t('settings.model')}</label>
             <select
               disabled={draft.stt.provider === 'auto'}
               value={draft.stt.model}
               onChange={(event) => patch({ stt: { ...draft.stt, model: event.target.value } })}
             >
               <option value="">
-                {draft.stt.provider === 'auto' ? 'chosen automatically' : 'choose…'}
+                {draft.stt.provider === 'auto' ? t('settings.autoChosen') : t('settings.choose')}
               </option>
               {sttModels.map((model) => (
                 <option key={model.id} value={model.id}>
-                  {model.label} — {model.note}
+                  {model.label}{t('common.optionSep')}{model.note}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
-            <label>{locale === 'ko' ? '인식 언어' : 'Recognition language'}</label>
+            <label>{t('settings.recognitionLanguage')}</label>
             <select
               value={draft.stt.language}
               onChange={(event) => patch({ stt: { ...draft.stt, language: event.target.value } })}
             >
-              <option value="">Provider default</option>
-              <option value="en">English</option>
-              <option value="ko">Korean</option>
-              <option value="ja">Japanese</option>
-              <option value="zh">Chinese</option>
-              <option value="es">Spanish</option>
-              <option value="multi">Multilingual / code-switching</option>
+              <option value="">{t('settings.languageDefault')}</option>
+              <option value="en">{t('settings.langEn')}</option>
+              <option value="ko">{t('settings.langKo')}</option>
+              <option value="ja">{t('settings.langJa')}</option>
+              <option value="zh">{t('settings.langZh')}</option>
+              <option value="es">{t('settings.langEs')}</option>
+              <option value="multi">{t('settings.langMulti')}</option>
             </select>
           </div>
         </div>

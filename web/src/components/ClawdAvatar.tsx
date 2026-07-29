@@ -4,6 +4,7 @@ import { ClawdRig } from '../clawd/rig'
 import { drawClawd, GRID } from '../clawd/sprite'
 import { useClawdCanvas } from '../clawd/useClawdCanvas'
 import { live } from '../live'
+import { tr, type TranslationKey } from '../i18n'
 import { ONE_SHOTS, type MotionName } from '../clawd/motions'
 import './ClawdAvatar.css'
 
@@ -37,6 +38,27 @@ type Props = {
  * The small inline Clawd — same rig as the room scene, no scenery.
  * Click him and he startles.
  */
+/** The mood word the hub reports, said in the reader's language. */
+const MOODS = [
+  'idle',
+  'curious',
+  'happy',
+  'excited',
+  'sad',
+  'scared',
+  'amazed',
+  'love',
+  'determined',
+  'thinking',
+  'sleep',
+] as const
+
+function moodWord(emotion: string): string {
+  return (MOODS as readonly string[]).includes(emotion)
+    ? tr(`mood.${emotion as (typeof MOODS)[number]}` as TranslationKey)
+    : emotion
+}
+
 export default function ClawdAvatar({
   emotion = 'idle',
   busy = false,
@@ -203,7 +225,7 @@ export default function ClawdAvatar({
         }}
         aria-hidden
       />
-      <span className="sr-only">Clawd, currently {emotion}</span>
+      <span className="sr-only">{tr('avatar.state', { emotion: moodWord(emotion) })}</span>
     </div>
   )
 }

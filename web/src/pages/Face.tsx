@@ -51,16 +51,16 @@ import {
 } from '../faceStream'
 import './Face.css'
 
-const MOTION_BUTTONS: { id: MotionName; label: string }[] = [
-  { id: 'wave', label: 'Wave' },
-  { id: 'bounce', label: 'Bounce' },
-  { id: 'celebrate', label: 'Celebrate' },
-  { id: 'type', label: 'Type' },
-  { id: 'think', label: 'Think' },
-  { id: 'gaze', label: 'Gaze' },
-  { id: 'sleep', label: 'Sleep' },
-  { id: 'walk', label: 'Walk in place' },
-]
+const MOTION_BUTTONS = [
+  'wave',
+  'bounce',
+  'celebrate',
+  'type',
+  'think',
+  'gaze',
+  'sleep',
+  'walk',
+] as const satisfies readonly MotionName[]
 
 /**
  * The table verbs, kept apart because they only read right seated.
@@ -69,19 +69,19 @@ const MOTION_BUTTONS: { id: MotionName; label: string }[] = [
  * standing pose they all look like he is falling out of a chair he was not
  * in, which is exactly the failure they are authored to avoid.
  */
-const TABLE_BUTTONS: { id: MotionName; label: string }[] = [
-  { id: 'sitTable', label: 'Sit at table' },
-  { id: 'dealFlick', label: 'Deal' },
-  { id: 'reachDraw', label: 'Draw' },
-  { id: 'flickPlay', label: 'Play a card' },
-  { id: 'slamNope', label: 'Nope' },
-  { id: 'kittenRecoil', label: 'Kitten!' },
-  { id: 'defuseRelief', label: 'Defused' },
-  { id: 'smugLean', label: 'Smug' },
-  { id: 'sitCheer', label: 'Win' },
-  { id: 'slumpLoss', label: 'Lose' },
-  { id: 'standUp', label: 'Stand up' },
-]
+const TABLE_BUTTONS = [
+  'sitTable',
+  'dealFlick',
+  'reachDraw',
+  'flickPlay',
+  'slamNope',
+  'kittenRecoil',
+  'defuseRelief',
+  'smugLean',
+  'sitCheer',
+  'slumpLoss',
+  'standUp',
+] as const satisfies readonly MotionName[]
 
 const STATION_BUTTONS = ['window', 'plant', 'rug', 'table', 'centre', 'desk', 'shelf'] as const
 
@@ -607,7 +607,7 @@ export default function Face() {
       <div ref={tourAnchorRef} className="tour-room-anchor" data-tour="room" aria-hidden />
 
       {wall.length > 0 && (
-        <div className="face-wall" role="group" aria-label="Panels on the wall">
+        <div className="face-wall" role="group" aria-label={t('face.wallLabel')}>
           {wall.map((p) => (
             // A row rather than one button: the close control cannot be nested
             // inside the open control, and the whole chip should still open.
@@ -617,8 +617,11 @@ export default function Face() {
                 onClick={() => panelStore.show(p.panel_id)}
                 title={
                   p.headings?.length
-                    ? `Open “${p.title}” — ${p.headings.join(' · ')}`
-                    : `Open “${p.title}”`
+                    ? t('face.openPanelWith', {
+                        title: p.title,
+                        headings: p.headings.join(' · '),
+                      })
+                    : t('face.openPanel', { title: p.title })
                 }
               >
                 <span className="face-wall-kind">{p.kind}</span>
@@ -632,8 +635,8 @@ export default function Face() {
                   panelStore.remove(p.panel_id)
                   api.closePanel(p.panel_id).catch(() => {})
                 }}
-                title={`Take “${p.title}” down`}
-                aria-label={`Take ${p.title} down`}
+                title={t('face.takeDown', { title: p.title })}
+                aria-label={t('face.takeDownLabel', { title: p.title })}
               >
                 ✕
               </button>
@@ -670,13 +673,13 @@ export default function Face() {
 
       <header className="face-top">
         <div className="face-top-left">
-          <Link to="/" className="face-back" aria-label="Back to talk">
+          <Link to="/" className="face-back" aria-label={t('face.backLabel')}>
             {t('face.back')}
           </Link>
           <div
             className="room-style-seg"
             role="radiogroup"
-            aria-label="Room style"
+            aria-label={t('face.roomStyle')}
           >
             <button
               type="button"
@@ -688,7 +691,7 @@ export default function Face() {
                 saveRoomVisual('classic')
               }}
             >
-              Classic
+              {t('face.classic')}
             </button>
             <button
               type="button"
@@ -700,7 +703,7 @@ export default function Face() {
                 saveRoomVisual('enhanced')
               }}
             >
-              Enhanced
+              {t('face.enhanced')}
             </button>
           </div>
         </div>
@@ -715,7 +718,7 @@ export default function Face() {
           />
           <span
             className={`mode-pill ${isVoice ? 'on' : ''}`}
-            title="Shift+Space to switch — chat, voice, talk, or hold-Space-to-talk"
+            title={t('face.modeHint')}
           >
             <i className="mode-dot" />
             {modeLabel(mode)}
@@ -749,7 +752,7 @@ export default function Face() {
                   setComposerOpen(false)
                   void chessPhaseStore.begin()
                 }}
-                title="Set the chess board up"
+                title={t('face.chessTitle')}
               >
                 {t('face.chess')}
               </button>
@@ -761,7 +764,7 @@ export default function Face() {
                   setComposerOpen(false)
                   void phaseStore.begin()
                 }}
-                title="Deal a hand of Exploding Kittens"
+                title={t('face.playTitle')}
               >
                 {t('face.play')}
               </button>
@@ -781,7 +784,7 @@ export default function Face() {
       </header>
 
       {activityOpen && (
-        <aside className="face-activity-drawer" aria-label="Rau agent activity">
+        <aside className="face-activity-drawer" aria-label={t('face.activityLabel')}>
           <ActivityInspector
             global
             defaultOpen
@@ -817,16 +820,16 @@ export default function Face() {
             {listening && (
               <span className={`voice-phase ${signals.working ? 'working' : voice.phase}`}>
                 {!voice.connected
-                  ? 'connecting…'
+                  ? t('voiceHud.connecting')
                   : signals.working
-                    ? 'at the computer'
+                    ? t('voiceHud.atComputer')
                     : voice.phase === 'listening'
-                      ? 'listening'
+                      ? t('voiceHud.listening')
                       : voice.phase === 'thinking'
-                        ? 'thinking'
+                        ? t('voiceHud.thinking')
                         : voice.phase === 'speaking'
-                          ? 'speaking — talk to cut in'
-                          : 'ready'}
+                          ? t('voiceHud.speaking')
+                          : t('voiceHud.ready')}
               </span>
             )}
             {/* Only Deepgram streams partials; the rest stay blank until final. */}
@@ -836,7 +839,7 @@ export default function Face() {
               </p>
             )}
             {listening && voice.lastTurn?.interrupted && (
-              <p className="voice-note">cut off — he only remembers what you heard</p>
+              <p className="voice-note">{t('voiceHud.cutOff')}</p>
             )}
             {voice.error && <p className="voice-note bad">{voice.error}</p>}
           </div>
@@ -860,51 +863,45 @@ export default function Face() {
         hidden={!panel}
       >
         <div className="face-panel-inner">
-          <h3>Motions</h3>
+          <h3>{t('direct.motions')}</h3>
           <div className="chip-row">
-            {MOTION_BUTTONS.map((m) => (
-              <button key={m.id} className="chip" onClick={() => apiRef.current?.play(m.id)}>
-                {m.label}
+            {MOTION_BUTTONS.map((id) => (
+              <button key={id} className="chip" onClick={() => apiRef.current?.play(id)}>
+                {t(`motion.${id}`)}
               </button>
             ))}
           </div>
 
-          <h3>At the table</h3>
-          <p className="face-hint">
-            The ritual runs with or without a game, so the walk, the sit and
-            the camera can be watched on their own. The verbs below it only
-            read right seated — start with “Sit at table”.
-          </p>
+          <h3>{t('direct.atTable')}</h3>
+          <p className="face-hint">{t('direct.tableHint')}</p>
           <div className="chip-row">
             <button className="chip" onClick={() => void apiRef.current?.game.begin()}>
-              Enter the table
+              {t('direct.enterTable')}
             </button>
             <button className="chip" onClick={() => void apiRef.current?.game.end()}>
-              Leave the table
+              {t('direct.leaveTable')}
             </button>
           </div>
           <div className="chip-row">
-            {TABLE_BUTTONS.map((m) => (
-              <button key={m.id} className="chip" onClick={() => apiRef.current?.play(m.id)}>
-                {m.label}
+            {TABLE_BUTTONS.map((id) => (
+              <button key={id} className="chip" onClick={() => apiRef.current?.play(id)}>
+                {t(`motion.${id}`)}
               </button>
             ))}
           </div>
 
-          <h3>Send him to</h3>
+          <h3>{t('direct.sendHimTo')}</h3>
           <div className="chip-row">
             {STATION_BUTTONS.map((s) => (
               <button key={s} className="chip" onClick={() => apiRef.current?.goTo(s)}>
-                {s}
+                {t(`station.${s}`)}
               </button>
             ))}
           </div>
 
-          <h3>Detail</h3>
+          <h3>{t('direct.detail')}</h3>
           <p className="face-hint">
-            {tierAuto
-              ? 'Chosen for this machine. Drop it if the room ever feels heavy.'
-              : 'Set by you. Automatic judges the machine instead.'}
+            {tierAuto ? t('direct.detailAuto') : t('direct.detailManual')}
           </p>
           <div className="chip-row">
             {(['low', 'balanced', 'high'] as const).map((level) => (
@@ -918,7 +915,7 @@ export default function Face() {
                   setTierAuto(false)
                 }}
               >
-                {level}
+                {t(`direct.${level}`)}
               </button>
             ))}
             <button
@@ -930,13 +927,17 @@ export default function Face() {
                 setTierAuto(true)
               }}
             >
-              auto
+              {t('direct.auto')}
             </button>
           </div>
 
-          <h3>Room</h3>
+          <h3>{t('direct.room')}</h3>
           <label className="face-field">
-            <span>Hour {hour === null ? '(live)' : hour.toFixed(1)}</span>
+            <span>
+              {t('direct.hour', {
+                value: hour === null ? t('direct.hourLive') : hour.toFixed(1),
+              })}
+            </span>
             <input
               type="range"
               min={0}
@@ -948,13 +949,15 @@ export default function Face() {
           </label>
           <div className="chip-row">
             <button className="chip" onClick={() => setHour(null)}>
-              Live time
+              {t('direct.liveTime')}
             </button>
             <button className="chip" onClick={() => setLamp((l) => (l === true ? false : true))}>
-              Lamp {lamp === undefined ? 'auto' : lamp ? 'on' : 'off'}
+              {t('direct.lamp', {
+                state: lamp === undefined ? t('direct.auto') : lamp ? t('direct.on') : t('direct.off'),
+              })}
             </button>
             <button className="chip" onClick={() => setLamp(undefined)}>
-              Auto lamp
+              {t('direct.autoLamp')}
             </button>
           </div>
         </div>

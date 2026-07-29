@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useLocale } from '../i18n'
 import type { SlashCmd } from '../slash'
 import './SlashMenu.css'
 
@@ -11,6 +12,7 @@ type Props = {
 }
 
 export default function SlashMenu({ open, commands, activeIndex, onHover, onPick }: Props) {
+  const { t } = useLocale()
   const listRef = useRef<HTMLUListElement>(null)
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
 
@@ -25,8 +27,8 @@ export default function SlashMenu({ open, commands, activeIndex, onHover, onPick
   if (!open || commands.length === 0) return null
 
   return (
-    <div className="slash-menu" role="listbox" aria-label="Slash commands">
-      <div className="slash-menu-head">Commands</div>
+    <div className="slash-menu" role="listbox" aria-label={t('slash.menuLabel')}>
+      <div className="slash-menu-head">{t('slash.commands')}</div>
       <ul ref={listRef} id="slash-menu-list" className="slash-menu-list">
         {commands.map((cmd, i) => (
           <li key={cmd.slash}>

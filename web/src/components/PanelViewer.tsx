@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { panelStore, panelUrl, type PanelSummary } from '../panels'
+import { useLocale } from '../i18n'
 import './PanelViewer.css'
 
 /**
@@ -18,6 +19,7 @@ import './PanelViewer.css'
  * for something the size of a postage stamp.
  */
 export default function PanelViewer() {
+  const { t } = useLocale()
   const [open, setOpen] = useState<string | null>(panelStore.openPanel)
   const [panels, setPanels] = useState<PanelSummary[]>(panelStore.list())
 
@@ -43,16 +45,21 @@ export default function PanelViewer() {
   const panel = panels.find((p) => p.panel_id === open)
 
   return (
-    <div className="panel-viewer" role="dialog" aria-modal="true" aria-label={panel?.title || 'Panel'}>
+    <div
+      className="panel-viewer"
+      role="dialog"
+      aria-modal="true"
+      aria-label={panel?.title || t('panel.title')}
+    >
       <div className="panel-viewer-backdrop" onClick={() => panelStore.show(null)} />
       <div className="panel-viewer-frame">
         <header className="panel-viewer-head">
-          <span className="panel-viewer-kind">{panel?.kind || 'report'}</span>
-          <h2>{panel?.title || 'Panel'}</h2>
+          <span className="panel-viewer-kind">{panel?.kind || t('panel.report')}</span>
+          <h2>{panel?.title || t('panel.title')}</h2>
           <button
             className="panel-viewer-close"
             onClick={() => panelStore.show(null)}
-            aria-label="Close panel"
+            aria-label={t('panel.close')}
           >
             ✕
           </button>
@@ -64,7 +71,7 @@ export default function PanelViewer() {
           // `Cache-Control: no-store`, so a remount really does refetch.
           key={`${open}:${panel?.revision ?? 1}`}
           className="panel-viewer-doc"
-          title={panel?.title || 'Panel'}
+          title={panel?.title || t('panel.title')}
           src={panelUrl(open)}
           // No allow-same-origin: scripts run, but in an opaque origin that
           // cannot reach this app or the hub. Do not add it.

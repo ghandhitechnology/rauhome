@@ -1,5 +1,6 @@
 import { Skeleton, SkeletonPanel } from './Skeleton'
 import { normalizePath } from '../routes'
+import { tr } from '../i18n'
 import './PageSkeleton.css'
 
 /**
@@ -64,7 +65,7 @@ export function ThreadSkeleton() {
   return (
     // Alternating sides so the shape reads as a conversation, not a list.
     <div className="convo-skeleton-thread page-skeleton" role="status" aria-live="polite">
-      <span className="sr-only">Loading conversation</span>
+      <span className="sr-only">{tr('skeleton.loadingThread')}</span>
       <Skeleton className="convo-skeleton-bubble left" h="3.2rem" w="62%" />
       <Skeleton className="convo-skeleton-bubble right" h="2.4rem" w="45%" />
       <Skeleton className="convo-skeleton-bubble left" h="4.6rem" w="74%" />
@@ -138,7 +139,7 @@ export default function PageSkeleton({ pathname }: { pathname: string }) {
 
   return (
     <div role="status" aria-live="polite" aria-busy="true">
-      <span className="sr-only">Loading</span>
+      <span className="sr-only">{tr('skeleton.loading')}</span>
       {shape}
     </div>
   )

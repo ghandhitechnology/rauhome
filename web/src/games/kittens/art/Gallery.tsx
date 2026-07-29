@@ -21,7 +21,7 @@ import type { CSSProperties, ReactElement } from "react";
 import { CARD_ART, CARD_IDS, type CardId } from "./index";
 import { CardBack, CardFrame } from "./frame";
 import { CardDefs, PALETTE } from "./defs";
-import { CARD_META } from "../meta";
+import { cardMeta } from "../meta";
 
 /* The backdrop is deliberately near-black and neutral: warm paper on a warm
    ground hides exactly the figure/ground failures this page exists to catch. */
@@ -80,7 +80,7 @@ function Cell({ label, children }: { label: string; children: ReactElement }) {
 }
 
 function GalleryCard({ id }: { id: CardId }): ReactElement {
-  const meta = CARD_META[id];
+  const meta = cardMeta(id);
   const Face = CARD_ART[id];
   return (
     <Cell label={meta.title}>

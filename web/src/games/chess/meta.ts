@@ -13,16 +13,17 @@
  * knight" is a position being read out. "White knight on e4" is a commentator.
  */
 
+import { tr } from '../../i18n'
 import type { PieceType, Placed } from './board'
 import type { Promotion, TableState } from './useGame'
 
-export const PIECE_NAMES: Record<PieceType, string> = {
-  p: 'pawn',
-  n: 'knight',
-  b: 'bishop',
-  r: 'rook',
-  q: 'queen',
-  k: 'king',
+/**
+ * Read through a function rather than held in a constant: the language can
+ * change while a game is on the table, and a frozen record would keep naming
+ * the pieces in whichever language the module was first imported under.
+ */
+export function pieceName(type: PieceType): string {
+  return tr(`piece.${type}`)
 }
 
 /**
@@ -38,12 +39,17 @@ export const PROMOTION_CHOICES: readonly Promotion[] = ['q', 'r', 'b', 'n']
 
 /** `'white knight'` — what a piece is, for a label that has room for it. */
 export function pieceLabel(piece: Placed): string {
-  return `${piece.color} ${PIECE_NAMES[piece.type]}`
+  return tr('chess.pieceLabel', {
+    color: tr(`piece.${piece.color}`),
+    piece: pieceName(piece.type),
+  })
 }
 
 /** What a square is, read out: its name, then whoever is standing on it. */
 export function squareLabel(square: string, piece: Placed | undefined): string {
-  return piece ? `${square}, ${pieceLabel(piece)}` : `${square}, empty`
+  return piece
+    ? tr('chess.squareLabel', { square, piece: pieceLabel(piece) })
+    : tr('chess.squareEmpty', { square })
 }
 
 /**
@@ -55,38 +61,24 @@ export function squareLabel(square: string, piece: Placed | undefined): string {
  * falls through as itself: a new termination reason showing up verbatim is
  * mildly ugly, and better than a game that ended for no stated cause.
  */
-const REASON_LINES: Record<string, { won: string; lost: string; drawn: string }> = {
-  checkmate: {
-    won: 'Mate. He had nowhere to put the king.',
-    lost: 'Mate. Nowhere left to put the king.',
-    drawn: '',
-  },
-  resignation: {
-    won: 'He tipped his king over.',
-    lost: 'You resigned.',
-    drawn: '',
-  },
-  stalemate: {
-    won: '',
-    lost: '',
-    drawn: 'Stalemate — no legal move, and no check to answer.',
-  },
-  'draw agreed': { won: '', lost: '', drawn: 'You shook on it.' },
-  'threefold repetition': {
-    won: '',
-    lost: '',
-    drawn: 'The same position, three times. Nobody was going anywhere.',
-  },
-  'fifty-move rule': {
-    won: '',
-    lost: '',
-    drawn: 'Fifty moves without a capture or a pawn. That is the rule, not a verdict.',
-  },
-  'insufficient material': {
-    won: '',
-    lost: '',
-    drawn: 'Nothing left on either side that could finish it.',
-  },
+function reasonLines(): Record<string, { won: string; lost: string; drawn: string }> {
+  return {
+    checkmate: {
+      won: tr('chess.reason.checkmate.won'),
+      lost: tr('chess.reason.checkmate.lost'),
+      drawn: '',
+    },
+    resignation: {
+      won: tr('chess.reason.resignation.won'),
+      lost: tr('chess.reason.resignation.lost'),
+      drawn: '',
+    },
+    stalemate: { won: '', lost: '', drawn: tr('chess.reason.stalemate') },
+    'draw agreed': { won: '', lost: '', drawn: tr('chess.reason.agreed') },
+    'threefold repetition': { won: '', lost: '', drawn: tr('chess.reason.threefold') },
+    'fifty-move rule': { won: '', lost: '', drawn: tr('chess.reason.fifty') },
+    'insufficient material': { won: '', lost: '', drawn: tr('chess.reason.material') },
+  }
 }
 
 export type ResultLine = { title: string; note: string }
@@ -94,12 +86,12 @@ export type ResultLine = { title: string; note: string }
 export function resultLine(table: TableState): ResultLine {
   const drawn = table.winner === null
   const won = table.winner === 'user'
-  const lines = REASON_LINES[table.over_reason]
+  const lines = reasonLines()[table.over_reason]
   const note = lines
     ? (drawn ? lines.drawn : won ? lines.won : lines.lost) || table.over_reason
     : table.over_reason
   return {
-    title: drawn ? 'Drawn.' : won ? 'You win.' : 'He wins.',
+    title: drawn ? tr('chess.drawn') : won ? tr('chess.youWin') : tr('chess.heWins'),
     note,
   }
 }

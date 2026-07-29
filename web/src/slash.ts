@@ -1,4 +1,5 @@
 /** Shared slash-command parsing for Talk composer + chat bubbles. */
+import { tr } from './i18n'
 
 export type SlashCmd = {
   name: string
@@ -6,10 +7,17 @@ export type SlashCmd = {
   description: string
 }
 
-export const META_COMMANDS: SlashCmd[] = [
-  { name: 'skills', slash: '/skills', description: 'List always-on skills' },
-  { name: 'effort', slash: '/effort', description: 'Set effort: low · medium · high · max' },
-]
+/**
+ * Built in the getter rather than at module scope: the language can change
+ * without a reload, and a frozen array would keep describing `/effort` in
+ * whichever language happened to be active when this module was first imported.
+ */
+export function metaCommands(): SlashCmd[] {
+  return [
+    { name: 'skills', slash: '/skills', description: tr('slash.skills') },
+    { name: 'effort', slash: '/effort', description: tr('slash.effort') },
+  ]
+}
 
 export type SlashDraft = {
   token: string
@@ -73,6 +81,6 @@ export function mergeSkillCommands(skills: { name?: string; slash?: string; desc
     description: s.description || '',
   }))
   const seen = new Set(fromSkills.map((c) => normalizeCmdName(c.name)))
-  const metas = META_COMMANDS.filter((m) => !seen.has(normalizeCmdName(m.name)))
+  const metas = metaCommands().filter((m) => !seen.has(normalizeCmdName(m.name)))
   return [...metas, ...fromSkills].sort((a, b) => a.slash.localeCompare(b.slash))
 }

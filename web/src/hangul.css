@@ -1,0 +1,131 @@
+/* ─────────────────────────────────────────────────────────────
+   Rau — Korean typesetting
+
+   Korean is not English with different words in it. It breaks lines by a
+   different rule, wants more air between lines, and falls apart under the
+   wide tracking that flatters small uppercase Latin. Everything here exists
+   to make the Korean build read as though it had been designed first —
+   the Latin layout is never touched except where Korean is actually on screen.
+
+   Two scopes:
+     · unscoped — line breaking, which has to hold even in the English
+       interface, because Rau can answer in Korean at any time;
+     · html[lang="ko"] — set by LocaleProvider, for everything that only
+       applies when the interface itself is Korean.
+   ───────────────────────────────────────────────────────────── */
+
+/* ── line breaking ─────────────────────────────────────────────
+
+   The single most visible defect in the old Korean build: 다시 split across
+   two lines as 다 / 시. Korean has no hyphenation and no mid-word break; a
+   line ends at a space between 어절 or it does not end. `keep-all` says
+   exactly that, and it is a no-op for Latin, which already breaks on spaces.
+
+   `break-word` is the escape hatch underneath it — an unbroken run longer
+   than its own line (a url, a pasted token, a 40-syllable compound) still
+   yields rather than overflowing its container. It never fires on text that
+   fits, so ordinary Korean is left whole. */
+
+body {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+/* ── proportions ───────────────────────────────────────────────
+
+   Hangul fills its em box where Latin lowercase fills roughly half of it, so
+   the same leading that feels generous in English reads as cramped in Korean:
+   syllable blocks nearly touch across lines. A little over 1.7 restores the
+   band of white Latin gets for free from its ascenders and descenders. */
+
+html[lang="ko"] :is(p, li, dd, blockquote) {
+  line-height: 1.72;
+}
+
+html[lang="ko"] :is(.muted, .panel-sub, .slot-note, .field-hint, .notice, .msg-line) {
+  line-height: 1.68;
+}
+
+/* ── tracking ──────────────────────────────────────────────────
+
+   Latin micro-labels here are set uppercase at 0.1em–0.2em, where the extra
+   space is what makes six capitals read as a label rather than a word. Hangul
+   has no uppercase, and syllable blocks are already square and evenly spaced,
+   so that same tracking pulls a two-syllable word apart into two unrelated
+   marks — 경 험 instead of 경험. Each label keeps a trace of its Latin
+   character; none keeps enough to come apart. */
+
+html[lang="ko"] .eyebrow {
+  letter-spacing: 0.07em;
+}
+
+html[lang="ko"] .pill {
+  letter-spacing: 0.03em;
+}
+
+html[lang="ko"] .field label {
+  letter-spacing: 0.05em;
+}
+
+/* Connection cards label their field with the literal env var name — Latin,
+   uppercase, and better off with the tracking it was drawn for. */
+html[lang="ko"] .auth-body .field label {
+  letter-spacing: 0.1em;
+}
+
+html[lang="ko"] :is(.slash-menu-head, .tour-card-head, .panel-viewer-kind, .auth-name .tag) {
+  letter-spacing: 0.06em;
+}
+
+html[lang="ko"] :is(.face-panel h3, .voice-phase, .face-wall-kind, .mode-pill, .origin-tag) {
+  letter-spacing: 0.05em;
+}
+
+html[lang="ko"] :is(.convo-msg .who, .perm-popover-head, .effort-btn, .ch-alarm) {
+  letter-spacing: 0.04em;
+}
+
+/* Display type runs the other way. Instrument Serif is tightened at size
+   because its Latin sidebearings are generous; Nanum Myeongjo's are already
+   snug, and inheriting −0.035em jams the syllables together. */
+
+html[lang="ko"] :is(h1, h2, h3) {
+  letter-spacing: -0.005em;
+}
+
+/* ── measure ───────────────────────────────────────────────────
+
+   `ch` is the width of a zero, so a measure written in `ch` counts Latin
+   characters. At body sizes that still lands somewhere sensible in Korean —
+   44ch of Pretendard is around 24 syllables, a fine line. At display sizes it
+   does not: the onboarding headline is capped at 14ch, which is seven Hangul
+   syllables, and "말하고, 함께 있고, 놀아요" came apart into four stacked
+   lines with 함께 alone on one of them.
+
+   So the display headline alone is re-measured in `em`, which for Hangul is
+   one syllable, and given back the leading that 0.98 takes away — Latin can
+   sit that tight because most of its lowercase leaves the space above it
+   empty, and Hangul cannot. It is also set a little smaller, because a
+   syllable block fills its em where a lowercase letter fills about half of
+   it, and matching the Latin px size would print visibly larger type. */
+
+html[lang="ko"] .setup-prelude h1 {
+  max-width: 9.5em;
+  font-size: clamp(2.8rem, 5.8vw, 5rem);
+  line-height: 1.14;
+  /* −0.035em is tuned for Instrument Serif's generous sidebearings; Nanum
+     Myeongjo's are already snug and would jam at that value. */
+  letter-spacing: -0.01em;
+}
+
+html[lang="ko"] .welcome-title {
+  line-height: 1.14;
+}
+
+/* The setup tally sets its count as display type and the rest of the sentence
+   beside it — "1  provider connected". Korean binds the counter to the number
+   (1개), so the gap that separates two English words has to close to about a
+   thin space, or the phrase reads as "1 / 개 제공자 연결됨". */
+html[lang="ko"] .tally {
+  gap: 0.2rem;
+}

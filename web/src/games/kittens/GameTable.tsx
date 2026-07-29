@@ -50,7 +50,8 @@ import {
   type HandEvent,
   type Picker,
 } from './handMachine'
-import { CARD_META, cardTitle } from './meta'
+import { CARD_IDS, cardMeta, cardTitle } from './meta'
+import { tr, useLocale } from '../../i18n'
 import { phaseStore, usePhase } from './phase'
 import { gameStore, useCountdownVar, useGame, type Move, type TableState } from './useGame'
 import './Kittens.css'
@@ -61,7 +62,7 @@ const NEVER_PLAYABLE_ALONE = new Set<CardId>(['exploding_kitten', 'defuse', 'nop
 const NOPE_MS = 5000
 
 const Card = memo(function Card({ id }: { id: CardId }) {
-  const meta = CARD_META[id]
+  const meta = cardMeta(id)
   const Face = CARD_ART[id]
   return (
     <CardFrame title={meta.title} accent={meta.accent} kind={meta.kind}>
@@ -105,32 +106,32 @@ function actionFor(table: TableState, chosen: CardId[]): Action | null {
   const allSame = chosen.every((c) => c === chosen[0])
   const first = chosen[0]
 
-  if (chosen.length === 1 && !NEVER_PLAYABLE_ALONE.has(first) && CARD_META[first].kind !== 'cat') {
+  if (chosen.length === 1 && !NEVER_PLAYABLE_ALONE.has(first) && cardMeta(first).kind !== 'cat') {
     return {
-      label: `Play ${CARD_META[first].title}`,
-      hint: CARD_META[first].effect,
+      label: tr('ek.playCard', { card: cardMeta(first).title }),
+      hint: cardMeta(first).effect,
       move: { move: 'play', card: first },
     }
   }
   if (chosen.length === 2 && allSame) {
     return {
-      label: 'Steal one at random',
-      hint: 'Two of a kind. You do not get to choose which.',
+      label: tr('ek.stealRandom'),
+      hint: tr('ek.stealHint'),
       move: { move: 'combo', cards: chosen },
     }
   }
   if (chosen.length === 3 && allSame) {
     return {
-      label: 'Demand a card',
-      hint: 'Three of a kind. Name it and take it, if he has it.',
+      label: tr('ek.demandCard'),
+      hint: tr('ek.demandHint'),
       move: null,
       picker: 'demand',
     }
   }
   if (chosen.length === 5 && new Set(chosen).size === 5 && table.discard.length > 0) {
     return {
-      label: 'Raid the discard pile',
-      hint: 'Five different cards. Take anything off the pile.',
+      label: tr('ek.raidPile'),
+      hint: tr('ek.raidHint'),
       move: { move: 'combo', cards: chosen },
     }
   }
@@ -152,7 +153,7 @@ function DeckPile({
   live: boolean
 }) {
   const style = worldStyle(GAME_TABLE.deckX, GAME_TABLE.cardY)
-  const label = live ? 'Draw a card and end your turn' : `${table.deck_count} cards left`
+  const label = live ? tr('ek.drawEnd') : tr('ek.cardsLeft', { count: table.deck_count })
   return (
     <div className="ek-pile-slot" style={style}>
       <div className="ek-stack" aria-hidden />
@@ -219,11 +220,11 @@ function PileTags({
   return (
     <div className="ek-tags" ref={attach} aria-hidden>
       <span className="ek-tag ek-tag-deck">
-        {table.deck_count} left
-        {live && <em>click to draw &amp; end your turn</em>}
+        {tr('ek.left', { count: table.deck_count })}
+        {live && <em>{tr('ek.clickToDraw')}</em>}
       </span>
       <span className="ek-tag ek-tag-discard">
-        {table.discard.length > 0 ? cardTitle(top) : 'discard'}
+        {table.discard.length > 0 ? cardTitle(top) : tr('ek.discard')}
       </span>
     </div>
   )
@@ -247,7 +248,7 @@ function RauHand({
     <div
       className={`ek-rau-hand ${thinking ? 'is-thinking' : ''}`}
       ref={attach}
-      aria-label={`Rau is holding ${held} cards`}
+      aria-label={tr('ek.rauHolding', { count: held })}
     >
       {Array.from({ length: count }, (_, i) => (
         <div
@@ -284,17 +285,21 @@ function NopeRing({ table, onNope, onPass }: {
 
   const yours = pending.waiting_on === 'user'
   const played = pending.cards.map(cardTitle).join(' + ')
+  const blocked = pending.nopes % 2 === 1
   const deep =
-    pending.nopes > 0
-      ? ` · ${pending.nopes} Nope${pending.nopes > 1 ? 's' : ''} deep, so it ${
-          pending.nopes % 2 ? 'will not' : 'will'
-        } happen`
-      : ''
+    pending.nopes > 1
+      ? tr(blocked ? 'ek.nopesDeepWont' : 'ek.nopesDeepWill', { count: pending.nopes })
+      : pending.nopes === 1
+        ? tr(blocked ? 'ek.nopeOneWont' : 'ek.nopeOneWill')
+        : ''
 
   return (
     <div className="ek-nope" role="status">
       <p className="ek-nope-line">
-        <strong>{pending.actor === 'user' ? 'You' : 'Rau'}</strong> played {played}
+        {tr('ek.played', {
+          who: pending.actor === 'user' ? tr('ek.you') : tr('ek.rau'),
+          cards: played,
+        })}
         <span className="ek-nope-deep">{deep}</span>
       </p>
       {yours && table.can_nope ? (
@@ -304,8 +309,8 @@ function NopeRing({ table, onNope, onPass }: {
             className="ek-nope-card"
             ref={ring as RefObject<HTMLButtonElement | null>}
             onClick={onNope}
-            aria-label="Play Nope"
-            title="NOPE"
+            aria-label={tr('ek.playNope')}
+            title={tr('card.nope')}
           >
             <span className="ek-nope-ring" aria-hidden />
             <span className="ek-nope-face">
@@ -313,12 +318,12 @@ function NopeRing({ table, onNope, onPass }: {
             </span>
           </button>
           <button type="button" className="ek-quiet" onClick={onPass}>
-            let it happen
+            {tr('ek.letItHappen')}
           </button>
         </div>
       ) : (
         <p className="ek-nope-wait">
-          {yours ? 'No Nope in hand.' : 'Waiting on Rau…'}
+          {yours ? tr('ek.noNope') : tr('ek.waitingRau')}
         </p>
       )}
     </div>
@@ -332,21 +337,27 @@ function GameOverScene({ table, onAgain, onLeave }: {
 }) {
   const won = table.winner === 'user'
   return (
-    <div className={`ek-over ${won ? 'is-win' : 'is-loss'}`} role="alertdialog" aria-label="Game over">
+    <div
+      className={`ek-over ${won ? 'is-win' : 'is-loss'}`}
+      role="alertdialog"
+      aria-label={tr('ek.gameOver')}
+    >
       <div className="ek-over-card">
         <div className="ek-over-art">
           <Card id={won ? 'defuse' : 'exploding_kitten'} />
         </div>
-        <h2>{won ? 'You win.' : 'You exploded.'}</h2>
+        <h2>{won ? tr('ek.youWin') : tr('ek.youExploded')}</h2>
         <p>{table.over_reason}</p>
         {table.final_hands && (
           <p className="ek-over-hands">
-            He was holding: {table.final_hands.rau.map(cardTitle).join(', ') || 'nothing'}.
+            {tr('ek.holding', {
+              cards: table.final_hands.rau.map(cardTitle).join(', ') || tr('ek.nothing'),
+            })}
           </p>
         )}
         <div className="ek-over-actions">
           <button type="button" className="ek-btn ek-btn-primary" onClick={onAgain}>
-            Deal again
+            {tr('ek.dealAgain')}
           </button>
           <button type="button" className="ek-btn ek-btn-quiet" onClick={onLeave}>
             Leave the table
@@ -360,6 +371,7 @@ function GameOverScene({ table, onAgain, onLeave }: {
 /* ───────────────────────────────────────────────────────────── table */
 
 export default memo(function GameTable() {
+  const { t } = useLocale()
   const { table, busy, error } = useGame()
   const phase = usePhase()
   const gameId = table?.game_id ?? ''
@@ -786,9 +798,9 @@ export default memo(function GameTable() {
     if (!dropped) {
       dispatch({ type: 'release', overDiscard: false })
       setHint(
-        CARD_META[card].kind === 'cat'
-          ? 'That one does nothing on its own. Match it with another.'
-          : `${CARD_META[card].title} cannot be played by itself.`,
+        cardMeta(card).kind === 'cat'
+          ? t('ek.catAlone')
+          : t('ek.notAlone', { card: cardMeta(card).title }),
       )
       return
     }
@@ -842,7 +854,7 @@ export default memo(function GameTable() {
   const lastLine = table.log[table.log.length - 1]
 
   return (
-    <div className="ek-room" role="region" aria-label="Exploding Kittens">
+    <div className="ek-room" role="region" aria-label={t('ek.region')}>
       <CardDefs />
 
       {/* ── in the room ─────────────────────────────────────────── */}
@@ -876,7 +888,7 @@ export default memo(function GameTable() {
               GAME_CARD.w * table.known_top.length * 0.78,
               GAME_CARD.h * 0.62,
             )}
-            aria-label="What you saw on top of the deck"
+            aria-label={t('ek.knownTop')}
           >
             {table.known_top.map((id, i) => (
               <div className="ek-known-card" key={`${id}-${i}`}>
@@ -899,13 +911,13 @@ export default memo(function GameTable() {
         <div className="ek-strip">
           <span className={`ek-turn ${thinking ? 'is-his' : ''}`}>
             {table.phase === 'over'
-              ? 'Game over'
+              ? t('ek.gameOver')
               : table.your_turn
-                ? 'Your turn'
-                : 'Rau is thinking…'}
+                ? t('ek.yourTurn')
+                : t('ek.thinking')}
           </span>
           {table.turns_to_take > 1 && table.phase !== 'over' && (
-            <span className="ek-owed">{table.turns_to_take} turns owed</span>
+            <span className="ek-owed">{t('ek.turnsOwed', { count: table.turns_to_take })}</span>
           )}
           {lastLine && <span className="ek-log">{lastLine.text}</span>}
           <button
@@ -913,7 +925,7 @@ export default memo(function GameTable() {
             className="ek-quiet ek-leave"
             onClick={() => void phaseStore.leave()}
           >
-            Leave
+            {t('ek.leave')}
           </button>
         </div>
 
@@ -926,8 +938,8 @@ export default memo(function GameTable() {
         )}
 
         {salvaging && (
-          <div className="ek-salvage" role="group" aria-label="Take anything off the pile">
-            <p>Five different cards. Take anything.</p>
+          <div className="ek-salvage" role="group" aria-label={t('ek.salvageLabel')}>
+            <p>{t('ek.salvageCopy')}</p>
             <div className="ek-salvage-fan">
               {[...new Set(table.discard)]
                 .filter((c) => c !== 'exploding_kitten')
@@ -939,7 +951,7 @@ export default memo(function GameTable() {
                     style={{ '--i': i, '--n': all.length } as CSSProperties}
                     disabled={locked}
                     onClick={() => void gameStore.play({ move: 'take_from_discard', card: id })}
-                    aria-label={CARD_META[id].title}
+                    aria-label={cardMeta(id).title}
                   >
                     <Card id={id} />
                   </button>
@@ -963,7 +975,7 @@ export default memo(function GameTable() {
 
         {/* ── the raised card ──────────────────────────────────── */}
         {raised.length > 0 && chosen.length > 0 && (
-          <div className="ek-raised" role="group" aria-label="The card you are holding up">
+          <div className="ek-raised" role="group" aria-label={t('ek.raisedLabel')}>
             <div className="ek-raised-cards">
               {chosen.map((id, i) => (
                 <div className="ek-raised-card" key={`${id}-${i}`} style={{ '--i': i } as CSSProperties}>
@@ -974,11 +986,10 @@ export default memo(function GameTable() {
 
             {hand.mode === 'raised' && hand.picker === 'demand' ? (
               <div className="ek-picker">
-                <h3>Name the card you want.</h3>
-                <p>If he is holding one it is yours. If not, you wasted three cards.</p>
+                <h3>{t('ek.nameTitle')}</h3>
+                <p>{t('ek.nameCopy')}</p>
                 <div className="ek-picker-grid">
-                  {(Object.keys(CARD_META) as CardId[])
-                    .filter((c) => c !== 'exploding_kitten')
+                  {CARD_IDS.filter((c) => c !== 'exploding_kitten')
                     .map((id) => (
                       <button
                         key={id}
@@ -986,7 +997,7 @@ export default memo(function GameTable() {
                         className={`ek-chip ${named === id ? 'is-on' : ''}`}
                         onClick={() => setNamed(id)}
                       >
-                        {CARD_META[id].title}
+                        {cardMeta(id).title}
                       </button>
                     ))}
                 </div>
@@ -1001,7 +1012,7 @@ export default memo(function GameTable() {
                       void commit({ move: 'combo', cards: chosen, named_card: named })
                     }}
                   >
-                    {named ? `Demand ${CARD_META[named].title}` : 'Pick one'}
+                    {named ? t('ek.demand', { card: cardMeta(named).title }) : t('ek.pickOne')}
                   </button>
                   <button type="button" className="ek-quiet" onClick={() => dispatch({ type: 'cancel' })}>
                     Back
@@ -1010,29 +1021,28 @@ export default memo(function GameTable() {
               </div>
             ) : hand.mode === 'raised' && hand.picker === 'defuse' ? (
               <div className="ek-picker">
-                <h3>Defused. Now hide it.</h3>
-                <p>
-                  Slide it back into the {insertMax}-card deck. He does not get to see
-                  where it went — and neither will you, in a few turns.
-                </p>
+                <h3>{t('ek.defusedTitle')}</h3>
+                <p>{t('ek.defusedCopy', { count: insertMax })}</p>
                 <div className="ek-slider">
-                  <span>top</span>
+                  <span>{t('ek.top')}</span>
                   <input
                     type="range"
                     min={0}
                     max={insertMax}
                     value={insertAt}
                     onChange={(e) => setInsertAt(Number(e.target.value))}
-                    aria-label="How deep to hide the Exploding Kitten"
+                    aria-label={t('ek.hideDepth')}
                   />
-                  <span>bottom</span>
+                  <span>{t('ek.bottom')}</span>
                 </div>
                 <p className="ek-slider-read">
                   {insertAt === 0
-                    ? 'Right on top. He draws next.'
+                    ? t('ek.rightOnTop')
                     : insertAt >= insertMax
-                      ? 'All the way at the bottom.'
-                      : `${insertAt} card${insertAt === 1 ? '' : 's'} down.`}
+                      ? t('ek.allTheWay')
+                      : insertAt === 1
+                        ? t('ek.oneCardDown')
+                        : t('ek.cardsDown', { count: insertAt })}
                 </p>
                 <div className="ek-raised-actions">
                   <button
@@ -1044,13 +1054,13 @@ export default memo(function GameTable() {
                       void commit({ move: 'insert_kitten', index: insertAt })
                     }}
                   >
-                    Put it back
+                    {t('ek.putBack')}
                   </button>
                 </div>
               </div>
             ) : hand.mode === 'raised' && hand.picker === 'favor' ? (
               <div className="ek-raised-actions">
-                <p className="ek-raised-hint">He asked for a favor. This is the one you can live without?</p>
+                <p className="ek-raised-hint">{t('ek.favorAsk')}</p>
                 <button
                   type="button"
                   className="ek-btn ek-btn-primary"
@@ -1060,7 +1070,7 @@ export default memo(function GameTable() {
                     void commit({ move: 'give_favor', card: chosen[0] })
                   }}
                 >
-                  Give {CARD_META[chosen[0]].title}
+                  {t('ek.give', { card: cardMeta(chosen[0]).title })}
                 </button>
                 <button type="button" className="ek-quiet" onClick={() => dispatch({ type: 'cancel' })}>
                   Back
@@ -1072,8 +1082,8 @@ export default memo(function GameTable() {
                   {action
                     ? action.hint
                     : chosen.length === 1
-                      ? CARD_META[chosen[0]].effect
-                      : 'Not a set. Two or three matching, or five all different.'}
+                      ? cardMeta(chosen[0]).effect
+                      : t('ek.notASet')}
                 </p>
                 <button
                   type="button"
@@ -1081,7 +1091,7 @@ export default memo(function GameTable() {
                   disabled={!action || locked}
                   onClick={confirmRaised}
                 >
-                  {action ? action.label : 'Nothing to play'}
+                  {action ? action.label : t('ek.nothingToPlay')}
                 </button>
                 <button type="button" className="ek-quiet" onClick={() => dispatch({ type: 'cancel' })}>
                   Back
@@ -1098,7 +1108,7 @@ export default memo(function GameTable() {
           }`}
           ref={fanRef}
           role="group"
-          aria-label="Your hand"
+          aria-label={t('ek.handLabel')}
         >
           {table.hand.map((id, i) => {
             const isDragging = hand.mode === 'dragging' && hand.index === i
@@ -1129,8 +1139,8 @@ export default memo(function GameTable() {
                 onPointerDown={onCardDown(i)}
                 onPointerEnter={onCardEnter}
                 onPointerLeave={onCardLeave}
-                title={`${CARD_META[id].title} — ${CARD_META[id].effect}`}
-                aria-label={CARD_META[id].title}
+                title={`${cardMeta(id).title} · ${cardMeta(id).effect}`}
+                aria-label={cardMeta(id).title}
                 aria-pressed={isRaised}
               >
                 <Card id={id} />

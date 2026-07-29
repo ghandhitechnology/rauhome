@@ -10,6 +10,7 @@ import {
   reportHitRect,
 } from '../clawd/petBridge'
 import { api } from '../api'
+import { useLocale } from '../i18n'
 import { live } from '../live'
 import './Pet.css'
 
@@ -18,6 +19,7 @@ import './Pet.css'
  * Meant to run inside the Tauri companion window (or a browser tab for debug).
  */
 export default function Pet() {
+  const { t } = useLocale()
   const [signals, setSignals] = useState<Signals>(EMPTY_SIGNALS)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [paused, setPaused] = useState(false)
@@ -175,7 +177,7 @@ export default function Pet() {
                 setMenu(null)
               }}
             >
-              Hide pet
+              {t('pet.hide')}
             </button>
           </li>
           {(['tl', 'tr', 'bl', 'br'] as const).map((c) => (
@@ -187,7 +189,7 @@ export default function Pet() {
                   setMenu(null)
                 }}
               >
-                Move {c.toUpperCase()}
+                {t('pet.move', { corner: c.toUpperCase() })}
               </button>
             </li>
           ))}
@@ -199,11 +201,11 @@ export default function Pet() {
                 setMenu(null)
               }}
             >
-              Quit pet
+              {t('pet.quit')}
             </button>
           </li>
           {!isPetShell() && (
-            <li className="pet-menu-note">Browser debug — Tauri shell inactive</li>
+            <li className="pet-menu-note">{t('pet.debug')}</li>
           )}
         </ul>
       )}

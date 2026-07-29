@@ -12,6 +12,7 @@ function words(s: string) {
 
 /** Small progress meter so the length requirement never feels arbitrary. */
 function Meter({ value, min, label }: { value: string; min: number; label: string }) {
+  const { t } = useLocale()
   const pct = Math.min(100, (value.trim().length / min) * 100)
   const done = value.trim().length >= min
   return (
@@ -20,14 +21,16 @@ function Meter({ value, min, label }: { value: string; min: number; label: strin
         <i style={{ width: `${pct}%` }} className={done ? 'done' : ''} />
       </div>
       <span className={`meter-label ${done ? 'done' : ''}`}>
-        {done ? `${words(value)} words` : `${label} — ${Math.max(0, min - value.trim().length)} to go`}
+        {done
+          ? t('identityStep.words', { count: words(value) })
+          : t('identityStep.toGo', { label, count: Math.max(0, min - value.trim().length) })}
       </span>
     </div>
   )
 }
 
 export default function StepIdentity({ draft, patch, state }: StepProps) {
-  const { locale } = useLocale()
+  const { t, tx } = useLocale()
   const [loaded, setLoaded] = useState('')
   const examples = state?.examples || {}
   const existing = state?.identity
@@ -37,7 +40,7 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
       identity: examples.identity || draft.identity,
       backstory: examples.backstory || draft.backstory,
     })
-    setLoaded('Examples loaded — edit them into your own.')
+    setLoaded(t('identityStep.loadedExamples'))
   }
 
   function loadExisting() {
@@ -46,32 +49,31 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
       identity: existing?.identity_text || draft.identity,
       backstory: existing?.backstory_text || draft.backstory,
     })
-    setLoaded('Loaded the files currently on disk.')
+    setLoaded(t('identityStep.loadedDisk'))
   }
 
   return (
     <div className="step">
       <header className="step-head">
-        <p className="eyebrow">{locale === 'ko' ? '두 번째 단계' : 'Step two'}</p>
-        <h2>{locale === 'ko' ? '자아를 적어 주세요' : 'Write the self'}</h2>
+        <p className="eyebrow">{t('identityStep.eyebrow')}</p>
+        <h2>{t('identityStep.title')}</h2>
         <p className="step-lede">
-          {locale === 'ko' ? (
-            <><span className="mono">identity.md</span>는 Rau가 드러내는 짧은 자아이고, <span className="mono">backstory.md</span>는 그 뒤의 긴 이야기입니다. 둘은 자동으로 soul.md에 정리됩니다.</>
-          ) : (
-            <><span className="mono">identity.md</span> is the short public self Rau speaks from.{' '}<span className="mono">backstory.md</span> is the long private lore behind it. DeepSeek V4 Pro distills both into soul.md — you never paste them in by hand.</>
-          )}
+          {tx('identityStep.lede', {
+            identity: <span className="mono">identity.md</span>,
+            backstory: <span className="mono">backstory.md</span>,
+          })}
         </p>
       </header>
 
       <div className="row" style={{ marginBottom: '1.1rem' }}>
         {(examples.identity || examples.backstory) && (
           <button className="btn sm" onClick={loadExamples}>
-            {locale === 'ko' ? '예시 이야기 불러오기' : 'Load example lore'}
+            {t('identityStep.loadExamples')}
           </button>
         )}
         {existing?.has_identity && (
           <button className="btn sm ghost" onClick={loadExisting}>
-            {locale === 'ko' ? '디스크의 내용 불러오기' : 'Load what is on disk'}
+            {t('identityStep.loadDisk')}
           </button>
         )}
         {(draft.identity || draft.backstory) && (
@@ -82,7 +84,7 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
               setLoaded('')
             }}
           >
-            {locale === 'ko' ? '비우기' : 'Clear'}
+            {t('identityStep.clear')}
           </button>
         )}
       </div>
@@ -90,25 +92,25 @@ export default function StepIdentity({ draft, patch, state }: StepProps) {
       {loaded && <p className="step-note">{loaded}</p>}
 
       <div className="field">
-        <label>{locale === 'ko' ? 'identity.md — Rau가 드러내는 모습' : 'identity.md — who Rau is, out loud'}</label>
+        <label>{t('identityStep.identityLabel')}</label>
         <textarea
           rows={7}
           value={draft.identity}
           onChange={(e) => patch({ identity: e.target.value })}
-          placeholder={'# Rau\n\nI am Rau. I live on this machine with you…'}
+          placeholder={t('identityStep.identityPlaceholder')}
         />
-        <Meter value={draft.identity} min={MIN_IDENTITY} label="a little more" />
+        <Meter value={draft.identity} min={MIN_IDENTITY} label={t('identityStep.aLittleMore')} />
       </div>
 
       <div className="field">
-        <label>{locale === 'ko' ? 'backstory.md — Rau가 어디에서 왔는지' : 'backstory.md — where Rau came from'}</label>
+        <label>{t('identityStep.backstoryLabel')}</label>
         <textarea
           rows={12}
           value={draft.backstory}
           onChange={(e) => patch({ backstory: e.target.value })}
-          placeholder={'# Backstory\n\nThe long version. History, people, places, grudges, hopes…'}
+          placeholder={t('identityStep.backstoryPlaceholder')}
         />
-        <Meter value={draft.backstory} min={MIN_BACKSTORY} label="keep going" />
+        <Meter value={draft.backstory} min={MIN_BACKSTORY} label={t('identityStep.keepGoing')} />
       </div>
     </div>
   )
