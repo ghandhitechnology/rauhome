@@ -202,3 +202,58 @@ a.btn:hover {
   overflow-wrap: anywhere;
   animation: pop-in var(--dur-3) var(--spring) both;
 }
+.settings-experience {
+  grid-column: 1 / -1;
+}
+
+.experience-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.experience-row strong {
+  font-weight: 550;
+}
+
+.experience-row p {
+  max-width: 54ch;
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.locale-seg {
+  display: flex;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--sunken);
+}
+
+.locale-seg button {
+  min-width: 92px;
+  padding: 0.48rem 0.8rem;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.locale-seg button.active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  box-shadow: var(--shadow-1);
+}
+
+@media (max-width: 620px) {
+  .experience-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

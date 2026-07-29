@@ -76,24 +76,20 @@ def get_permissions() -> Dict[str, str]:
     return normalize_permissions(settings.get("permissions"))
 
 
-#: Risk order, least to most permissive. Used when scopes disagree.
-_RISK_ORDER = ("readonly", "auto", "bypass")
-
-
 def global_mode(perms: Optional[Dict[str, str]] = None) -> str:
     """
     The single mode the UI shows.
 
-    When scopes disagree — only reachable by editing settings.json by hand,
-    since the UI sets them together — report the *most permissive* one. A
-    status pill that reads "Auto" while subagents are on bypass is worse than
-    no pill at all: it is an assurance that is not true.
+    The global labels are promises about every scope.  In particular, "Full
+    bypass" must never be shown while even one scope can still ask.  Mixed
+    per-scope settings therefore appear as Auto; choosing a global mode in the
+    UI will lock all scopes together via ``set_permissions``.
     """
     p = perms if perms is not None else get_permissions()
     values = [p.get(s, "auto") for s in SCOPES]
     if len(set(values)) == 1:
         return values[0]
-    return max(values, key=lambda m: _RISK_ORDER.index(m) if m in _RISK_ORDER else 1)
+    return "auto"
 
 
 def mode_for(scope: str) -> str:

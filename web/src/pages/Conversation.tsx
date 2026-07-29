@@ -21,6 +21,7 @@ import { api } from '../api'
 import { live } from '../live'
 import { useMode, modeListens, modeSupportsHyper, modeUsesVoice } from '../mode'
 import { useVoiceSession } from '../voice'
+import { useLocale } from '../i18n'
 import {
   filterSlashCommands,
   matchSlash,
@@ -231,6 +232,7 @@ function pendingEchoFor(log: any[], text: string): PendingEcho {
 }
 
 export default function Conversation() {
+  const { locale, t } = useLocale()
   const { mode, voiceLatency, setVoiceLatency } = useMode()
   const voiceOn = modeUsesVoice(mode)
   const voice = useVoiceSession({
@@ -600,7 +602,7 @@ export default function Conversation() {
         <div className="convo-eyes">
           <ClawdAvatar emotion={emotion} busy={sending} />
           <Link to="/face" className="convo-room-link">
-            Open the room →
+            {t('talk.openRoom')}
           </Link>
           <ActivityChip
             open={activityOpen}
@@ -733,7 +735,7 @@ export default function Conversation() {
       </section>
 
       {mode !== 'space-talk' && (
-      <footer ref={composeRef} className="convo-compose">
+      <footer ref={composeRef} className="convo-compose" data-tour="talk-composer">
         <div className="compose-wrap">
           <SlashMenu
             open={showSlashMenu}
@@ -771,7 +773,9 @@ export default function Conversation() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onComposeKey}
-              placeholder="Talk to Rau…  try /skills"
+              placeholder={
+                locale === 'ko' ? 'Rau에게 말해 보세요…  /skills도 사용할 수 있어요' : 'Talk to Rau…  try /skills'
+              }
               aria-label="Message Rau"
               role="combobox"
               aria-autocomplete="list"

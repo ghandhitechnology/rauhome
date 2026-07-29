@@ -89,6 +89,7 @@ def _face_is_talking() -> bool:
 
 def _prompt(game: Game, reason: str) -> str:
     from rau.games.kittens import view as view_mod
+    from rau.language import response_language_instruction
 
     table = view_mod.talker_fragment(game, RAU).strip()
     nudge = {
@@ -101,6 +102,7 @@ def _prompt(game: Game, reason: str) -> str:
     return "\n".join(
         [
             "You are Rau, playing Exploding Kittens against them, out loud.",
+            response_language_instruction(),
             "",
             table,
             "",

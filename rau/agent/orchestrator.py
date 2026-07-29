@@ -1451,6 +1451,8 @@ def _run_subagent(
         # inspect phase actually saw rather than receiving only a prose recap.
         step_tools = tools_for_goal(f"{job.goal}\n{goal}")
         if not job.harness_messages:
+            from rau.language import response_language_instruction
+
             soul = load_soul()
             job.harness_messages.extend(
                 [
@@ -1466,7 +1468,10 @@ def _run_subagent(
                             "work. Before ending each phase, call finish with a truthful "
                             "structured outcome, artifacts, mutations, verification, "
                             "blockers, and remaining risks. Never address the user as a "
-                            "separate character."
+                            "separate character.\n\n"
+                            + response_language_instruction()
+                            + "\nApply that language rule to user-facing progress and the "
+                            "final summary, not to code, commands, paths, or requested artifacts."
                         ),
                     ),
                     Message(
@@ -1948,9 +1953,14 @@ def _bounded_number(
 def _job_tool_decision(
     job: Job, name: str, arguments: Dict[str, Any]
 ) -> str:
-    """Scheduled authority is explicit and never inherits global bypass."""
-    from rau.permissions import is_readonly_allowed, tool_decision
+    """Apply Full bypass globally; otherwise preserve scheduled authority."""
+    from rau.permissions import is_readonly_allowed, mode_for, tool_decision
 
+    # "Full bypass" is deliberately stronger than a run's usual policy: while
+    # it is active, no foreground, nested, or scheduled subagent may open an
+    # app-level approval gate.
+    if mode_for("subagents") == "bypass":
+        return tool_decision("subagents", name, arguments)
     if not job.scheduled_run_id:
         return tool_decision("subagents", name, arguments)
     if job.permission_policy == "readonly":
@@ -2139,6 +2149,14 @@ def _run_pi_subagent(
         )
     try:
         settings = load_settings()
+        from rau.permissions import mode_for
+
+        # AgentHarness has its own confirmation gate. Leaving its default
+        # confirm_tools in place made the app's global Full bypass setting a
+        # lie: native workers skipped approval while Pi workers still parked
+        # on bash/write/edit. Full bypass applies to foreground, nested, and
+        # scheduled workers; their normal per-run policy resumes in other modes.
+        full_bypass = mode_for("subagents") == "bypass"
         pi_provider = str(
             os.environ.get("PI_PROVIDER")
             or settings.get("pi_provider")
@@ -2207,6 +2225,10 @@ def _run_pi_subagent(
         )
 
         def confirm(request: ConfirmRequest) -> bool:
+            # Defensive compatibility with an already-running/older sidecar
+            # that may still emit a confirmation despite confirm_tools=[].
+            if full_bypass:
+                return True
             return _await_confirm(
                 job,
                 request.summary or request.tool,
@@ -2236,6 +2258,8 @@ def _run_pi_subagent(
             )
             * 1000
         )
+        from rau.language import response_language_instruction
+
         spec = RunSpec(
             goal=goal,
             cwd=str(ROOT),
@@ -2249,9 +2273,13 @@ def _run_pi_subagent(
                 "recover from failures, and preserve unrelated work. Do not stop "
                 "at a plan or status update. Before ending, call finish with "
                 "outcome, artifacts, mutations, verification, blockers, and "
-                "remaining risks."
+                "remaining risks.\n\n"
+                + response_language_instruction()
+                + "\nApply that language rule to user-facing progress and the "
+                "final summary, not to code, commands, paths, or requested artifacts."
             ),
             skills=[pi_skill(skill) for skill in all_skills()],
+            confirm_tools=[] if full_bypass else ["bash", "write", "edit"],
             max_turns=max_turns,
             run_timeout_ms=runtime_ms,
             # Sent as-is: scheduled runs keep their 24h window, and the

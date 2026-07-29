@@ -464,6 +464,7 @@ class PiConfirmTimeoutTests(unittest.TestCase):
             patch("rau.pi.supervisor.PI_SUPERVISOR", _FakePiSupervisor(client)),
             patch.object(orchestrator, "load_soul", return_value="soul"),
             patch.object(orchestrator, "load_settings", return_value=settings),
+            patch("rau.permissions.mode_for", return_value="auto"),
             patch.object(orchestrator, "_await_confirm", fake_await),
             patch.dict(os.environ, {"PI_PROVIDER": "p", "PI_MODEL": "m"}),
         ):
@@ -489,6 +490,52 @@ class PiConfirmTimeoutTests(unittest.TestCase):
         )
         self.assertEqual(captured["timeout"], 24 * 3600.0)
         self.assertEqual(client.spec.confirm_timeout_ms, 24 * 3600 * 1000)
+
+    def test_full_bypass_disables_pi_confirmations(self) -> None:
+        job = orchestrator.Job(
+            id=str(uuid.uuid4()),
+            goal="fix the bug",
+            budget={"max_turns": 5},
+        )
+        state.create_job(job.id, job.goal)
+        client = _ConfirmCapturingPiClient({"turns": 1})
+
+        with (
+            patch("rau.pi.supervisor.PI_SUPERVISOR", _FakePiSupervisor(client)),
+            patch.object(orchestrator, "load_soul", return_value="soul"),
+            patch.object(orchestrator, "load_settings", return_value={}),
+            patch("rau.permissions.mode_for", return_value="bypass"),
+            patch.object(orchestrator, "_await_confirm") as await_confirm,
+            patch.dict(os.environ, {"PI_PROVIDER": "p", "PI_MODEL": "m"}),
+        ):
+            summary = orchestrator._run_pi_subagent(job, finalize=False)
+
+        self.assertEqual(summary, "fixed it")
+        self.assertEqual(client.spec.confirm_tools, [])
+        await_confirm.assert_not_called()
+
+    def test_scheduled_run_also_honors_full_bypass(self) -> None:
+        job = orchestrator.Job(
+            id=str(uuid.uuid4()),
+            goal="fix the bug",
+            budget={"max_turns": 5},
+            scheduled_run_id="sched-1",
+        )
+        state.create_job(job.id, job.goal)
+        client = _ConfirmCapturingPiClient({"turns": 1})
+
+        with (
+            patch("rau.pi.supervisor.PI_SUPERVISOR", _FakePiSupervisor(client)),
+            patch.object(orchestrator, "load_soul", return_value="soul"),
+            patch.object(orchestrator, "load_settings", return_value={}),
+            patch("rau.permissions.mode_for", return_value="bypass"),
+            patch.object(orchestrator, "_await_confirm") as await_confirm,
+            patch.dict(os.environ, {"PI_PROVIDER": "p", "PI_MODEL": "m"}),
+        ):
+            orchestrator._run_pi_subagent(job, finalize=False)
+
+        self.assertEqual(client.spec.confirm_tools, [])
+        await_confirm.assert_not_called()
 
 
 class SpawnChildrenDeadlineTests(unittest.TestCase):

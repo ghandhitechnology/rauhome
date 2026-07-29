@@ -27,6 +27,7 @@ from rau.events import BUS
 from rau.heartbeat.presence import start_heartbeat
 from rau.hub.security import LocalAccessMiddleware, allowed_hostnames
 from rau.identity import store as identity_store
+from rau.language import get_locale, set_locale
 from rau.mcp.client import MCP
 from rau.memory import store as memory_store
 from rau.paths import WEB_DIST, ensure_dirs
@@ -157,6 +158,10 @@ _EFFORT_SLOTS = ("face", "subagent", "dream", "player")
 
 class ResourceProfileIn(BaseModel):
     profile: str = Field(pattern="^(eco|balanced|performance)$")
+
+
+class LanguageIn(BaseModel):
+    language: str = Field(pattern="^(en|ko)$")
 
 
 class GoalIn(BaseModel):
@@ -1101,6 +1106,17 @@ def api_dream_run():
 @app.get("/api/settings")
 def api_settings():
     return load_settings()
+
+
+@app.get("/api/preferences/language")
+def api_language_get():
+    settings = load_settings()
+    return {"language": get_locale(), "configured": "language" in settings}
+
+
+@app.put("/api/preferences/language")
+def api_language_put(body: LanguageIn):
+    return {"ok": True, **set_locale(body.language)}
 
 
 @app.get("/api/permissions")

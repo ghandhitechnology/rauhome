@@ -151,6 +151,24 @@ class Turns(unittest.TestCase):
         game.draw_card(RAU)
         self.assertEqual(game.current, USER)
 
+    def test_action_count_lasts_until_the_turn_ends(self):
+        game = rigged(user=[SHUFFLE], rau=[], draw=[SHUFFLE] * 4)
+        game.play(USER, SHUFFLE)
+        self.assertEqual(game.actions_this_turn, 1)
+        settle(game)
+        self.assertEqual(game.actions_this_turn, 1)
+        game.draw_card(USER)
+        self.assertEqual(game.actions_this_turn, 0)
+        self.assertEqual(game.current, RAU)
+
+    def test_attack_resets_action_count_for_the_victim(self):
+        game = rigged(user=[ATTACK], rau=[], draw=[SHUFFLE] * 4)
+        game.play(USER, ATTACK)
+        self.assertEqual(game.actions_this_turn, 1)
+        settle(game)
+        self.assertEqual(game.current, RAU)
+        self.assertEqual(game.actions_this_turn, 0)
+
 
 class NopeStack(unittest.TestCase):
     def test_a_nope_cancels_the_action(self):

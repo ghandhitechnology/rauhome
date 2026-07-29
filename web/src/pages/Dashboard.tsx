@@ -3,6 +3,7 @@ import { Link } from '../router'
 import ClawdAvatar from '../components/ClawdAvatar'
 import PageSkeleton from '../components/PageSkeleton'
 import { api, type Job } from '../api'
+import { useLocale } from '../i18n'
 import { live as liveChannel } from '../live'
 import './Dashboard.css'
 
@@ -60,6 +61,7 @@ function parseEffort(raw: any): EffortState {
 }
 
 export default function Dashboard() {
+  const { t } = useLocale()
   const [status, setStatus] = useState<any>(null)
   const [emotion, setEmotion] = useState('idle')
   const [goal, setGoal] = useState('')
@@ -171,7 +173,7 @@ export default function Dashboard() {
     <div className="dash grid-2">
       <section className="panel">
         <div className="dash-head">
-          <h2>Presence</h2>
+          <h2>{t('dashboard.presence')}</h2>
           <div className="row">
             <span className={`pill ${live ? 'on' : 'off'}`}>
               <i className="pill-dot" />
@@ -304,9 +306,9 @@ export default function Dashboard() {
         )}
       </section>
 
-      <section className="panel">
+      <section className="panel" data-tour="deep-work">
         <div className="dash-head">
-          <h2>Deep work</h2>
+          <h2>{t('dashboard.deepWork')}</h2>
           <span className={`pill ${hardState === 'running' ? 'on' : 'off'}`}>
             <i className="pill-dot" />
             {HARD_STATES[hardState] || hardState}
@@ -328,27 +330,28 @@ export default function Dashboard() {
         {hard.result && hardState === 'done' && <pre className="doc hard-result">{hard.result}</pre>}
 
         <div className="field">
-          <label>New goal</label>
+          <label>{t('dashboard.newGoal')}</label>
           <input
+            data-tour="deep-work-goal"
             value={goal}
             onChange={(e) => setGoal(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') startGoal()
             }}
-            placeholder="What should Rau dig into?"
+            placeholder={t('dashboard.goalPlaceholder')}
           />
         </div>
 
         <div className="row">
           <button className="btn primary" disabled={!goal.trim()} onClick={startGoal}>
-            Start deep work
+            {t('dashboard.start')}
           </button>
           <button
             className="btn danger"
             disabled={activeJobs.length === 0}
             onClick={() => api.cancelHardTask().then(refresh).catch(() => {})}
           >
-            {activeJobs.length > 1 ? `Cancel all (${activeJobs.length})` : 'Cancel'}
+            {activeJobs.length > 1 ? `Cancel all (${activeJobs.length})` : t('dashboard.cancel')}
           </button>
         </div>
 

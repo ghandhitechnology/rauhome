@@ -24,7 +24,15 @@ from rau.events import BUS
 from rau.games.kittens import deck as deck_mod
 from rau.games.kittens import journal
 from rau.games.kittens import view as view_mod
-from rau.games.kittens.deck import ATTACK, FAVOR, NOPE
+from rau.games.kittens.deck import (
+    ATTACK,
+    EXPLODING_KITTEN,
+    FAVOR,
+    NOPE,
+    SEE_THE_FUTURE,
+    SHUFFLE,
+    SKIP,
+)
 from rau.games.kittens.engine import RAU, USER, Game
 
 #: Wall-clock budget for a Nope decision. Inside the Nope window, with room to
@@ -140,11 +148,19 @@ def decide_nope(game: Game) -> bool:
 
 
 def _turn_prompt(game: Game, *, correction: str = "") -> str:
+    from rau.language import response_language_instruction
+
     table = view_mod.prompt_fragment(game, RAU)
     history = journal.tail()
+    example_move = (
+        _preferred_proactive_move(game, allow_interactive=True)
+        or _fallback_move(game)
+    )
     parts = [
         "You are Rau's player half in Exploding Kittens. Pick exactly one legal "
-        "move and say one short line across the table. Play to win.",
+        "move and say one short line across the table. Play to win. Do not default "
+        "to drawing: use a useful action before drawing when one is available.",
+        response_language_instruction(),
         "",
         table.strip(),
     ]
@@ -154,7 +170,12 @@ def _turn_prompt(game: Game, *, correction: str = "") -> str:
         [
             "",
             "Reply with ONLY a JSON object, no markdown fences, shaped like:",
-            '{"move": {"move": "draw"}, "say": "alright, drawing."}',
+            json.dumps(
+                {
+                    "move": example_move,
+                    "say": "your move.",
+                }
+            ),
             "The move object must match one of the legal moves listed above "
             "(same keys and values). Keep say to one short spoken line.",
         ]
@@ -216,17 +237,77 @@ def _ask_model(prompt: str) -> str:
     return str(result.content or "")
 
 
+def _play_move(moves: List[Dict[str, Any]], card: str) -> Optional[Dict[str, Any]]:
+    for move in moves:
+        if move.get("move") == "play" and move.get("card") == card:
+            return dict(move)
+    return None
+
+
+def _preferred_proactive_move(
+    game: Game, *, allow_interactive: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Return a useful non-draw move when Rau has not acted this turn.
+
+    This is a guardrail, not a complete bot. The model still chooses among all
+    legal moves, but a malformed/passive answer no longer turns Rau into an
+    automatic card-drawing machine.
+    """
+    moves = game.legal_moves(RAU)
+    if not moves:
+        return None
+
+    known_top = game.known_top[RAU]
+    kitten_known = bool(known_top and known_top[0] == EXPLODING_KITTEN)
+    if kitten_known:
+        for card in (ATTACK, SKIP, SHUFFLE):
+            chosen = _play_move(moves, card)
+            if chosen:
+                return chosen
+
+    if game.actions_this_turn:
+        return None
+
+    # Attack applies pressure and ends the turn without risking the pile.
+    chosen = _play_move(moves, ATTACK)
+    if chosen:
+        return chosen
+
+    # Information is valuable only until Rau has looked; after the peek the
+    # next pump pass may draw safely or react to a known kitten.
+    if not known_top:
+        chosen = _play_move(moves, SEE_THE_FUTURE)
+        if chosen:
+            return chosen
+
+    if game.hands[USER]:
+        # Prefer the cheapest steal. Three/five-card sets are legal but usually
+        # too expensive for a blind fallback.
+        for move in moves:
+            if move.get("move") == "combo" and len(move.get("cards") or []) == 2:
+                return dict(move)
+        # Favor is strategically useful, but it parks the engine until the
+        # human chooses a card. It is fine for a normal model decision and not
+        # fine as the guaranteed recovery path after the model has failed.
+        if allow_interactive:
+            chosen = _play_move(moves, FAVOR)
+            if chosen:
+                return chosen
+    return None
+
+
 def _fallback_move(game: Game) -> Dict[str, Any]:
     """
-    The move that always exists when he must act: the last legal option.
+    A legal move that advances the table without defaulting blindly to Draw.
 
-    Engine lists draw / blocking answers last, so taking the last entry is the
-    safe default that advances the table.
+    A useful action is preferred once per turn. After Rau has acted—or when no
+    tactical action exists—the engine's last option remains the guaranteed
+    draw/blocking answer.
     """
     moves = game.legal_moves(RAU)
     if not moves:
         return {"move": "concede"}
-    chosen = dict(moves[-1])
+    chosen = _preferred_proactive_move(game) or dict(moves[-1])
     # The two open-choice moves are listed with prose placeholders ("0..N",
     # "<any card…>"), which the engine refuses verbatim — fill them with real
     # values or the guaranteed move is guaranteed to fail.
@@ -295,6 +376,14 @@ def take_turn(game: Game) -> None:
                 '{"move": {…}, "say": "…"}.'
             )
             continue
+        if parsed.get("move") == "draw":
+            # The old prompt and fallback both anchored on Draw, so even a
+            # healthy model routinely ignored a hand full of action cards.
+            # Make the first useful action of a turn proactive; a later draw
+            # remains legal and under model control.
+            parsed = (
+                _preferred_proactive_move(game, allow_interactive=True) or parsed
+            )
         result = session.apply_move(RAU, parsed)
         if result.get("ok"):
             move = parsed

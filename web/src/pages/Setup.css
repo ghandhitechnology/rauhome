@@ -1,5 +1,331 @@
 /* ── setup wizard ──────────────────────────────────────────── */
 
+.setup-prelude {
+  position: relative;
+  width: min(1180px, calc(100vw - 2rem));
+  min-height: calc(100vh - 3rem);
+  margin: -1.5rem auto 0;
+}
+
+.language-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  overflow: hidden;
+  animation: fade-in var(--dur-4) var(--ease) both;
+}
+
+.language-gate::before {
+  content: "";
+  position: absolute;
+  width: min(720px, 90vw);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-a12), transparent 66%);
+  filter: blur(8px);
+  animation: breathe 5s var(--ease-in-out) infinite;
+  pointer-events: none;
+}
+
+.language-mark {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 2.2rem;
+  color: var(--ink-2);
+}
+
+.language-mark i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 24px var(--accent-a40);
+}
+
+.language-mark span {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+}
+
+.setup-prelude h1 {
+  position: relative;
+  max-width: 14ch;
+  margin: 0.65rem auto 0;
+  font-family: var(--font-display);
+  font-size: clamp(3.2rem, 7vw, 6.2rem);
+  font-weight: 400;
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+}
+
+.prelude-lede {
+  position: relative;
+  max-width: 44ch;
+  margin: 1.2rem auto 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.language-options {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  width: min(580px, 100%);
+  margin-top: 2.2rem;
+}
+
+.language-options button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  min-height: 108px;
+  padding: 1.2rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: rgba(22, 22, 29, 0.78);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform var(--dur-3) var(--spring),
+    border-color var(--dur-2),
+    box-shadow var(--dur-3);
+}
+
+.language-options button:hover,
+.language-options button:focus-visible {
+  transform: translateY(-4px);
+  border-color: var(--accent-a40);
+  box-shadow: var(--shadow-3), var(--glow);
+}
+
+.language-options strong {
+  font-family: var(--font-display);
+  font-size: 1.7rem;
+  font-weight: 400;
+}
+
+.language-options span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.intro-story {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 1.5rem 0 1rem;
+}
+
+.intro-skip {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  padding: 0.5rem;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.intro-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
+  align-items: center;
+  gap: clamp(2rem, 5vw, 5rem);
+  animation: intro-page-in 720ms var(--ease) both;
+}
+
+.intro-art {
+  position: relative;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid rgba(240, 168, 60, 0.22);
+  border-radius: 35% 42% 34% 40% / 30% 34% 41% 37%;
+  background: #111014;
+  box-shadow: var(--shadow-3), 0 0 80px rgba(240, 168, 60, 0.08);
+  transform: rotate(-0.35deg);
+}
+
+.intro-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      7deg,
+      rgba(255, 255, 255, 0.018) 0,
+      rgba(255, 255, 255, 0.018) 1px,
+      transparent 1px,
+      transparent 5px
+    );
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.intro-art img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1.598;
+  object-fit: cover;
+  transform: scale(1.015);
+  animation: intro-art-drift 12s var(--ease-in-out) both;
+}
+
+.intro-copy {
+  animation: intro-copy-in 700ms var(--ease) 90ms both;
+}
+
+.intro-copy h1 {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.intro-copy > p:last-child {
+  max-width: 42ch;
+  margin: 1.3rem 0 0;
+  color: var(--ink-2);
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.intro-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.8rem;
+}
+
+.intro-controls > :last-child {
+  justify-self: end;
+}
+
+.intro-dots {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.intro-dots button {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--faint);
+  cursor: pointer;
+  transition:
+    width var(--dur-3) var(--spring),
+    background var(--dur-2);
+}
+
+.intro-dots button.active {
+  width: 26px;
+  border-radius: 99px;
+  background: var(--accent);
+}
+
+@keyframes intro-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes intro-copy-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes intro-art-drift {
+  from {
+    transform: scale(1.045) translate3d(-0.6%, 0.4%, 0);
+  }
+  to {
+    transform: scale(1.015) translate3d(0.5%, -0.35%, 0);
+  }
+}
+
+@media (max-width: 820px) {
+  .intro-stage {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+
+  .intro-art {
+    width: min(720px, 100%);
+    margin: 0 auto;
+  }
+
+  .intro-copy {
+    text-align: center;
+  }
+
+  .intro-copy h1,
+  .intro-copy > p:last-child {
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .setup-prelude {
+    width: min(100% - 1rem, 1180px);
+    min-height: calc(100vh - 1rem);
+    margin-top: -0.5rem;
+  }
+
+  .language-options {
+    grid-template-columns: 1fr;
+  }
+
+  .language-options button {
+    min-height: 88px;
+  }
+
+  .intro-story {
+    justify-content: flex-start;
+    padding-top: 3rem;
+  }
+
+  .intro-controls {
+    position: sticky;
+    bottom: 0;
+    padding: 0.8rem 0;
+    background: linear-gradient(transparent, var(--bg-0) 30%);
+  }
+
+  .intro-controls .btn {
+    padding-inline: 0.7rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-prelude,
+  .intro-stage,
+  .intro-copy,
+  .intro-art img,
+  .language-gate::before {
+    animation: none;
+  }
+}
+
 .setup {
   display: flex;
   flex-direction: column;

@@ -176,10 +176,12 @@ _NUDGES = {
 
 def _prompt(game: ChessGame, reason: str) -> str:
     from rau.games.chess import session, view as view_mod
+    from rau.language import response_language_instruction
 
     return "\n".join(
         [
             "You are Rau, playing chess against them, out loud.",
+            response_language_instruction(),
             "",
             view_mod.coarse_read(game, session.last_read()).strip(),
             "",

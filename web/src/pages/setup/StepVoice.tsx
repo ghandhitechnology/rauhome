@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, type TtsVoice, type VoicePreset } from '../../api'
 import AuthCard, { VerifyLine } from '../../components/AuthCard'
 import type { StepProps } from './types'
+import { useLocale } from '../../i18n'
 
 export default function StepVoice({
   draft,
@@ -12,6 +13,7 @@ export default function StepVoice({
   verify,
   setVerify,
 }: StepProps) {
+  const { locale } = useLocale()
   const [keys, setKeys] = useState({ elevenlabs: '', cartesia: '', deepgram: '' })
   const [busy, setBusy] = useState('')
   const [voices, setVoices] = useState<TtsVoice[]>([])
@@ -142,11 +144,12 @@ export default function StepVoice({
   return (
     <div className="step">
       <header className="step-head">
-        <p className="eyebrow">Step five — voice</p>
-        <h2>Give Rau a voice and ears</h2>
+        <p className="eyebrow">{locale === 'ko' ? '다섯 번째 단계 — 목소리' : 'Step five — voice'}</p>
+        <h2>{locale === 'ko' ? 'Rau에게 목소리와 귀를 주세요' : 'Give Rau a voice and ears'}</h2>
         <p className="step-lede">
-          Choose ElevenLabs or Cartesia Sonic 3.5 for speech. Deepgram hears in real time.
-          Speaking and hearing keys are independent.
+          {locale === 'ko'
+            ? '말하기에는 ElevenLabs 또는 Cartesia Sonic 3.5를, 실시간 듣기에는 Deepgram을 사용할 수 있습니다. 두 키는 서로 독립적입니다.'
+            : 'Choose ElevenLabs or Cartesia Sonic 3.5 for speech. Deepgram hears in real time. Speaking and hearing keys are independent.'}
         </p>
       </header>
 
@@ -155,10 +158,10 @@ export default function StepVoice({
 
       {(el?.configured || cartesia?.configured) && (
         <section className="voice-setup-card">
-          <h3>Choose a speaking service and voice</h3>
+          <h3>{locale === 'ko' ? '말하기 서비스와 목소리 선택' : 'Choose a speaking service and voice'}</h3>
           <div className="voice-picks">
             <div className="field">
-              <label>Speech provider</label>
+              <label>{locale === 'ko' ? '음성 제공자' : 'Speech provider'}</label>
               <select
                 value={draft.tts.provider}
                 onChange={(event) => {
@@ -278,7 +281,7 @@ export default function StepVoice({
             onClick={preview}
           >
             {busy === 'preview' && <i className="spinner" />}
-            {busy === 'preview' ? 'Generating…' : 'Preview this voice'}
+            {busy === 'preview' ? (locale === 'ko' ? '생성 중…' : 'Generating…') : (locale === 'ko' ? '이 목소리 미리 듣기' : 'Preview this voice')}
           </button>
         </section>
       )}
@@ -286,10 +289,10 @@ export default function StepVoice({
       {authCard('deepgram', 'Deepgram', dg, 'Low-latency streaming speech-to-text with live partials.')}
 
       <section className="voice-setup-card">
-        <h3>Hearing</h3>
+        <h3>{locale === 'ko' ? '듣기' : 'Hearing'}</h3>
         <div className="voice-picks">
           <div className="field">
-            <label>STT provider</label>
+            <label>{locale === 'ko' ? '음성 인식 제공자' : 'STT provider'}</label>
             <select
               value={draft.stt.provider}
               onChange={(event) => {
@@ -314,7 +317,7 @@ export default function StepVoice({
             </select>
           </div>
           <div className="field">
-            <label>STT model</label>
+            <label>{locale === 'ko' ? '음성 인식 모델' : 'STT model'}</label>
             <select
               disabled={draft.stt.provider === 'auto'}
               value={draft.stt.model}
@@ -331,7 +334,7 @@ export default function StepVoice({
             </select>
           </div>
           <div className="field">
-            <label>Recognition language</label>
+            <label>{locale === 'ko' ? '인식 언어' : 'Recognition language'}</label>
             <select
               value={draft.stt.language}
               onChange={(event) => patch({ stt: { ...draft.stt, language: event.target.value } })}

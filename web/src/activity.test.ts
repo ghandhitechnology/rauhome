@@ -45,4 +45,40 @@ describe('activity plane', () => {
     ])
     expect(activityFor(spans, { global: true })).toHaveLength(2)
   })
+
+  it('separates main-agent activity from Deep Work by job correlation', () => {
+    const main = {
+      id: 'main',
+      seq: 1,
+      revision: 1,
+      kind: 'reasoning',
+      source: 'face',
+      status: 'done',
+      label: 'Thinking',
+      summary: '',
+      details: {},
+      turn_id: 'turn-1',
+      job_id: null,
+      step_id: null,
+      parent_span_id: null,
+      started: 1,
+      updated: 2,
+      ended: 2,
+    } as const
+    const deepWork = {
+      ...main,
+      id: 'deep',
+      seq: 2,
+      source: 'subagent',
+      job_id: 'job-1',
+    }
+    const spans = [main, deepWork]
+
+    expect(activityFor(spans, { global: true, agent: 'main' }).map((span) => span.id))
+      .toEqual(['main'])
+    expect(activityFor(spans, { global: true, agent: 'deep-work' }).map((span) => span.id))
+      .toEqual(['deep'])
+    expect(activityFor(spans, { turnId: 'turn-1', agent: 'main' }).map((span) => span.id))
+      .toEqual(['main'])
+  })
 })

@@ -1,8 +1,10 @@
 import type { StepProps, SlotDraft } from './types'
+import { useLocale } from '../../i18n'
 
 type SlotKey = 'face' | 'subagent' | 'dream'
 
 export default function StepModels({ draft, patch, state, catalog }: StepProps) {
+  const { locale } = useLocale()
   const configured = new Set(state?.configured || [])
   const providerAuth = catalog?.provider_auth || {}
 
@@ -42,23 +44,24 @@ export default function StepModels({ draft, patch, state, catalog }: StepProps) 
   return (
     <div className="step">
       <header className="step-head">
-        <p className="eyebrow">Step four</p>
-        <h2>Split the work</h2>
+        <p className="eyebrow">{locale === 'ko' ? '네 번째 단계' : 'Step four'}</p>
+        <h2>{locale === 'ko' ? '역할을 나눠 주세요' : 'Split the work'}</h2>
         <p className="step-lede">
-          Three jobs, three model choices. They can all be the same model — but the face wants speed
-          and the subagent wants patience.
+          {locale === 'ko'
+            ? '대화, 하위 에이전트, 꿈에 사용할 모델을 정합니다. 모두 같아도 되지만 대화는 속도, 하위 에이전트는 깊이가 중요합니다.'
+            : 'Three jobs, three model choices. They can all be the same model — but the face wants speed and the subagent wants patience.'}
         </p>
       </header>
 
       {usable.length === 0 ? (
         <div className="notice bad">
-          No connected provider yet. Go back a step and connect one key first.
+          {locale === 'ko' ? '연결된 제공자가 없습니다. 이전 단계에서 키를 하나 연결해 주세요.' : 'No connected provider yet. Go back a step and connect one key first.'}
         </div>
       ) : (
         <>
           <div className="row" style={{ marginBottom: '1.1rem' }}>
             <button className="btn sm" onClick={autoAssign}>
-              Auto-assign sensible defaults
+              {locale === 'ko' ? '알맞은 기본값 자동 배정' : 'Auto-assign sensible defaults'}
             </button>
           </div>
 
@@ -88,7 +91,7 @@ export default function StepModels({ draft, patch, state, catalog }: StepProps) 
 
                   <div className="slot-fields">
                     <div className="field">
-                      <label>Provider</label>
+                      <label>{locale === 'ko' ? '제공자' : 'Provider'}</label>
                       <select
                         value={cur.provider}
                         onChange={(e) => pickProvider(slot, e.target.value)}
@@ -103,7 +106,7 @@ export default function StepModels({ draft, patch, state, catalog }: StepProps) 
                     </div>
 
                     <div className="field">
-                      <label>Model</label>
+                      <label>{locale === 'ko' ? '모델' : 'Model'}</label>
                       <select
                         value={isCustom ? '__custom' : cur.model}
                         disabled={!cur.provider}
