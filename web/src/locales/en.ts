@@ -189,7 +189,7 @@ export const EN = {
   'tour.composer.body': 'Click the composer. The tour will not send anything.',
   'tour.games.title': 'Play together',
   'tour.games.body':
-    'Start chess or Exploding Kittens here. Rau can move and speak proactively during a game.',
+    'Games start here too. Ask him for one — out loud or typed — and Rau will set up chess or deal a hand of Exploding Kittens.',
   'tour.work.title': 'Deep work',
   'tour.work.body': 'Complex goals unfold here with plans, subagents, progress, and verification.',
   'tour.goal.title': 'Hand over a goal',
@@ -241,13 +241,9 @@ export const EN = {
 
   // ── room ─────────────────────────────────────────────────────
   'face.back': '← Rau',
-  'face.chess': 'Chess',
-  'face.play': 'Play',
   'face.direct': 'Direct',
   'face.say': 'Say something to Rau…',
   'face.hideChat': 'Hide chat',
-  'face.chessTitle': 'Set the chess board up',
-  'face.playTitle': 'Deal a hand of Exploding Kittens',
   'face.roomStyle': 'Room style',
   'face.classic': 'Classic',
   'face.enhanced': 'Enhanced',

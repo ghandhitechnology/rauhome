@@ -8,7 +8,7 @@ import { Link, Navigate, useLocation } from './router'
 import { live } from './live'
 import { publishTier } from './clawd/quality'
 import PageSkeleton from './components/PageSkeleton'
-import { HyperActivationRipple } from './components/HyperMode'
+import { HyperActivationRipple, HyperAmbience } from './components/HyperMode'
 import {
   Conversation,
   Dashboard,
@@ -27,6 +27,7 @@ export default function App() {
       <TutorialProvider>
         <ModeProvider>
           <HyperActivationRipple />
+          <HyperAmbience />
           <Shell />
         </ModeProvider>
       </TutorialProvider>

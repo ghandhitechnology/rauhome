@@ -273,79 +273,385 @@ body::before {
   z-index: 1;
 }
 
-/* A click-origin pulse announces the switch to Hyper, then gets entirely out
-   of the way before the next conversational beat. */
+/* While Hyper is on, the rim of the screen keeps a little purple in it. Two
+   conic gradients turning against each other at periods that never line up, so
+   the colour keeps moving around the edge without ever repeating a loop you can
+   catch. Rotation only — the gradients and their blur are painted once and the
+   layers are composited from then on, which is what makes something that runs
+   for the whole conversation affordable.
+
+   The mask is what makes this a border rather than a glow. Four linear
+   gradients, one per side, unioned by the default `add` compositing — so every
+   side gets the same thickness measured in from its own edge. A radial mask was
+   the wrong shape for the job: on a 16:9 viewport its corners sit ~1.4× further
+   out than its edge midpoints, so whatever setting made the corners right left
+   the sides bare, and whatever made the sides right bloomed the corners.
+
+   The thickness is tied to the smaller viewport dimension so it stays a border
+   across displays, clamped at both ends so it can be neither a hairline on a
+   laptop nor a wash on a 4K panel. */
+.hyper-edge {
+  --hyper-edge-w: clamp(20px, 3.6vmin, 52px);
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  pointer-events: none;
+  overflow: hidden;
+  -webkit-mask-image:
+    linear-gradient(to right, #000, transparent var(--hyper-edge-w)),
+    linear-gradient(to left, #000, transparent var(--hyper-edge-w)),
+    linear-gradient(to bottom, #000, transparent var(--hyper-edge-w)),
+    linear-gradient(to top, #000, transparent var(--hyper-edge-w));
+  mask-image:
+    linear-gradient(to right, #000, transparent var(--hyper-edge-w)),
+    linear-gradient(to left, #000, transparent var(--hyper-edge-w)),
+    linear-gradient(to bottom, #000, transparent var(--hyper-edge-w)),
+    linear-gradient(to top, #000, transparent var(--hyper-edge-w));
+  animation: hyper-edge-in 900ms var(--ease) both;
+}
+
+.hyper-edge-drift {
+  position: absolute;
+  inset: -55%;
+  border-radius: 50%;
+  will-change: transform;
+  filter: blur(30px);
+  background:
+    conic-gradient(
+      from 0deg,
+      transparent 0 6%,
+      var(--hyper-a35) 18%,
+      transparent 32% 48%,
+      var(--hyper-a14) 60%,
+      transparent 74% 88%,
+      var(--hyper-a35) 96%,
+      transparent 100%
+    );
+  animation: spin 34s linear infinite;
+}
+
+/* Turning the other way, on a period that shares no factor with the first. */
+.hyper-edge-drift-two {
+  background:
+    conic-gradient(
+      from 140deg,
+      transparent 0 12%,
+      var(--hyper-a14) 26%,
+      transparent 40% 62%,
+      var(--hyper-a35) 78%,
+      transparent 92% 100%
+    );
+  animation:
+    spin 53s linear infinite reverse,
+    hyper-edge-swell 11s var(--ease-in-out) infinite;
+}
+
+/* Ends well short of full: the mask decides *where* the colour lands, this
+   decides how much of it there is. */
+@keyframes hyper-edge-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.5;
+  }
+}
+
+@keyframes hyper-edge-swell {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+/* Switching to Hyper drops a stone in the page. A wavefront leaves the click,
+   tints whatever it crosses, shoves the nearby chrome aside, and is gone before
+   the next conversational beat. Switching back runs the whole thing inward.
+
+   The overlay deliberately does NOT blend (no mix-blend-mode): a blended child
+   would isolate this subtree into its own backdrop root, and the refraction
+   layer below would then have nothing behind it left to filter.
+
+   Sizing comes from --hyper-span, which the component sets to twice the
+   distance from the click to the furthest viewport corner. That way the front
+   travels at one honest speed and finishes at the same moment wherever the
+   button happens to sit. */
 .hyper-activation-ripple {
   position: fixed;
   inset: 0;
   z-index: 10000;
   overflow: hidden;
   pointer-events: none;
+  contain: layout style;
+  /* Barely there. The veil is only meant to keep the origin from looking like a
+     hole once the crest has left it — any brighter and the whole thing reads as
+     a flash rather than as something travelling. */
   background:
     radial-gradient(
       circle at var(--hyper-x) var(--hyper-y),
-      rgba(225, 194, 255, 0.26) 0,
-      rgba(189, 124, 255, 0.13) 18%,
-      transparent 58%
+      var(--hyper-a14) 0,
+      transparent 52%
     );
-  mix-blend-mode: screen;
-  animation: hyper-veil 540ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: hyper-veil 780ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.hyper-wave {
+.hyper-activation-ripple.off {
+  animation-duration: 580ms;
+}
+
+/* Every layer is the same circle centred on the click, offset by margin rather
+   than a translate so the transform is free to carry nothing but scale.
+
+   Each layer is ONE element running TWO animations — the travel and the fade —
+   because that is what lets them disagree about easing: the wave decelerates on
+   a curve while it dims on a straight line. Sharing a single curve is what made
+   the old pulse read as a switch being thrown rather than something moving
+   through a medium. It is deliberately not a parent/child pair: an ancestor
+   with an animated opacity would isolate the refraction layer below into its
+   own backdrop root, leaving it nothing behind it left to filter. */
+.hyper-front,
+.hyper-refract {
+  display: block;
   position: absolute;
   left: var(--hyper-x);
   top: var(--hyper-y);
-  width: 8vmax;
+  width: var(--hyper-span);
   aspect-ratio: 1;
-  border: 2px solid var(--hyper-a65);
+  margin-left: calc(var(--hyper-span) / -2);
+  margin-top: calc(var(--hyper-span) / -2);
   border-radius: 50%;
-  box-shadow:
-    0 0 22px 4px var(--hyper-a35),
-    inset 0 0 22px 4px var(--hyper-a14);
   opacity: 0;
-  transform: translate(-50%, -50%) scale(0.08);
-  animation: hyper-wave 520ms cubic-bezier(0.12, 0.72, 0.24, 1) both;
+  transform: scale(0.03);
 }
 
-.hyper-wave-two {
-  border-width: 1px;
-  animation-delay: 42ms;
+/* A feathered annulus, not a hairline border. It broadens and dims as it goes,
+   which is both what water does and what keeps the edge from turning into a
+   64px-thick scaled-up line the way the old bordered ring did. */
+.hyper-front {
+  will-change: transform, opacity;
+  background:
+    radial-gradient(
+      closest-side,
+      transparent 0 56%,
+      var(--hyper-a14) 70%,
+      var(--hyper-a35) 80%,
+      var(--hyper-a65) 83%,
+      var(--hyper-a14) 89%,
+      transparent 97%
+    );
+}
+
+.hyper-front-one {
+  animation:
+    hyper-travel 700ms cubic-bezier(0.15, 0.85, 0.25, 1) both,
+    hyper-front-fade 700ms linear both;
+}
+
+/* A second, fainter crest a beat behind the first, so the front has depth
+   instead of reading as one clean edge. */
+.hyper-front-two {
+  animation:
+    hyper-travel 680ms cubic-bezier(0.15, 0.85, 0.25, 1) 60ms both,
+    hyper-front-fade 680ms linear 60ms both;
+  background:
+    radial-gradient(
+      closest-side,
+      transparent 0 64%,
+      var(--hyper-a14) 78%,
+      var(--hyper-a35) 84%,
+      transparent 94%
+    );
+}
+
+/* The half that makes this a disturbance rather than a decal: the ring is a
+   masked backdrop-filter, so the room canvas, the aurora and any text under it
+   all lean purple for the moment the crest is over them, then come back. Kept
+   gentle — this should look like the page bending, not like a colour flash. */
+.hyper-refract {
+  animation:
+    hyper-travel 680ms cubic-bezier(0.15, 0.85, 0.25, 1) both,
+    hyper-refract-fade 680ms linear both;
+  -webkit-backdrop-filter: hue-rotate(-24deg) saturate(1.22) brightness(1.04);
+  backdrop-filter: hue-rotate(-24deg) saturate(1.22) brightness(1.04);
+  -webkit-mask-image: radial-gradient(
+    closest-side,
+    transparent 0 58%,
+    #000 74% 86%,
+    transparent 98%
+  );
+  mask-image: radial-gradient(
+    closest-side,
+    transparent 0 58%,
+    #000 74% 86%,
+    transparent 98%
+  );
+}
+
+/* Coming back out of Hyper the wave runs the other way: it collapses toward the
+   button and drains the colour with it. */
+.hyper-activation-ripple.off .hyper-front-one {
+  animation:
+    hyper-drain 500ms cubic-bezier(0.4, 0, 0.3, 1) both,
+    hyper-front-fade 500ms linear both;
+}
+
+.hyper-activation-ripple.off .hyper-front-two {
+  animation:
+    hyper-drain 480ms cubic-bezier(0.4, 0, 0.3, 1) 50ms both,
+    hyper-front-fade 480ms linear 50ms both;
+}
+
+.hyper-activation-ripple.off .hyper-refract {
+  animation:
+    hyper-drain 500ms cubic-bezier(0.4, 0, 0.3, 1) both,
+    hyper-refract-fade 500ms linear both;
+  -webkit-backdrop-filter: hue-rotate(16deg) saturate(0.78) brightness(0.98);
+  backdrop-filter: hue-rotate(16deg) saturate(0.78) brightness(0.98);
+}
+
+/* Browsers without backdrop-filter still get the glow; they just don't get the
+   page tinted underneath it. */
+@supports not (backdrop-filter: hue-rotate(1deg)) {
+  .hyper-refract {
+    display: none;
+  }
 }
 
 @keyframes hyper-veil {
   0% {
     opacity: 0;
   }
-  16% {
-    opacity: 1;
+  14% {
+    opacity: 0.6;
   }
   100% {
     opacity: 0;
   }
 }
 
-@keyframes hyper-wave {
+@keyframes hyper-travel {
+  from {
+    transform: scale(0.03);
+  }
+  to {
+    transform: scale(1.25);
+  }
+}
+
+@keyframes hyper-drain {
+  from {
+    transform: scale(1.25);
+  }
+  to {
+    transform: scale(0.03);
+  }
+}
+
+@keyframes hyper-front-fade {
   0% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.08);
   }
-  12% {
-    opacity: 1;
+  9% {
+    opacity: 0.72;
+  }
+  52% {
+    opacity: 0.34;
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(32);
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .hyper-activation-ripple {
-    animation-duration: 180ms;
+@keyframes hyper-refract-fade {
+  0% {
+    opacity: 0;
   }
+  12% {
+    opacity: 0.85;
+  }
+  62% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 
-  .hyper-wave {
-    display: none;
+/* Objects floating in the medium. The component measures each one's distance
+   from the click and hands it a delay, plus a unit vector so it is pushed away
+   from the origin rather than everything bobbing straight up together.
+
+   The lift is a drop-shadow, not a box-shadow: several of these controls carry
+   their own box-shadow for their on-state, and animating that property would
+   quietly wipe it out for the length of the wake. */
+[data-hyper-wake].hyper-waking {
+  animation: hyper-wake 520ms var(--ease) var(--hyper-wake-delay, 0ms) both;
+}
+
+@keyframes hyper-wake {
+  0% {
+    transform: none;
+    filter: drop-shadow(0 0 0 transparent);
+  }
+  34% {
+    transform: translate3d(
+        calc(var(--hyper-wake-dx, 0) * 4px),
+        calc(var(--hyper-wake-dy, 0) * 4px),
+        0
+      )
+      scale(1.02);
+    filter: drop-shadow(0 0 7px var(--hyper-a35));
+  }
+  100% {
+    transform: none;
+    filter: drop-shadow(0 0 0 transparent);
+  }
+}
+
+/* The toggle itself. Without this the button snapped to purple, so the wave
+   appeared to come from nowhere; now it blooms a fraction ahead of the front it
+   is releasing. The charge class is applied per click rather than tied to .on,
+   or the button would fire once on every page load that restores Hyper. */
+.hyper-toggle {
+  transition:
+    color var(--dur-2) var(--ease),
+    border-color var(--dur-2) var(--ease),
+    background-color var(--dur-2) var(--ease),
+    box-shadow var(--dur-3) var(--ease);
+}
+
+.hyper-toggle.charging.on {
+  animation: hyper-charge 520ms var(--spring) both;
+}
+
+.hyper-toggle.charging:not(.on) {
+  animation: hyper-discharge 360ms var(--ease) both;
+}
+
+@keyframes hyper-charge {
+  0% {
+    transform: scale(1);
+  }
+  22% {
+    transform: scale(1.045);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes hyper-discharge {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(0.965);
+  }
+  100% {
+    transform: scale(1);
   }
 }
 

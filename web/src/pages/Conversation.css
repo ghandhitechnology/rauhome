@@ -487,7 +487,7 @@
   border: 1px solid var(--line-2);
   border-radius: 999px;
   padding: 0.34rem 0.58rem;
-  background: transparent;
+  background-color: transparent;
   color: var(--muted);
   font: inherit;
   font-size: 0.7rem;
@@ -499,7 +499,7 @@
 .space-talk-controls .hyper-toggle.on {
   color: var(--hyper-soft);
   border-color: var(--hyper-a65);
-  background: var(--hyper-a14);
+  background-color: var(--hyper-a14);
   box-shadow: 0 0 14px var(--hyper-a35);
 }
 

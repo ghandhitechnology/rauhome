@@ -589,8 +589,6 @@ export default function Face() {
   /** A hand is actually on — the exit ritual gives the composer back early. */
   const inGame =
     tablePhase === 'dealing' || tablePhase === 'playing' || chessPhase === 'playing'
-  /** Neither table is out, so either one can be offered. There is only one. */
-  const roomFree = tablePhase === 'idle' && !game && chessPhase === 'idle' && !chess
 
   return (
     <div className={`face ${isVoice ? 'voice-mode' : ''}`}>
@@ -716,9 +714,12 @@ export default function Face() {
             }}
             className="face-activity-chip"
           />
+          {/* data-hyper-wake: the Hyper wavefront shoves these aside as it
+              reaches them, each on its own distance-based delay. */}
           <span
             className={`mode-pill ${isVoice ? 'on' : ''}`}
             title={t('face.modeHint')}
+            data-hyper-wake=""
           >
             <i className="mode-dot" />
             {modeLabel(mode)}
@@ -731,47 +732,9 @@ export default function Face() {
               disabled={voice.phase !== 'idle'}
             />
           )}
-          {/*
-            Starting a game without asking him. He can still deal or set up the
-            board himself — `start_kittens`, `start_chess` — and these are the
-            shortcuts for when you already know which one you want and would
-            rather not type a sentence about it.
-
-            Both disappear from the moment either is pressed until the room is
-            his again: there is one table, each game carries its own Leave, and
-            a second control up here would only be a way to lose a game you
-            were in the middle of.
-          */}
-          {roomFree && (
-            <div className="face-game-actions" data-tour="games">
-              <button
-                className="face-toggle face-play"
-                onClick={() => {
-                  setActivityOpen(false)
-                  setPanel(false)
-                  setComposerOpen(false)
-                  void chessPhaseStore.begin()
-                }}
-                title={t('face.chessTitle')}
-              >
-                {t('face.chess')}
-              </button>
-              <button
-                className="face-toggle face-play"
-                onClick={() => {
-                  setActivityOpen(false)
-                  setPanel(false)
-                  setComposerOpen(false)
-                  void phaseStore.begin()
-                }}
-                title={t('face.playTitle')}
-              >
-                {t('face.play')}
-              </button>
-            </div>
-          )}
           <button
             className={`face-toggle ${panel ? 'on' : ''}`}
+            data-hyper-wake=""
             onClick={() => {
               setActivityOpen(false)
               setPanel((p) => !p)
