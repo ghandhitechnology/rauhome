@@ -20,6 +20,8 @@ _state: Dict[str, Any] = {
         "muted_until": 0.0,
         "last_user_ts": 0.0,
         "last_initiate_ts": 0.0,
+        "last_nudge_attempt_ts": 0.0,
+        "nudge_count": 0,
         "reentry_pending": False,
         "reentry_tier": "none",
         "gap_sec": 0.0,
