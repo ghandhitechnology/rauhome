@@ -26,6 +26,7 @@ export default function Pet() {
   const lastReply = useRef({ at: 0, text: '', sig: '' })
   const seeded = useRef(false)
   const hitRef = useRef<HitRect>({ x: 0, y: 0, w: 0, h: 0 })
+  const lastHitSig = useRef('')
 
   const refresh = useCallback(async () => {
     try {
@@ -131,6 +132,21 @@ export default function Pet() {
 
   const onHitRect = useCallback((rect: HitRect) => {
     hitRef.current = rect
+    /*
+      The draw loop hands us a rect every frame, but reportHitRect rounds to
+      whole pixels before it crosses the bridge — so most of those frames would
+      spend an IPC round-trip and an event emit re-sending the rect the shell is
+      already holding. Compare on the same rounding the bridge applies (the ±6
+      padding is a constant offset, so it cannot change the answer) and only
+      speak when the integer box actually moved.
+    */
+    const sig = `${Math.floor(rect.x)}:${Math.floor(rect.y)}:${Math.ceil(rect.w)}:${Math.ceil(rect.h)}`
+    if (sig === lastHitSig.current) return
+    // Only remember what the shell was actually told. Outside the shell the
+    // report is a no-op, and recording it anyway would mean a rect sent while
+    // the bridge was missing is never re-sent once it appears.
+    if (!isPetShell()) return
+    lastHitSig.current = sig
     reportHitRect(rect)
   }, [])
 

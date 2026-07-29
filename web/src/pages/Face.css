@@ -241,18 +241,36 @@
 
 .face-compose {
   position: absolute;
-  left: 50%;
-  bottom: 1.6rem;
-  transform: translateX(-50%);
+  /* Anchored at the collapsed corner in both states, with the open position
+     expressed as a transform off that origin. Animating left/bottom made the
+     180ms move a layout pass per frame — under a live canvas, with two
+     backdrop-filtered children, and firing at exactly the moment a hand is
+     dealt. Same pixels at every step of the way, none of the layout.
+
+     A percentage inside a transform resolves against the composer, not the
+     room, so the distance to centre has to come from 50vw — which is only
+     exact while the root cannot scroll. It cannot: /face renders with no
+     shell, and every layer on it is fixed or absolute inside a fixed
+     `.face`, so nothing is in flow to overflow the document and 100vw never
+     picks up a classic scrollbar the room itself does not have. An in-flow,
+     scrolling sibling on this route would break that. */
+  left: 1.2rem;
+  bottom: 1.2rem;
+  transform: translate(calc(50vw - 1.2rem - 50%), -0.4rem);
   /* Above voice-hud so the permissions popover is never buried under it, and
      above the card table so the chat is never buried under a fan of cards. */
   z-index: 35;
   width: min(560px, calc(100vw - 2.5rem));
   /* Isolate layout so open/close does not thrash the card fan underneath. */
   contain: layout style;
+  /* `width` earns its place despite being the one non-compositor property
+     here: the chip is shrink-to-fit and the open state is a length, so the
+     toggle snaps rather than interpolating — no per-frame reflow. Dropping it
+     would only change *when* that snap lands, and the `50%` in the transform
+     above is a percentage of the same width, so the horizontal path would
+     move with it. What it does ease is the case that genuinely interpolates:
+     a resize narrow enough for the min() to bite. */
   transition:
-    left 180ms var(--ease),
-    bottom 180ms var(--ease),
     width 180ms var(--ease),
     transform 180ms var(--ease);
 }
@@ -265,8 +283,6 @@
  * click from open, and never stops accepting a message.
  */
 .face-compose.is-chip {
-  left: 1.2rem;
-  bottom: 1.2rem;
   width: auto;
   transform: none;
 }

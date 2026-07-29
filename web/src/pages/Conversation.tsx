@@ -1,5 +1,6 @@
 /* oxlint-disable react/only-export-components -- the echo hand-off is exported for its regression tests */
 import {
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -19,8 +20,15 @@ import { HyperToggle } from '../components/HyperMode'
 import { ThreadSkeleton } from '../components/PageSkeleton'
 import { api } from '../api'
 import { live } from '../live'
-import { useMode, modeListens, modeSupportsHyper, modeUsesVoice } from '../mode'
-import { useVoiceSession } from '../voice'
+import {
+  useMode,
+  modeListens,
+  modeSupportsHyper,
+  modeUsesVoice,
+  type Mode,
+  type VoiceLatencyProfile,
+} from '../mode'
+import { useVoiceSession, type VoicePhase } from '../voice'
 import { useLocale } from '../i18n'
 import {
   filterSlashCommands,
@@ -31,14 +39,28 @@ import {
 } from '../slash'
 import './Conversation.css'
 
-/** Rubber-band overscroll: past the bottom, compress/repulse the composer. */
+/**
+ * Rubber-band overscroll: past the bottom, compress/repulse the composer.
+ *
+ * Takes the composer element, not a ref to it. The composer is unmounted on the
+ * `space-talk` leg of the mode cycle and remounts as a NEW node, which a ref
+ * would silently keep out of date — the effect would go on writing to a
+ * detached footer, and `offsetHeight` does not flush layout on a detached node,
+ * so the spring would lose its start value again. Passing the node through
+ * state re-runs this when it changes, and covers mounting straight into
+ * space-talk, where the composer does not exist yet — which used to leave the
+ * band dead for the whole session, since the mode is persisted.
+ *
+ * Re-running is not quite sufficient on its own: cleanup here is passive, so a
+ * timer armed before the unmount can still fire after it. `release` checks the
+ * node is connected for that reason.
+ */
 function useComposerRubberBand(
   threadRef: RefObject<HTMLElement | null>,
-  composeRef: RefObject<HTMLElement | null>,
+  compose: HTMLElement | null,
 ) {
   useEffect(() => {
     const thread = threadRef.current
-    const compose = composeRef.current
     if (!thread || !compose) return
 
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -49,15 +71,20 @@ function useComposerRubberBand(
     let touching = false
     let lastTouchY = 0
     let releaseTimer: number | null = null
+    let settleTimer: number | null = null
     let springing = false
+    let frame = 0
+    let queued: { pull: number; snapping: boolean } | null = null
 
     const atBottom = () =>
       thread.scrollTop + thread.clientHeight >= thread.scrollHeight - 2
 
-    const paint = (nextRaw: number, snapping: boolean) => {
-      raw = snapping ? 0 : Math.max(0, nextRaw)
-      // Soft resistance — more drag → less travel.
-      const pull = MAX * (1 - Math.exp(-raw / MAX))
+    const apply = () => {
+      frame = 0
+      const job = queued
+      queued = null
+      if (!job) return
+      const { pull, snapping } = job
       const t = pull / MAX
       compose.style.transition = snapping
         ? 'transform 480ms cubic-bezier(0.34, 1.55, 0.45, 1)'
@@ -75,21 +102,79 @@ function useComposerRubberBand(
         : ''
     }
 
+    /*
+      The travel is queued, not written. A wheel or touchmove handler reads the
+      thread's scroll geometry to decide whether it owns the gesture, and a
+      trackpad delivers several of those per frame — writing the transforms
+      inline would make every read after the first one force a fresh layout of
+      the whole thread. Deferring the writes to the frame keeps reads and
+      writes in separate phases, and collapses N events into one write.
+    */
+    const paint = (nextRaw: number, snapping: boolean) => {
+      raw = snapping ? 0 : Math.max(0, nextRaw)
+      // Soft resistance — more drag → less travel.
+      queued = { pull: MAX * (1 - Math.exp(-raw / MAX)), snapping }
+      if (!frame) frame = requestAnimationFrame(apply)
+    }
+
+    /** Land a queued paint now — the caller is about to write past it. */
+    const flush = () => {
+      if (!frame) return
+      cancelAnimationFrame(frame)
+      apply()
+    }
+
+    /*
+      Land the pull, force it to be computed, and only then queue the snap.
+
+      Two things have to be true for the spring to be visible. The pull the
+      gesture ended on must reach the DOM — `paint` replaces `queued` wholesale,
+      so snapping first simply discards it, and when touchmove and touchend fall
+      in one frame (routine at a 120Hz touch rate) nothing had been committed at
+      all and the band sprang 0 → 0.
+
+      Landing it is not enough on its own, though: rAF callbacks run before the
+      style step of the same frame, so a flushed write followed by a queued snap
+      both resolve against one recalculation and the browser never computes the
+      pulled value to transition away from. Reading `offsetHeight` between them
+      forces that recalculation. It is a synchronous layout, which is exactly
+      what the queue exists to avoid — but once per release, not once per
+      touchmove, and it is the only way the transition has a start value.
+    */
     const release = () => {
       if (releaseTimer != null) {
         window.clearTimeout(releaseTimer)
         releaseTimer = null
       }
+      /*
+        This effect is passive, so its cleanup runs a task after the commit that
+        removed the composer. A wheel gesture's 90ms timer can land inside that
+        gap — shift+space toggles the mode, so the unmount is not tied to a
+        click on the composer itself. On a detached node `offsetHeight` forces
+        no layout and the spring would silently lose its start value again.
+      */
+      if (!compose.isConnected) return
       if (raw <= 0.5) {
+        // Nothing to spring from here — the band never really moved, and this
+        // commit carries no transition, so landing 0 directly is correct.
         paint(0, false)
+        flush()
         compose.style.transition = ''
         thread.style.transition = ''
         springing = false
         return
       }
       springing = true
+      flush()
+      void compose.offsetHeight
       paint(0, true)
-      window.setTimeout(() => {
+      flush()
+      // Tracked, because a stale one firing mid-flight would clear `transition`
+      // on both elements and cancel the spring that is currently running — the
+      // composer would pop to its end position instead of settling.
+      if (settleTimer != null) window.clearTimeout(settleTimer)
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null
         compose.style.transition = ''
         thread.style.transition = ''
         springing = false
@@ -156,6 +241,8 @@ function useComposerRubberBand(
 
     return () => {
       if (releaseTimer != null) window.clearTimeout(releaseTimer)
+      if (settleTimer != null) window.clearTimeout(settleTimer)
+      if (frame) cancelAnimationFrame(frame)
       thread.removeEventListener('wheel', onWheel)
       thread.removeEventListener('touchstart', onTouchStart)
       thread.removeEventListener('touchmove', onTouchMove)
@@ -167,7 +254,7 @@ function useComposerRubberBand(
       thread.style.transform = ''
       thread.style.transition = ''
     }
-  }, [threadRef, composeRef])
+  }, [threadRef, compose])
 }
 
 /** A locally-echoed send waiting for the hub's log to catch up with it. */
@@ -231,6 +318,278 @@ function pendingEchoFor(log: any[], text: string): PendingEcho {
   }
 }
 
+/**
+ * The logged part of the thread.
+ *
+ * Split off and memoised because the page re-renders on every streamed token
+ * and (before the composer moved out) on every keystroke, while the backlog
+ * itself only changes when the hub's log does — and re-rendering it means
+ * re-parsing every bubble's markdown and re-matching every slash command.
+ */
+const ThreadMessages = memo(function ThreadMessages({
+  log,
+  commands,
+}: {
+  log: any[]
+  commands: SlashCmd[]
+}) {
+  const { t } = useLocale()
+  /*
+    Position is no key. The hub trims the log at its cap, so once it is full
+    every entry slides left as a new one arrives, and an index-based key would
+    hand each row its neighbour's identity — React would tear down and rebuild
+    the whole thread, re-firing every msg-in animation and every inspector's
+    activity fetch. Key on what the entry *is* instead, disambiguating repeats
+    ("yes" twice in one minute) by how many like it came before.
+  */
+  const seen = new Map<string, number>()
+  return (
+    <>
+      {log.map((m) => {
+        const text = String(m.text || '')
+        const sig = `${m.role}|${m.time}|${text.length}|${text.slice(0, 32)}`
+        const nth = (seen.get(sig) || 0) + 1
+        seen.set(sig, nth)
+        const used = m.role === 'user' ? matchSlash(text, commands) : null
+        return (
+          <article
+            key={`${sig}#${nth}`}
+            className={`convo-msg ${m.role}${used ? ' slash-msg' : ''}`}
+          >
+            <div className="meta">
+              <span className="who">{m.role === 'user' ? t('talk.you') : t('talk.rau')}</span>
+              <span className="time">{m.time}</span>
+            </div>
+            {used ? (
+              <>
+                <div className="slash-pill">
+                  <span className="slash-pill-mark">/</span>
+                  {used.cmd.name}
+                </div>
+                {used.arg ? (
+                  <ChatMarkdown className="slash-arg" text={used.arg} />
+                ) : (
+                  <p className="slash-empty">{used.cmd.description || t('talk.command')}</p>
+                )}
+              </>
+            ) : (
+              <ChatMarkdown text={text} />
+            )}
+            {m.role !== 'user' && m.turn_id && (
+              <ActivityInspector turnId={String(m.turn_id)} />
+            )}
+          </article>
+        )
+      })}
+    </>
+  )
+})
+
+/**
+ * The composer.
+ *
+ * Split out so a keystroke re-renders one box instead of the whole thread —
+ * the same split Face already makes for the room. What it does NOT own is the
+ * draft: this box unmounts on the `space-talk` leg of the mode cycle, and text
+ * the reader has typed must outlive that. So the draft is the page's, and only
+ * the composer's own transient UI state (slash menu) lives here.
+ */
+function ConversationComposer({
+  boxRef,
+  commands,
+  mode,
+  voiceLatency,
+  setVoiceLatency,
+  voicePhase,
+  voiceError,
+  onSend,
+  draft,
+  setDraft,
+  sendError,
+  setSendError,
+}: {
+  boxRef: (el: HTMLElement | null) => void
+  commands: SlashCmd[]
+  mode: Mode
+  voiceLatency: VoiceLatencyProfile
+  setVoiceLatency: (profile: VoiceLatencyProfile) => void
+  voicePhase: VoicePhase
+  /** Empty unless the mode uses voice; the page decides that. */
+  voiceError: string
+  /** Deliver the trimmed message. Reject to hand the draft back. */
+  onSend: (text: string) => Promise<void>
+  draft: string
+  setDraft: (text: string) => void
+  sendError: string
+  setSendError: (message: string) => void
+}) {
+  const { t } = useLocale()
+  const [slashIndex, setSlashIndex] = useState(0)
+  const [slashOpen, setSlashOpen] = useState(true)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  const slashDraft = useMemo(() => readSlashDraft(draft), [draft])
+  const activeSlash = useMemo(
+    () => (slashDraft?.hasSpace || (slashDraft && matchSlash(draft, commands)) ? matchSlash(draft, commands) : null),
+    [slashDraft, draft, commands],
+  )
+  const slashSuggestions = useMemo(() => {
+    if (!slashDraft || slashDraft.hasSpace) return []
+    return filterSlashCommands(commands, slashDraft.token)
+  }, [slashDraft, commands])
+  const showSlashMenu = slashOpen && slashSuggestions.length > 0 && !!slashDraft && !slashDraft.hasSpace
+  const clampedSlashIndex = Math.min(slashIndex, Math.max(0, slashSuggestions.length - 1))
+
+  useEffect(() => {
+    setSlashIndex(0)
+    setSlashOpen(true)
+  }, [slashDraft?.token, slashDraft?.hasSpace])
+
+  // Grow the composer with its content instead of scrolling a one-line box.
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [draft])
+
+  function pickSlash(cmd: SlashCmd) {
+    setDraft(`${cmd.slash} `)
+    setSlashOpen(false)
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  async function send() {
+    const text = draft.trim()
+    if (!text) return
+    setSlashOpen(false)
+    setSendError('')
+    setDraft('')
+    try {
+      await onSend(text)
+    } catch {
+      // Give the newest message back instead of losing it. The page rejects
+      // only for the turn that is still the newest one.
+      setDraft(text)
+      setSendError(t('talk.sendFailed'))
+    }
+  }
+
+  function onComposeKey(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (showSlashMenu) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashIndex((i) => (i + 1) % slashSuggestions.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashIndex((i) => (i - 1 + slashSuggestions.length) % slashSuggestions.length)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        const pick = slashSuggestions[clampedSlashIndex]
+        if (pick) {
+          e.preventDefault()
+          pickSlash(pick)
+          return
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlashOpen(false)
+        return
+      }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void send()
+    }
+  }
+
+  return (
+    <footer ref={boxRef} className="convo-compose" data-tour="talk-composer">
+      <div className="compose-wrap">
+        <SlashMenu
+          open={showSlashMenu}
+          commands={slashSuggestions}
+          activeIndex={clampedSlashIndex}
+          onHover={setSlashIndex}
+          onPick={pickSlash}
+        />
+        {sendError && (
+          <p className="compose-error" role="alert">
+            {sendError}
+          </p>
+        )}
+        {voiceError && (
+          <p className="compose-error" role="alert">
+            {voiceError}
+          </p>
+        )}
+        {activeSlash && (
+          <div className="compose-slash-chip" aria-live="polite">
+            {activeSlash.cmd.slash}
+            <span>
+              {activeSlash.arg
+                ? activeSlash.arg.length > 42
+                  ? `${activeSlash.arg.slice(0, 42)}…`
+                  : activeSlash.arg
+                : activeSlash.cmd.description || t('talk.ready')}
+            </span>
+          </div>
+        )}
+        <div className={`compose-box${slashDraft ? ' is-slash' : ''}`}>
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onComposeKey}
+            placeholder={t('talk.placeholder')}
+            aria-label={t('talk.messageLabel')}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={showSlashMenu}
+            aria-controls="slash-menu-list"
+            aria-activedescendant={showSlashMenu ? `slash-opt-${clampedSlashIndex}` : undefined}
+            autoFocus
+          />
+          <div className="compose-actions">
+            {modeSupportsHyper(mode) && (
+              <HyperToggle
+                profile={voiceLatency}
+                setProfile={setVoiceLatency}
+                disabled={voicePhase !== 'idle'}
+              />
+            )}
+            <PermissionMenu />
+            <button
+              className="send-btn"
+              disabled={!draft.trim()}
+              onClick={() => void send()}
+              aria-label={t('talk.send')}
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M3 10h13M11 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <p className="compose-hint">
+        {showSlashMenu
+          ? t('talk.hintSlash')
+          : mode === 'talk'
+            ? t('talk.hintTalk')
+            : mode === 'voice'
+              ? t('talk.hintVoice')
+              : t('talk.hintDefault')}
+      </p>
+    </footer>
+  )
+}
+
 export default function Conversation() {
   const { t } = useLocale()
   const { mode, voiceLatency, setVoiceLatency } = useMode()
@@ -245,13 +604,10 @@ export default function Conversation() {
   /** Until the first fetch settles, an empty `log` means "unknown", not "none". */
   const [logLoaded, setLogLoaded] = useState(false)
   const [emotion, setEmotion] = useState('idle')
-  const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [confirm, setConfirm] = useState<any>(null)
   const [hardState, setHardState] = useState('')
   const [commands, setCommands] = useState<SlashCmd[]>(() => mergeSkillCommands([]))
-  const [slashIndex, setSlashIndex] = useState(0)
-  const [slashOpen, setSlashOpen] = useState(true)
   /** The message just sent, echoed locally until the hub's log includes it. */
   const [pending, setPending] = useState<PendingEcho | null>(null)
   /**
@@ -263,14 +619,22 @@ export default function Conversation() {
    * visible to fire on.
    */
   const [streaming, setStreaming] = useState<{ turnId: string; text: string } | null>(null)
-  const [sendError, setSendError] = useState('')
   const [offline, setOffline] = useState(false)
   const [deskWorking, setDeskWorking] = useState(() => live.isWorking())
   const [activityOpen, setActivityOpen] = useState(false)
+  /*
+    The draft is the page's, not the composer's: cycling the mode through
+    `space-talk` unmounts the composer, and unsent text has to survive that.
+    Keeping it here costs nothing — `ThreadMessages` is memoised on `log` and
+    `commands`, so a keystroke still re-renders only the box.
+  */
+  const [draft, setDraft] = useState('')
+  const [sendError, setSendError] = useState('')
   const threadRef = useRef<HTMLElement>(null)
-  const composeRef = useRef<HTMLElement>(null)
+  // State, not a ref: the composer unmounts on `space-talk` and comes back as a
+  // different node, and the rubber band has to follow it. See the hook.
+  const [composeEl, setComposeEl] = useState<HTMLElement | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
   const refreshingRef = useRef(false)
   const failsRef = useRef(0)
   /** Only the newest HTTP turn may settle composer state. Older requests are
@@ -281,7 +645,7 @@ export default function Conversation() {
   /** Ignore model-speed chat_delta while a voice turn is speaking. */
   const voiceActiveRef = useRef(false)
 
-  useComposerRubberBand(threadRef, composeRef)
+  useComposerRubberBand(threadRef, composeEl)
 
   const voiceTurnActive =
     voiceOn &&
@@ -388,22 +752,6 @@ export default function Conversation() {
     }),
   [voiceOn])
 
-  const slashDraft = useMemo(() => readSlashDraft(draft), [draft])
-  const activeSlash = useMemo(
-    () => (slashDraft?.hasSpace || (slashDraft && matchSlash(draft, commands)) ? matchSlash(draft, commands) : null),
-    [slashDraft, draft, commands],
-  )
-  const slashSuggestions = useMemo(() => {
-    if (!slashDraft || slashDraft.hasSpace) return []
-    return filterSlashCommands(commands, slashDraft.token)
-  }, [slashDraft, commands])
-  const showSlashMenu = slashOpen && slashSuggestions.length > 0 && !!slashDraft && !slashDraft.hasSpace
-
-  useEffect(() => {
-    setSlashIndex(0)
-    setSlashOpen(true)
-  }, [slashDraft?.token, slashDraft?.hasSpace])
-
   // A voice turn settles with say_end, which the hub sends only after both
   // sides of the exchange are in its log — chat_done arrives while TTS is
   // still playing, before the reply is logged. Fold the turn into the thread
@@ -483,34 +831,19 @@ export default function Conversation() {
   }, [])
 
   // Scroll the thread pane only — never the page under the composer.
+  // Tokens arriving faster than the display rate each re-run this; without the
+  // cancel they would stack several measure-and-scroll pairs into one frame.
   useEffect(() => {
     const thread = threadRef.current
     if (!thread || !stickRef.current) return
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       thread.scrollTop = thread.scrollHeight
     })
+    return () => cancelAnimationFrame(frame)
   }, [displayLog, sending, liveReply, voiceLine])
 
-  // Grow the composer with its content instead of scrolling a one-line box.
-  useEffect(() => {
-    const el = inputRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  }, [draft])
-
-  function pickSlash(cmd: SlashCmd) {
-    setDraft(`${cmd.slash} `)
-    setSlashOpen(false)
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }
-
-  async function send() {
-    const text = draft.trim()
-    if (!text) return
+  async function send(text: string) {
     const sendSeq = ++sendSeqRef.current
-    setSlashOpen(false)
-    setSendError('')
     // Sending your own message always belongs at the bottom.
     stickRef.current = true
 
@@ -519,14 +852,12 @@ export default function Conversation() {
     if (voiceOn && voice.connected) {
       // A voice turn supersedes any older HTTP turn too.
       setSending(false)
-      setDraft('')
       setPending(pendingEchoFor(log, text))
       voice.sendText(text)
       return
     }
 
     setSending(true)
-    setDraft('')
     setPending(pendingEchoFor(log, text))
     try {
       await api.chat(text)
@@ -535,12 +866,9 @@ export default function Conversation() {
       setOffline(false)
       await refresh()
     } catch {
-      if (sendSeq === sendSeqRef.current) {
-        // Give the newest message back instead of losing it. A superseded
-        // request must never overwrite what the user is typing now.
-        setDraft(text)
-        setSendError(t('talk.sendFailed'))
-      }
+      // Only the newest turn's failure goes back to the composer: a superseded
+      // request must never overwrite what the user is typing now.
+      if (sendSeq === sendSeqRef.current) throw new Error('send failed')
     } finally {
       if (sendSeq === sendSeqRef.current) {
         setPending(null)
@@ -549,40 +877,7 @@ export default function Conversation() {
     }
   }
 
-  function onComposeKey(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (showSlashMenu) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setSlashIndex((i) => (i + 1) % slashSuggestions.length)
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setSlashIndex((i) => (i - 1 + slashSuggestions.length) % slashSuggestions.length)
-        return
-      }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-        const pick = slashSuggestions[clampedSlashIndex]
-        if (pick) {
-          e.preventDefault()
-          pickSlash(pick)
-          return
-        }
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setSlashOpen(false)
-        return
-      }
-    }
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      send()
-    }
-  }
-
   const working = hardState === 'running' || hardState === 'awaiting_confirm'
-  const clampedSlashIndex = Math.min(slashIndex, Math.max(0, slashSuggestions.length - 1))
 
   return (
     <div className={`convo${activityOpen ? ' has-activity' : ''}`}>
@@ -659,39 +954,7 @@ export default function Conversation() {
           ) : (
             <ThreadSkeleton />
           ))}
-        {displayLog.map((m, i) => {
-          const used =
-            m.role === 'user' ? matchSlash(String(m.text || ''), commands) : null
-          return (
-            <article
-              key={`${i}-${m.time}`}
-              className={`convo-msg ${m.role}${used ? ' slash-msg' : ''}`}
-            >
-              <div className="meta">
-                <span className="who">{m.role === 'user' ? t('talk.you') : t('talk.rau')}</span>
-                <span className="time">{m.time}</span>
-              </div>
-              {used ? (
-                <>
-                  <div className="slash-pill">
-                    <span className="slash-pill-mark">/</span>
-                    {used.cmd.name}
-                  </div>
-                  {used.arg ? (
-                    <ChatMarkdown className="slash-arg" text={used.arg} />
-                  ) : (
-                    <p className="slash-empty">{used.cmd.description || t('talk.command')}</p>
-                  )}
-                </>
-              ) : (
-                <ChatMarkdown text={m.text || ''} />
-              )}
-              {m.role !== 'user' && m.turn_id && (
-                <ActivityInspector turnId={String(m.turn_id)} />
-              )}
-            </article>
-          )
-        })}
+        <ThreadMessages log={displayLog} commands={commands} />
         {voiceLine && (
           <article className="convo-msg user is-streaming">
             <div className="meta">
@@ -731,85 +994,20 @@ export default function Conversation() {
       </section>
 
       {mode !== 'space-talk' && (
-      <footer ref={composeRef} className="convo-compose" data-tour="talk-composer">
-        <div className="compose-wrap">
-          <SlashMenu
-            open={showSlashMenu}
-            commands={slashSuggestions}
-            activeIndex={clampedSlashIndex}
-            onHover={setSlashIndex}
-            onPick={pickSlash}
-          />
-          {sendError && (
-            <p className="compose-error" role="alert">
-              {sendError}
-            </p>
-          )}
-          {voiceOn && voice.error && (
-            <p className="compose-error" role="alert">
-              {voice.error}
-            </p>
-          )}
-          {activeSlash && (
-            <div className="compose-slash-chip" aria-live="polite">
-              {activeSlash.cmd.slash}
-              <span>
-                {activeSlash.arg
-                  ? activeSlash.arg.length > 42
-                    ? `${activeSlash.arg.slice(0, 42)}…`
-                    : activeSlash.arg
-                  : activeSlash.cmd.description || t('talk.ready')}
-              </span>
-            </div>
-          )}
-          <div className={`compose-box${slashDraft ? ' is-slash' : ''}`}>
-            <textarea
-              ref={inputRef}
-              rows={1}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={onComposeKey}
-              placeholder={t('talk.placeholder')}
-              aria-label={t('talk.messageLabel')}
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={showSlashMenu}
-              aria-controls="slash-menu-list"
-              aria-activedescendant={showSlashMenu ? `slash-opt-${clampedSlashIndex}` : undefined}
-              autoFocus
-            />
-            <div className="compose-actions">
-              {modeSupportsHyper(mode) && (
-                <HyperToggle
-                  profile={voiceLatency}
-                  setProfile={setVoiceLatency}
-                  disabled={voice.phase !== 'idle'}
-                />
-              )}
-              <PermissionMenu />
-              <button
-                className="send-btn"
-                disabled={!draft.trim()}
-                onClick={send}
-                aria-label={t('talk.send')}
-              >
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M3 10h13M11 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        <p className="compose-hint">
-          {showSlashMenu
-            ? t('talk.hintSlash')
-            : mode === 'talk'
-              ? t('talk.hintTalk')
-              : mode === 'voice'
-                ? t('talk.hintVoice')
-                : t('talk.hintDefault')}
-        </p>
-      </footer>
+        <ConversationComposer
+          boxRef={setComposeEl}
+          commands={commands}
+          mode={mode}
+          voiceLatency={voiceLatency}
+          setVoiceLatency={setVoiceLatency}
+          voicePhase={voice.phase}
+          voiceError={voiceOn ? voice.error : ''}
+          onSend={send}
+          draft={draft}
+          setDraft={setDraft}
+          sendError={sendError}
+          setSendError={setSendError}
+        />
       )}
       </div>
 

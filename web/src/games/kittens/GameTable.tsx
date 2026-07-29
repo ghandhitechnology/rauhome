@@ -579,9 +579,16 @@ export default memo(function GameTable() {
       if (cancelled) return
       const deck = pointOf('deck')
       const his = pointOf('rauHand')
+      // Everything measured before anything is cloned. `runFlight` puts a card
+      // into the flight layer, which dirties layout, so a rect read taken
+      // between two of them is a forced reflow — and a deal is a dozen flights
+      // in one frame. The scales are the same for every card in the run.
+      const deckScale = scaleOf('deck')
+      const mineScale = scaleOf('playerHand')
+      const hisScale = scaleOf('rauHand')
       let slot = 0
       let hisSlot = 0
-      const jobs = order.map((who, i) => {
+      const plan = order.map((who, i) => {
         const delay = flicks[i] ?? i * DEAL_STAGGER_MS
         const mine = who === 'you'
         let to = his
@@ -597,17 +604,20 @@ export default memo(function GameTable() {
             to = pointOf('playerHand')
           }
         }
-        return runFlight(layer, template, deck, to, {
+        return { delay, mine, landing, to }
+      })
+      const jobs = plan.map(({ delay, mine, landing, to }) =>
+        runFlight(layer, template, deck, to, {
           delay,
           spin: mine ? 16 : -12,
-          fromScale: scaleOf('deck'),
-          toScale: scaleOf(mine ? 'playerHand' : 'rauHand'),
+          fromScale: deckScale,
+          toScale: mine ? mineScale : hisScale,
         }).then(() => {
           if (cancelled) return
           const bump = mine ? setDealtCount : setDealtRau
           bump((n) => Math.max(n, landing + 1))
-        })
-      })
+        }),
+      )
       void Promise.all(jobs).then(finish)
     })
 
@@ -639,25 +649,30 @@ export default memo(function GameTable() {
     const yours = requests.filter((r) => r.to === 'playerHand')
     const elsewhere = requests.filter((r) => r.to !== 'playerHand')
 
-    elsewhere.forEach((req, i) => {
-      void runFlight(layer, template, pointOf(req.from), pointOf(req.to), {
+    // Measured in one pass, flown in the next: `runFlight` appends the card
+    // into the flight layer, so a rect read taken between two of them forces a
+    // reflow. Splitting the two costs nothing — the stagger is a `delay` on
+    // each animation, not on when it is started.
+    const elsewhereFlights = elsewhere.map((req, i) => ({
+      from: pointOf(req.from),
+      to: pointOf(req.to),
+      opts: {
         delay: i * 80,
         spin: req.to === 'discard' ? 18 : -10,
         fromScale: scaleOf(req.from),
         toScale: scaleOf(req.to),
-      })
-    })
+      },
+    }))
+    for (const f of elsewhereFlights) void runFlight(layer, template, f.from, f.to, f.opts)
 
     if (yours.length === 0) return
     if (slots.length === 0 || reducedMotion()) {
-      yours.forEach((req, i) => {
-        void runFlight(layer, template, pointOf(req.from), pointOf('playerHand'), {
-          delay: i * 80,
-          spin: -10,
-          fromScale: scaleOf(req.from),
-          toScale: 1,
-        })
-      })
+      const home = pointOf('playerHand')
+      const direct = yours.map((req, i) => ({
+        from: pointOf(req.from),
+        opts: { delay: i * 80, spin: -10, fromScale: scaleOf(req.from), toScale: 1 },
+      }))
+      for (const f of direct) void runFlight(layer, template, f.from, home, f.opts)
       return
     }
 
@@ -668,20 +683,22 @@ export default memo(function GameTable() {
     // the slot cannot be measured until it is roughly the size it will end up.
     const timer = setTimeout(() => {
       if (cancelled) return
-      const jobs = yours.map((req, i) => {
+      // Same two passes as above, and it matters more here: this runs while
+      // the gap the slots opened is still animating, so every rect read is
+      // already paying for a layout it should only pay for once.
+      const plan = yours.map((req, i) => {
         const slot = slots[i] ?? slots[slots.length - 1]
         const el = cardEls.current.get(slot)
         const rect = el?.getBoundingClientRect()
-        const to = rect
-          ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
-          : pointOf('playerHand')
-        return runFlight(layer, template, pointOf(req.from), to, {
-          delay: i * 80,
-          spin: -10,
-          fromScale: scaleOf(req.from),
-          toScale: 1,
-        })
+        return {
+          from: pointOf(req.from),
+          to: rect
+            ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+            : pointOf('playerHand'),
+          opts: { delay: i * 80, spin: -10, fromScale: scaleOf(req.from), toScale: 1 },
+        }
       })
+      const jobs = plan.map((f) => runFlight(layer, template, f.from, f.to, f.opts))
       void Promise.all(jobs).then(() => {
         if (!cancelled) setArriving([])
       })

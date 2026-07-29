@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type ActivitySpan, type AgentStep, type Job } from '../api'
 import {
   activityFor,
@@ -11,6 +11,101 @@ import { useLocale } from '../i18n'
 import './ActivityInspector.css'
 
 const ACTIVE = new Set(['queued', 'running', 'awaiting_confirm'])
+const NO_SPANS: ActivitySpan[] = []
+
+/**
+ * The store republishes one array of every retained span on each activity
+ * event, and a thread mounts one inspector per assistant turn — filtering the
+ * whole snapshot inside each of them is the same scan run dozens of times per
+ * event. Bucket a snapshot by turn once and let every inspector read its slice.
+ */
+const turnBuckets = new WeakMap<ActivitySpan[], Map<string, ActivitySpan[]>>()
+
+function spansForTurn(all: ActivitySpan[], turnId: string) {
+  let buckets = turnBuckets.get(all)
+  if (!buckets) {
+    buckets = new Map<string, ActivitySpan[]>()
+    for (const span of all) {
+      if (!span.turn_id) continue
+      const bucket = buckets.get(span.turn_id)
+      if (bucket) bucket.push(span)
+      else buckets.set(span.turn_id, [span])
+    }
+    turnBuckets.set(all, buckets)
+  }
+  return buckets.get(turnId) || NO_SPANS
+}
+
+/**
+ * A backfill is one `activity?limit=500` request whose result is merged and
+ * republished to every subscriber, and a thread mounts one inspector per
+ * assistant turn — so a 40-turn thread wants 40 of them at the same instant,
+ * hardest of all the moment the rail is switched on. Run them one at a time:
+ * the store settles between requests instead of taking forty merges in a
+ * burst, and while the rail is off the queue simply waits.
+ */
+const backfillQueue: Array<{ key: string; run: () => Promise<void> }> = []
+let draining = false
+let unwatchVisible: (() => void) | null = null
+
+function enqueueBackfill(key: string, run: () => Promise<void>) {
+  if (backfillQueue.some((task) => task.key === key)) return
+  backfillQueue.push({ key, run })
+  void drainBackfill()
+}
+
+async function drainBackfill() {
+  if (draining) return
+  draining = true
+  try {
+    while (backfillQueue.length > 0) {
+      if (!activityStore.visible()) {
+        // Nothing is on screen to fill in; hold the rest until the rail returns.
+        watchForVisible()
+        return
+      }
+      // Newest turn first: it is the one at the bottom of the thread, where
+      // the reader is, so the queue never makes them wait on ancient turns.
+      const task = backfillQueue.pop()
+      try {
+        await task?.run()
+      } catch {
+        // One turn failing to catch up must not strand the rest of the queue.
+      }
+    }
+  } finally {
+    draining = false
+  }
+}
+
+function watchForVisible() {
+  if (unwatchVisible) return
+  unwatchVisible = activityStore.subscribe(() => {
+    if (!activityStore.visible()) return
+    unwatchVisible?.()
+    unwatchVisible = null
+    void drainBackfill()
+  })
+}
+
+/**
+ * A publish usually touches one turn, but every inspector recomputes its slice.
+ * Hand back the previous array when the contents are identical so the timeline
+ * below can skip a re-render instead of rebuilding an untouched list.
+ */
+function useStableSpans(next: ActivitySpan[]) {
+  const held = useRef(next)
+  const prior = held.current
+  if (
+    prior !== next &&
+    prior.length === next.length &&
+    prior.every((span, index) => span === next[index])
+  ) {
+    return prior
+  }
+  held.current = next
+  return next
+}
 
 export function ActivityChip({
   open,
@@ -23,7 +118,10 @@ export function ActivityChip({
 }) {
   const { t } = useLocale()
   const { all, visible } = useActivity()
-  const active = all.filter((span) => ACTIVE.has(span.status))
+  // The badge is a number, and this chip re-renders on every activity event —
+  // count the snapshot rather than copying up to a couple of thousand spans.
+  let active = 0
+  for (const span of all) if (ACTIVE.has(span.status)) active += 1
   return (
     <button
       type="button"
@@ -39,8 +137,8 @@ export function ActivityChip({
       {t('activity.label')}
       {!visible ? (
         <span className="activity-off">{t('activity.off')}</span>
-      ) : active.length > 0 ? (
-        <span className="activity-badge">{active.length}</span>
+      ) : active > 0 ? (
+        <span className="activity-badge">{active}</span>
       ) : null}
     </button>
   )
@@ -195,7 +293,13 @@ function AgentWorkTree() {
   )
 }
 
-function ActivityTimeline({ items, label }: { items: ActivitySpan[]; label?: string }) {
+const ActivityTimeline = memo(function ActivityTimeline({
+  items,
+  label,
+}: {
+  items: ActivitySpan[]
+  label?: string
+}) {
   const { t } = useLocale()
   const listRef = useRef<HTMLOListElement>(null)
   /** Stick to the newest edge (top) unless the user scrolls down into history. */
@@ -255,7 +359,7 @@ function ActivityTimeline({ items, label }: { items: ActivitySpan[]; label?: str
       ))}
     </ol>
   )
-}
+})
 
 export default function ActivityInspector({
   turnId,
@@ -281,46 +385,77 @@ export default function ActivityInspector({
   const [agent, setAgent] = useState<ActivityAgent>('main')
   const sidebar = variant === 'sidebar'
 
+  // Nothing renders while the rail is off, so the backfill — and the store
+  // churn every response causes — waits until it is switched back on. Waiting
+  // on `visible` would otherwise ask again on every toggle, so each inspector
+  // remembers what it has already asked for: one request per turn per mount,
+  // as before, queued so a long thread does not send them all at once.
+  const askedTurn = useRef('')
+  const askedJob = useRef('')
   useEffect(() => {
-    if (turnId) void activityStore.ensureTurn(turnId)
-  }, [turnId])
+    if (!turnId || !visible || askedTurn.current === turnId) return
+    askedTurn.current = turnId
+    enqueueBackfill(`turn:${turnId}`, () => activityStore.ensureTurn(turnId))
+  }, [turnId, visible])
   useEffect(() => {
-    if (jobId) void activityStore.ensureJob(jobId)
-  }, [jobId])
+    if (!jobId || !visible || askedJob.current === jobId) return
+    askedJob.current = jobId
+    enqueueBackfill(`job:${jobId}`, () => activityStore.ensureJob(jobId))
+  }, [jobId, visible])
 
-  const items = useMemo(() => {
-    const filtered = activityFor(all, {
-      turnId,
-      jobId,
-      global,
-      // Per-turn activity belongs beside the main reply. Deep Work has its
-      // own selectable panel; a job-specific inspector remains job-only.
-      agent: global ? agent : jobId ? 'deep-work' : 'main',
-    })
+  const filtered = useMemo(() => {
+    // Per-turn activity belongs beside the main reply. Deep Work has its
+    // own selectable panel; a job-specific inspector remains job-only.
+    const source: ActivityAgent = global ? agent : jobId ? 'deep-work' : 'main'
+    const correlated = turnId
+      ? spansForTurn(all, turnId).filter((span) =>
+          source === 'main' ? !span.job_id : !!span.job_id,
+        )
+      : activityFor(all, { turnId, jobId, global, agent: source })
     // Newest first — keep the latest window, then reverse for the rail.
-    return filtered.slice(-160).reverse()
+    return correlated.slice(-160).reverse()
   }, [agent, all, global, jobId, turnId])
+  const items = useStableSpans(filtered)
 
   const globalCounts = useMemo(() => {
     if (!global) return { main: 0, deepWork: 0 }
-    return {
-      main: activityFor(all, { global: true, agent: 'main' }).length,
-      deepWork: activityFor(all, { global: true, agent: 'deep-work' }).length,
+    let main = 0
+    let deepWork = 0
+    for (const span of all) {
+      if (span.job_id) deepWork += 1
+      else main += 1
     }
+    return { main, deepWork }
   }, [all, global])
 
   if (!visible) return null
   if (!sidebar && items.length === 0) return null
 
-  const active = items.filter((item) => ACTIVE.has(item.status))
-  const tools = items.filter((item) => item.kind === 'tool').length
-  const jobs = new Set(items.map((item) => item.job_id).filter(Boolean)).size
-  const failed = items.some((item) => item.status === 'failed')
-  const done = active.length === 0 && items.some((item) => item.ended)
+  // The header wants four counts and the leading active span; every publish
+  // re-runs this in every mounted inspector, so gather them in one walk
+  // instead of five passes and three throwaway arrays.
+  let activeCount = 0
+  let leadingActive: ActivitySpan | undefined
+  let tools = 0
+  let failed = false
+  let anyEnded = false
+  const jobIds = new Set<string>()
+  for (const item of items) {
+    if (ACTIVE.has(item.status)) {
+      activeCount += 1
+      if (!leadingActive) leadingActive = item
+    }
+    if (item.kind === 'tool') tools += 1
+    if (item.job_id) jobIds.add(item.job_id)
+    if (item.status === 'failed') failed = true
+    if (item.ended) anyEnded = true
+  }
+  const jobs = jobIds.size
+  const done = activeCount === 0 && anyEnded
   const label =
     items.length === 0
       ? t('activity.label')
-      : active[0]?.label ||
+      : leadingActive?.label ||
         (failed
           ? t('activity.failed')
           : done
@@ -424,7 +559,7 @@ export default function ActivityInspector({
       <section className={`activity-inspector activity-sidebar ${className}`}>
         <header className="activity-sidebar-head">
           <div className="activity-sidebar-title">
-            <span className={`activity-state ${failed ? 'failed' : active.length ? 'active' : 'done'}`} />
+            <span className={`activity-state ${failed ? 'failed' : activeCount ? 'active' : 'done'}`} />
             <div>
               <strong>{label}</strong>
               {counts ? <em>{counts}</em> : null}
@@ -448,7 +583,7 @@ export default function ActivityInspector({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className={`activity-state ${failed ? 'failed' : active.length ? 'active' : 'done'}`} />
+        <span className={`activity-state ${failed ? 'failed' : activeCount ? 'active' : 'done'}`} />
         <span className="activity-summary-label">{label}</span>
         <span className="activity-counts">{counts}</span>
         <span className="activity-chevron" aria-hidden>⌄</span>
