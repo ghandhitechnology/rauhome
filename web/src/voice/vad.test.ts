@@ -42,6 +42,40 @@ describe('Vad', () => {
     expect(vad.push(0.1, 20)).toBe('start')
   })
 
+  it('never lets a click start or prolong an utterance', () => {
+    const vad = new Vad(options)
+
+    // Even repeated high-energy impulse frames are not voice evidence.
+    for (let elapsed = 0; elapsed < 160; elapsed += 20) {
+      expect(vad.push(0.9, 20, true)).toBeNull()
+    }
+    expect(vad.speaking).toBe(false)
+
+    // Establish real speech, then begin the endpoint silence.
+    for (let elapsed = 0; elapsed < 80; elapsed += 20) {
+      vad.push(0.1, 20)
+    }
+    expect(vad.speaking).toBe(true)
+    for (let elapsed = 0; elapsed < 60; elapsed += 20) {
+      expect(vad.push(0, 20)).toBeNull()
+    }
+
+    // A click inside the tail counts as another quiet frame; it does not reset
+    // the clock and make Rau wait through a second full hangover.
+    expect(vad.push(0.9, 20, true)).toBeNull()
+    expect(vad.push(0, 20)).toBe('end')
+  })
+
+  it('uses a shorter production endpoint without clipping a normal pause', () => {
+    const vad = new Vad()
+    for (let elapsed = 0; elapsed < 160; elapsed += 20) vad.push(0.04, 20)
+    expect(vad.speaking).toBe(true)
+    for (let elapsed = 0; elapsed < 340; elapsed += 20) {
+      expect(vad.push(0, 20)).toBeNull()
+    }
+    expect(vad.push(0, 20)).toBe('end')
+  })
+
   it('waits through the hangover before ending an utterance', () => {
     const vad = new Vad(options)
     vad.push(0.1, 20)

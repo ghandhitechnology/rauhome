@@ -9,8 +9,18 @@
  * still in flight cannot come back with a live device nobody is listening to.
  */
 
-/** One 20ms frame of PCM16 @16k, plus the smoothed input level. */
-export type FrameHandler = (pcm: ArrayBuffer, level: number) => void
+/**
+ * One 20ms frame of PCM16 @16k.
+ *
+ * `level` is smoothed for animation. `speechLevel` is the unsmoothed energy
+ * VAD must use, and `transient` marks click-like impulse frames.
+ */
+export type FrameHandler = (
+  pcm: ArrayBuffer,
+  level: number,
+  speechLevel: number,
+  transient: boolean,
+) => void
 
 /** 320 samples at 16 kHz — the capture worklet's frame size. */
 export const FRAME_MS = 20
@@ -61,8 +71,22 @@ export class MicCapture {
       if (ctx.state === 'suspended') await ctx.resume()
 
       const node = new AudioWorkletNode(ctx, 'rau-capture', { channelCount: 1 })
-      node.port.onmessage = (e: MessageEvent<{ pcm: ArrayBuffer; level: number }>) => {
-        this.handler?.(e.data.pcm, e.data.level)
+      node.port.onmessage = (
+        e: MessageEvent<{
+          pcm: ArrayBuffer
+          level: number
+          speechLevel?: number
+          transient?: boolean
+        }>,
+      ) => {
+        // The fallbacks keep a newly built UI compatible with a cached
+        // worklet for the few milliseconds before a hard refresh replaces it.
+        this.handler?.(
+          e.data.pcm,
+          e.data.level,
+          e.data.speechLevel ?? e.data.level,
+          e.data.transient === true,
+        )
       }
       ctx.createMediaStreamSource(stream).connect(node)
 

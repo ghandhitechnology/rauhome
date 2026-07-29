@@ -272,7 +272,7 @@ export const useVoiceSession = ({
     window.addEventListener('keyup', onPushKeyUp, { capture: true })
     window.addEventListener('blur', onPushBlur)
 
-    capture.onFrame((pcm, level) => {
+    capture.onFrame((pcm, level, speechLevel, transient) => {
       micRef.current = level
       if (!ws || ws.readyState !== WebSocket.OPEN) return
 
@@ -288,7 +288,7 @@ export const useVoiceSession = ({
         return
       }
 
-      const event = vad.push(level, FRAME_MS)
+      const event = vad.push(speechLevel, FRAME_MS, transient)
       if (vad.voicePresent) lastVoiceAtRef.current = performance.now()
       held.push(pcm)
       if (!bargingRef.current) {

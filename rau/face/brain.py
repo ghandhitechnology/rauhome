@@ -262,6 +262,10 @@ MAX_FACE_MODEL_ROUNDS = MAX_FACE_TOOL_CALLS + 1
 #: During a long spoken run, provide an evidence-based update at this cadence
 #: if the model itself has not said anything useful between tool rounds.
 VOICE_CHECKIN_EVERY_CALLS = 4
+#: These are internal/embodied actions, not work the user needs narrated.
+#: Their activity remains visible in the inspector, but no generated progress
+#: sentence is allowed onto the voice token stream.
+VOICE_SILENT_TOOL_NAMES = frozenset({"body_choreography"})
 #: Voice turns keep a leaner diary excerpt so prefill stays short.
 VOICE_MEMORY_CHARS = 1000
 CHAT_MEMORY_CHARS = 2500
@@ -1799,6 +1803,7 @@ def chat_streaming(
             # model round available to supply its own progress sentence.
             if (
                 voice
+                and name not in VOICE_SILENT_TOOL_NAMES
                 and trace.tool_count - last_voice_checkin_at
                 >= VOICE_CHECKIN_EVERY_CALLS
                 and not stop()
@@ -1920,17 +1925,25 @@ def chat_streaming(
                         assistant_content: Optional[str] = (
                             "".join(chunks) if chunks and not result.content else None
                         )
+                        checkin_call = next(
+                            (
+                                call
+                                for call in result.tool_calls
+                                if call.name not in VOICE_SILENT_TOOL_NAMES
+                            ),
+                            None,
+                        )
                         round_spoke = bool("".join(chunks).strip())
                         if round_spoke:
                             last_voice_checkin_at = trace.tool_count
-                        elif voice and (
+                        elif voice and checkin_call is not None and (
                             trace.tool_count == 0
                             or trace.tool_count - last_voice_checkin_at
                             >= VOICE_CHECKIN_EVERY_CALLS
                         ):
                             checkin = _voice_tool_checkin(
                                 trace.tool_count,
-                                result.tool_calls[0].name,
+                                checkin_call.name,
                             )
                             assistant_content = checkin
                             heard.append(checkin + " ")

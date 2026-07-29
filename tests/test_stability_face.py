@@ -207,6 +207,26 @@ class BrainTurnTests(unittest.TestCase):
         self.assertIn("I’ve completed 4 checks", spoken)
         self.assertEqual(str(reply).split()[-2:], ["I’m", "done."])
 
+    def test_body_choreography_never_becomes_a_spoken_checkin(self) -> None:
+        provider = ScriptedProvider(
+            [
+                tool_round("move_1", "body_choreography", ""),
+                {"deltas": ["Here I am."], "content": "Here I am."},
+            ]
+        )
+        self.install(provider)
+        tokens: List[str] = []
+
+        reply = brain.chat_streaming(
+            "wave hello",
+            on_token=tokens.append,
+            voice=True,
+        )
+
+        self.assertEqual("".join(tokens), "Here I am.")
+        self.assertEqual(str(reply), "Here I am.")
+        self.assertNotIn("planning movement", str(reply).lower())
+
     def test_observable_summary_exists_without_provider_reasoning(self) -> None:
         provider = ScriptedProvider(
             [{"deltas": ["Direct answer."], "content": "Direct answer."}]

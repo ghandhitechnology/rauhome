@@ -10,7 +10,10 @@ class FakeGain {
 }
 
 class FakeCaptureNode {
-  port = { onmessage: null, postMessage: () => {} }
+  port: {
+    onmessage: ((event: MessageEvent<any>) => void) | null
+    postMessage: () => void
+  } = { onmessage: null, postMessage: () => {} }
   connect(target: unknown) {
     return target
   }
@@ -64,6 +67,33 @@ describe('MicCapture', () => {
     // bricking voice until the mode is toggled.
     await capture.start()
     expect(attempts).toBe(2)
+    await capture.stop()
+  })
+
+  it('keeps smoothed display level separate from raw VAD evidence', async () => {
+    vi.stubGlobal('navigator', {
+      mediaDevices: {
+        getUserMedia: () => Promise.resolve({ getTracks: () => [] }),
+      },
+    })
+    vi.stubGlobal('AudioContext', function () {
+      return new FakeCaptureContext()
+    })
+    const node = new FakeCaptureNode()
+    vi.stubGlobal('AudioWorkletNode', function () {
+      return node
+    })
+
+    const capture = new MicCapture()
+    const received: unknown[][] = []
+    capture.onFrame((...frame) => received.push(frame))
+    await capture.start()
+
+    const pcm = new ArrayBuffer(640)
+    node.port.onmessage?.({
+      data: { pcm, level: 0.4, speechLevel: 0.015, transient: true },
+    } as MessageEvent)
+    expect(received).toEqual([[pcm, 0.4, 0.015, true]])
     await capture.stop()
   })
 })
