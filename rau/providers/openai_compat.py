@@ -635,6 +635,24 @@ PROVIDERS: Dict[str, ChatProvider] = {
         "https://api.openai.com/v1",
         "OPENAI_API_KEY",
     ),
+    # Z.AI GLM Coding Plan — OpenAI-compatible coding endpoint (not pay-as-you-go)
+    "zai_code": OpenAICompatProvider(
+        "zai_code",
+        "https://api.z.ai/api/coding/paas/v4",
+        "ZAI_API_KEY",
+    ),
+    # xAI Grok Console — OpenAI-compatible
+    "xai": OpenAICompatProvider(
+        "xai",
+        "https://api.x.ai/v1",
+        "XAI_API_KEY",
+    ),
+    # Google Gemini — OpenAI-compatible shim
+    "gemini": OpenAICompatProvider(
+        "gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "GEMINI_API_KEY",
+    ),
 }
 
 # Kimi Coding Plan (membership) — Anthropic-compatible, not Moonshot pay-as-you-go
@@ -648,3 +666,16 @@ PROVIDERS["kimi_code"] = AnthropicCompatProvider(
 # Friendly aliases for the UI / config
 PROVIDERS["kimi-code"] = PROVIDERS["kimi_code"]
 PROVIDERS["kimi_coding"] = PROVIDERS["kimi_code"]
+
+# Claude Console — direct Anthropic Messages API
+PROVIDERS["anthropic"] = AnthropicCompatProvider(
+    "anthropic",
+    "https://api.anthropic.com",
+    "ANTHROPIC_API_KEY",
+)
+PROVIDERS["claude"] = PROVIDERS["anthropic"]
+
+# Friendly aliases for Z.AI / Grok / Gemini
+PROVIDERS["zai"] = PROVIDERS["zai_code"]
+PROVIDERS["grok"] = PROVIDERS["xai"]
+PROVIDERS["google"] = PROVIDERS["gemini"]

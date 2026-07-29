@@ -138,9 +138,67 @@
   }
 }
 
+.tour-finale {
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  pointer-events: auto;
+  background: rgba(6, 6, 9, 0.78);
+}
+
+.tour-congrats {
+  position: relative;
+  left: auto;
+  top: auto;
+  width: min(380px, calc(100vw - 2rem));
+  text-align: center;
+  padding: 1.55rem 1.35rem 1.35rem;
+}
+
+.tour-congrats-art {
+  margin: 0 auto 0.35rem;
+  width: min(210px, 62vw);
+}
+
+.tour-congrats-art img {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 14px 28px rgba(240, 168, 60, 0.22));
+  animation: tour-congrats-bob 3.4s var(--ease-in-out) infinite;
+}
+
+.tour-congrats h2 {
+  margin-top: 0.55rem;
+  font-size: clamp(1.7rem, 5vw, 2.15rem);
+  line-height: 1.1;
+}
+
+.tour-congrats p {
+  max-width: 32ch;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.tour-congrats-actions {
+  justify-content: center;
+  margin-top: 1.15rem;
+}
+
+@keyframes tour-congrats-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-0.6deg);
+  }
+  50% {
+    transform: translateY(-7px) rotate(0.8deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tour-orbit,
-  .tour-card {
+  .tour-card,
+  .tour-congrats-art img {
     animation: none;
   }
 }
@@ -148,6 +206,10 @@
 @media (max-width: 560px) {
   .tour-card {
     padding: 1rem;
+  }
+
+  .tour-congrats {
+    padding: 1.2rem 1rem 1.1rem;
   }
 
   .tour-card h2 {

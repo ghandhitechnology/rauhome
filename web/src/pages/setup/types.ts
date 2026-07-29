@@ -76,4 +76,14 @@ export const EMPTY_DRAFT: Draft = {
 }
 
 /** Chat-capable auth slots — excludes voice and app-actions providers. */
-export const CHAT_AUTH_IDS = ['openrouter', 'deepseek', 'kimi', 'kimi_code', 'codex']
+export const CHAT_AUTH_IDS = [
+  'openrouter',
+  'codex',
+  'anthropic',
+  'xai',
+  'gemini',
+  'deepseek',
+  'zai_code',
+  'kimi',
+  'kimi_code',
+]

@@ -271,19 +271,19 @@ export default function Setup({
   if (prelude === 'story') {
     const pages = [
       {
-        image: '/onboarding/dreaming-colored-pencil.webp',
+        image: '/onboarding/presence-colored-pencil.webp',
         eyebrow: t('intro.eyebrow.1'),
         title: t('intro.title.1'),
         body: t('intro.body.1'),
       },
       {
-        image: '/onboarding/deep-work-colored-pencil.webp',
+        image: '/onboarding/dreaming-colored-pencil.webp',
         eyebrow: t('intro.eyebrow.2'),
         title: t('intro.title.2'),
         body: t('intro.body.2'),
       },
       {
-        image: '/onboarding/presence-colored-pencil.webp',
+        image: '/onboarding/deep-work-colored-pencil.webp',
         eyebrow: t('intro.eyebrow.3'),
         title: t('intro.title.3'),
         body: t('intro.body.3'),

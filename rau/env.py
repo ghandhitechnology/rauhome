@@ -21,6 +21,34 @@ AUTH_SLOTS: List[Dict[str, str]] = [
         "help": "Unified router for many models. Create a key, paste it here.",
     },
     {
+        "id": "codex",
+        "label": "OpenAI",
+        "env": "OPENAI_API_KEY",
+        "docs_url": "https://platform.openai.com/api-keys",
+        "help": "OpenAI API key (Codex / GPT providers).",
+    },
+    {
+        "id": "anthropic",
+        "label": "Anthropic",
+        "env": "ANTHROPIC_API_KEY",
+        "docs_url": "https://platform.claude.com/settings/keys",
+        "help": "Anthropic Claude Console API key (sk-ant-…). Direct Messages API.",
+    },
+    {
+        "id": "xai",
+        "label": "xAI",
+        "env": "XAI_API_KEY",
+        "docs_url": "https://console.x.ai/team/default/api-keys",
+        "help": "xAI console API key (xai-…). OpenAI-compatible at api.x.ai.",
+    },
+    {
+        "id": "gemini",
+        "label": "Google AI",
+        "env": "GEMINI_API_KEY",
+        "docs_url": "https://aistudio.google.com/apikey",
+        "help": "Google AI Studio / Gemini API key.",
+    },
+    {
         "id": "deepseek",
         "label": "DeepSeek",
         "env": "DEEPSEEK_API_KEY",
@@ -28,26 +56,27 @@ AUTH_SLOTS: List[Dict[str, str]] = [
         "help": "DeepSeek chat API key.",
     },
     {
+        "id": "zai_code",
+        "label": "Z.AI",
+        "env": "ZAI_API_KEY",
+        "docs_url": "https://z.ai/manage-apikey/apikey-list",
+        "connect_url": "https://z.ai/",
+        "help": "Z.AI GLM Coding Plan key. Uses the coding endpoint (not pay-as-you-go).",
+    },
+    {
         "id": "kimi",
-        "label": "Kimi / Moonshot",
+        "label": "Kimi",
         "env": "KIMI_API_KEY",
         "docs_url": "https://platform.moonshot.ai/console/api-keys",
         "help": "Moonshot Kimi Platform (pay-as-you-go). Base: api.moonshot.ai",
     },
     {
         "id": "kimi_code",
-        "label": "Kimi Coding Plan",
+        "label": "Kimi Code",
         "env": "KIMI_CODING_API_KEY",
         "docs_url": "https://www.kimi.com/code/docs/en/",
         "connect_url": "https://www.kimi.com/code",
         "help": "Kimi Code membership key (separate from Moonshot). Models: kimi-for-coding, k3, k3-256k.",
-    },
-    {
-        "id": "codex",
-        "label": "OpenAI / Codex",
-        "env": "OPENAI_API_KEY",
-        "docs_url": "https://platform.openai.com/api-keys",
-        "help": "OpenAI API key (Codex / GPT providers).",
     },
     {
         "id": "elevenlabs",
@@ -92,6 +121,7 @@ AUTH_SLOTS: List[Dict[str, str]] = [
         "connect_url": "https://connect.composio.dev",
         "help": "App actions via MCP. Save the API key, then open Connect to authorize apps.",
     },
+
 ]
 
 

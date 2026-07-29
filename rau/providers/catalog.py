@@ -17,6 +17,14 @@ PROVIDER_AUTH: Dict[str, str] = {
     "kimi_code": "kimi_code",
     "codex": "codex",
     "openai": "codex",
+    "zai_code": "zai_code",
+    "zai": "zai_code",
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    "xai": "xai",
+    "grok": "xai",
+    "gemini": "gemini",
+    "google": "gemini",
 }
 
 # provider id -> UI metadata + suggested models
@@ -87,77 +95,9 @@ CATALOG: Dict[str, Dict[str, Any]] = {
             },
         ],
     },
-    "deepseek": {
-        "label": "DeepSeek",
-        "blurb": "Direct DeepSeek API. Legacy deepseek-chat retired 2026-07-24.",
-        "models": [
-            {
-                "id": "deepseek-v4-flash",
-                "label": "DeepSeek V4 Flash",
-                "note": "default; set effort for thinking",
-            },
-            {
-                "id": "deepseek-v4-pro",
-                "label": "DeepSeek V4 Pro",
-                "note": "harder reasoning / coding",
-            },
-        ],
-    },
-    "kimi": {
-        "label": "Kimi / Moonshot",
-        "blurb": "Moonshot pay-as-you-go platform (api.moonshot.ai).",
-        "models": [
-            {
-                "id": "kimi-k3",
-                "label": "Kimi K3",
-                "note": "2.8T MoE; 1M context; thinking always on",
-            },
-            {
-                "id": "kimi-k2.7-code",
-                "label": "Kimi K2.7 Code",
-                "note": "coding specialist",
-            },
-            {
-                "id": "kimi-k2.6",
-                "label": "Kimi K2.6",
-                "note": "prior open frontier",
-            },
-            {
-                "id": "kimi-k2-thinking",
-                "label": "Kimi K2 Thinking",
-                "note": "extended reasoning",
-            },
-        ],
-    },
-    "kimi_code": {
-        "label": "Kimi Coding Plan",
-        "blurb": "Membership plan on api.kimi.com/coding (Anthropic-compatible).",
-        "models": [
-            {
-                "id": "k3",
-                "label": "k3",
-                "note": "Kimi K3 via Coding Plan; up to 1M ctx",
-            },
-            {
-                "id": "k3-256k",
-                "label": "k3-256k",
-                "note": "same quality, less quota than k3",
-            },
-            {
-                "id": "kimi-for-coding",
-                "label": "kimi-for-coding",
-                "note": "K2.7 Code — all members",
-            },
-            {
-                "id": "kimi-for-coding-highspeed",
-                "label": "kimi-for-coding-highspeed",
-                "note": "Allegretto+; ~5–6× faster",
-            },
-        ],
-    },
     "codex": {
-        "label": "OpenAI / Codex",
-        "blurb": "Direct OpenAI API. GPT-5.6 is the Codex model (no separate -codex id).",
+        "label": "OpenAI",
+        "blurb": "OpenAI API: Use models like GPT-5.6 sol, terra, luna, or whisper",
         "models": [
             {
                 "id": "gpt-5.6-sol",
@@ -207,6 +147,163 @@ CATALOG: Dict[str, Dict[str, Any]] = {
             },
         ],
     },
+    "anthropic": {
+        "label": "Anthropic",
+        "blurb": "Direct Anthropic API from platform.claude.com. Best Claude quality without OpenRouter.",
+        "models": [
+            {
+                "id": "claude-fable-5",
+                "label": "Claude Fable 5",
+                "note": "top Claude for hard coding",
+            },
+            {
+                "id": "claude-opus-5",
+                "label": "Claude Opus 5",
+                "note": "frontier agentic default",
+            },
+            {
+                "id": "claude-sonnet-5",
+                "label": "Claude Sonnet 5",
+                "note": "writing + instruction following",
+            },
+            {
+                "id": "claude-haiku-4-5",
+                "label": "Claude Haiku 4.5",
+                "note": "fast face pick",
+            },
+        ],
+    },
+    "xai": {
+        "label": "xAI",
+        "blurb": "xAI API from console.x.ai. OpenAI-compatible; strong realtime / coding.",
+        "models": [
+            {
+                "id": "grok-4.5",
+                "label": "Grok 4.5",
+                "note": "flagship; coding + chat",
+            },
+            {
+                "id": "grok-4.3",
+                "label": "Grok 4.3",
+                "note": "1M context value tier",
+            },
+            {
+                "id": "grok-4.20",
+                "label": "Grok 4.20",
+                "note": "reasoning alias",
+            },
+        ],
+    },
+    "gemini": {
+        "label": "Google AI",
+        "blurb": "Google AI Studio key. OpenAI-compatible Gemini endpoint.",
+        "models": [
+            {
+                "id": "gemini-3.1-pro-preview",
+                "label": "Gemini 3.1 Pro",
+                "note": "multimodal, huge context",
+            },
+            {
+                "id": "gemini-3.6-flash",
+                "label": "Gemini 3.6 Flash",
+                "note": "frontier price/perf; face pick",
+            },
+        ],
+    },    "deepseek": {
+        "label": "DeepSeek",
+        "blurb": "Ultra cheap, strong and fast models: Deepseek v4 flash and pro. Best when you are on a budget.",
+        "models": [
+            {
+                "id": "deepseek-v4-flash",
+                "label": "DeepSeek V4 Flash",
+                "note": "default; set effort for thinking",
+            },
+            {
+                "id": "deepseek-v4-pro",
+                "label": "DeepSeek V4 Pro",
+                "note": "harder reasoning / coding",
+            },
+        ],
+    },
+    "zai_code": {
+        "label": "Z.AI",
+        "blurb": "GLM membership on api.z.ai coding endpoint. Paste a Coding Plan key, not pay-as-you-go.",
+        "models": [
+            {
+                "id": "glm-5.2",
+                "label": "GLM-5.2",
+                "note": "flagship; up to 1M ctx",
+            },
+            {
+                "id": "glm-5-turbo",
+                "label": "GLM-5 Turbo",
+                "note": "faster GLM-5 tier",
+            },
+            {
+                "id": "glm-4.7",
+                "label": "GLM-4.7",
+                "note": "lighter quota burn",
+            },
+            {
+                "id": "glm-4.5-air",
+                "label": "GLM-4.5 Air",
+                "note": "cheap / fast",
+            },
+        ],
+    },
+    "kimi": {
+        "label": "Kimi",
+        "blurb": "Caution: Kimi k3 isn't recommended; too slow for continuous talking. Use it for deep research subagents or dreaming.",
+        "models": [
+            {
+                "id": "kimi-k3",
+                "label": "Kimi K3",
+                "note": "2.8T MoE; 1M context; thinking always on",
+            },
+            {
+                "id": "kimi-k2.7-code",
+                "label": "Kimi K2.7 Code",
+                "note": "coding specialist",
+            },
+            {
+                "id": "kimi-k2.6",
+                "label": "Kimi K2.6",
+                "note": "prior open frontier",
+            },
+            {
+                "id": "kimi-k2-thinking",
+                "label": "Kimi K2 Thinking",
+                "note": "extended reasoning",
+            },
+        ],
+    },
+    "kimi_code": {
+        "label": "Kimi Code",
+        "blurb": "Membership plan on api.kimi.com/coding (Anthropic-compatible).",
+        "models": [
+            {
+                "id": "k3",
+                "label": "k3",
+                "note": "Kimi K3 via Coding Plan; up to 1M ctx",
+            },
+            {
+                "id": "k3-256k",
+                "label": "k3-256k",
+                "note": "same quality, less quota than k3",
+            },
+            {
+                "id": "kimi-for-coding",
+                "label": "kimi-for-coding",
+                "note": "K2.7 Code — all members",
+            },
+            {
+                "id": "kimi-for-coding-highspeed",
+                "label": "kimi-for-coding-highspeed",
+                "note": "Allegretto+; ~5–6× faster",
+            },
+        ],
+    },
+
 }
 
 # Slot-level guidance shown next to each assignment in the wizard.
@@ -477,6 +574,14 @@ _CLAUDE = {
     "default": "medium",
     "param": "openai",
 }
+# Direct Anthropic Messages API (Claude Console): thinking budget, no temperature.
+_ANTHROPIC = {
+    "supported": True,
+    "levels": list(_ALL),
+    "default": "medium",
+    "param": "anthropic",
+    "fixed_temperature": True,
+}
 
 #: provider id → default when the model id is not in the curated list
 PROVIDER_REASONING_DEFAULTS: Dict[str, Dict[str, Any]] = {
@@ -491,6 +596,14 @@ PROVIDER_REASONING_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "codex": dict(_OPENAI_REASONING),
     "openai": dict(_OPENAI_REASONING),
     "openrouter": dict(_OPENAI_REASONING),
+    "zai_code": dict(_OPENAI_REASONING),
+    "zai": dict(_OPENAI_REASONING),
+    "anthropic": dict(_ANTHROPIC),
+    "claude": dict(_ANTHROPIC),
+    "xai": dict(_OPENAI_REASONING),
+    "grok": dict(_OPENAI_REASONING),
+    "gemini": dict(_OPENAI_REASONING),
+    "google": dict(_OPENAI_REASONING),
 }
 
 #: Exact curated model ids (and OpenRouter-qualified ids) → capability
@@ -515,6 +628,23 @@ MODEL_REASONING: Dict[str, Dict[str, Any]] = {
     "anthropic/claude-sonnet-5": dict(_CLAUDE),
     "google/gemini-3.1-pro-preview": dict(_CLAUDE),
     "google/gemini-3.6-flash": dict(_OPENAI_FAST),
+    # Claude Console (direct Anthropic)
+    "claude-fable-5": dict(_ANTHROPIC),
+    "claude-opus-5": dict(_ANTHROPIC),
+    "claude-sonnet-5": dict(_ANTHROPIC),
+    "claude-haiku-4-5": dict(_OPENAI_FAST),
+    # Gemini direct
+    "gemini-3.1-pro-preview": dict(_CLAUDE),
+    "gemini-3.6-flash": dict(_OPENAI_FAST),
+    # Grok direct
+    "grok-4.5": dict(_OPENAI_REASONING),
+    "grok-4.3": dict(_OPENAI_REASONING),
+    "grok-4.20": dict(_OPENAI_REASONING),
+    # Z.AI Coding Plan
+    "glm-5.2": dict(_OPENAI_REASONING),
+    "glm-5-turbo": dict(_OPENAI_REASONING),
+    "glm-4.7": dict(_OPENAI_REASONING),
+    "glm-4.5-air": dict(_OPENAI_FAST),
     # Kimi
     "kimi-k3": dict(_KIMI),
     "kimi-k2.7-code": dict(_KIMI),
@@ -585,6 +715,14 @@ def reasoning_for(provider: str, model: str) -> Dict[str, Any]:
         if prov in ("kimi_code", "kimi-code", "kimi_coding"):
             return _normalize_reasoning(_KIMI_CODE)
         return _normalize_reasoning(_KIMI)
+    if mid_l.startswith("claude") and prov in ("anthropic", "claude"):
+        if "haiku" in mid_l:
+            return _normalize_reasoning(_OPENAI_FAST)
+        return _normalize_reasoning(_ANTHROPIC)
+    if mid_l.startswith("gemini") and ("flash" in mid_l or prov in ("gemini", "google")):
+        if "flash" in mid_l:
+            return _normalize_reasoning(_OPENAI_FAST)
+        return _normalize_reasoning(_CLAUDE)
     if prov in ("openai", "codex") and _openai_rejects_temperature(mid_l):
         return _normalize_reasoning(_OPENAI_STRICT)
 

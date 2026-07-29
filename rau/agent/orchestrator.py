@@ -1334,6 +1334,14 @@ def _openrouter_model(provider_name: str, model: str) -> str:
         "kimi_coding": "moonshotai",
         "codex": "openai",
         "openai": "openai",
+        "zai_code": "z-ai",
+        "zai": "z-ai",
+        "anthropic": "anthropic",
+        "claude": "anthropic",
+        "xai": "x-ai",
+        "grok": "x-ai",
+        "gemini": "google",
+        "google": "google",
     }
     prefix = prefixes.get(provider_name)
     return f"{prefix}/{clean}" if prefix else clean
@@ -2176,6 +2184,10 @@ def _run_pi_subagent(
             "kimi_code": "kimi-coding",
             "kimi-code": "kimi-coding",
             "kimi_coding": "kimi-coding",
+            "zai_code": "zai",
+            "claude": "anthropic",
+            "grok": "xai",
+            "gemini": "google",
         }
         pi_provider = pi_aliases.get(pi_provider, pi_provider)
         if not pi_provider or not pi_model:
