@@ -54,19 +54,6 @@
   background: rgba(30, 24, 22, 0.7);
 }
 
-/* Deal a hand. Warmer than the controls beside it — this one starts something
-   rather than toggling something, and it should not read as a third switch. */
-.face-play {
-  border-color: var(--accent-a25);
-  color: var(--accent-soft);
-}
-
-.face-play:hover {
-  color: var(--accent-ink);
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
 .room-style-seg {
   display: inline-grid;
   grid-template-columns: 1fr 1fr;
@@ -424,12 +411,6 @@
   pointer-events: auto;
 }
 
-.face-game-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
 .tour-room-anchor {
   position: absolute;
   z-index: 1;
@@ -475,7 +456,9 @@
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   padding: 0.4rem 0.68rem;
-  background: rgba(12, 10, 10, 0.5);
+  /* background-color, not the shorthand: the shared transition in index.css
+     animates the colour, and a shorthand here would reset it every state. */
+  background-color: rgba(12, 10, 10, 0.5);
   color: var(--muted);
   font: inherit;
   font-size: 0.72rem;
@@ -486,7 +469,7 @@
 .hyper-toggle.on {
   color: var(--hyper-soft);
   border-color: var(--hyper-a65);
-  background: var(--hyper-a14);
+  background-color: var(--hyper-a14);
   box-shadow: 0 0 16px var(--hyper-a35);
 }
 

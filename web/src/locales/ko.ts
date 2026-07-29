@@ -202,7 +202,7 @@ export const KO: Record<TranslationKey, string> = {
   'tour.composer.body': '입력창을 눌러 보세요. 지금은 아무것도 보내지 않습니다.',
   'tour.games.title': '함께 놀기',
   'tour.games.body':
-    '여기서 체스나 익스플로딩 키튼을 시작할 수 있어요. Rau도 게임 중에 먼저 움직이고 말을 겁니다.',
+    '게임도 이 입력창에서 시작해요. 말을 걸거나 입력해서 부탁하면 Rau가 체스판을 펼치거나 익스플로딩 키튼을 돌립니다.',
   'tour.work.title': '딥 워크',
   'tour.work.body': '복잡한 목표는 계획, 하위 에이전트, 진행 상황, 검증과 함께 여기서 풀립니다.',
   'tour.goal.title': '목표를 맡겨보세요',
@@ -251,13 +251,9 @@ export const KO: Record<TranslationKey, string> = {
 
   // ── room ─────────────────────────────────────────────────────
   'face.back': '← Rau',
-  'face.chess': '체스',
-  'face.play': '게임',
   'face.direct': '직접 조작',
   'face.say': 'Rau에게 말해 보세요…',
   'face.hideChat': '대화 숨기기',
-  'face.chessTitle': '체스판을 펼칩니다',
-  'face.playTitle': '익스플로딩 키튼 한 판을 돌립니다',
   'face.roomStyle': '방 스타일',
   'face.classic': '클래식',
   'face.enhanced': '고급',

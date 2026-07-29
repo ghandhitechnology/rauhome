@@ -126,6 +126,7 @@ export function ActivityChip({
     <button
       type="button"
       data-tour="activity"
+      data-hyper-wake=""
       className={`activity-chip ${open ? 'on' : ''} ${className}`}
       aria-expanded={open}
       onClick={() => {

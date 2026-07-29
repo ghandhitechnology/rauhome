@@ -570,6 +570,7 @@ function ConversationComposer({
             <PermissionMenu />
             <button
               className="send-btn"
+              data-hyper-wake=""
               disabled={!draft.trim()}
               onClick={() => void send()}
               aria-label={t('talk.send')}
@@ -933,7 +934,7 @@ export default function Conversation() {
           </Link>
           {mode === 'space-talk' && (
             <div className="space-talk-controls" role="status">
-              <span>
+              <span data-hyper-wake="">
                 {!voice.connected
                   ? t('talk.spaceConnecting')
                   : voice.phase === 'thinking'

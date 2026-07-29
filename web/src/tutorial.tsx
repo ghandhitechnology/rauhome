@@ -44,7 +44,7 @@ export const TOUR_STEPS: TourStep[] = [
   },
   {
     route: '/face',
-    selector: '[data-tour="games"]',
+    selector: '[data-tour="room-composer"]',
     title: 'tour.games.title',
     body: 'tour.games.body',
     action: 'next',
