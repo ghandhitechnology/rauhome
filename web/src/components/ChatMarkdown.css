@@ -1,6 +1,10 @@
+/* `break-word` rather than `anywhere`: a reply is prose first. `anywhere`
+   lets a break land between any two characters, which for Korean means
+   inside a word — 다시 arriving as 다 / 시 on consecutive lines. This still
+   rescues a url or a token too long for its own line. */
 .chat-md {
   line-height: 1.55;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .chat-md > :first-child {

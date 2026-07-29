@@ -34,7 +34,7 @@ export function ActivityChip({
         if (!visible) activityStore.setVisible(true)
         else onToggle()
       }}
-      title={visible ? 'Open agent activity' : 'Show agent activity'}
+      title={visible ? t('activity.open') : t('activity.show')}
     >
       {t('activity.label')}
       {!visible ? (
@@ -75,6 +75,7 @@ function safeJson(value: unknown) {
 }
 
 function AgentWorkTree() {
+  const { t } = useLocale()
   const [jobs, setJobs] = useState<Array<Job & { steps: AgentStep[] }>>([])
   const [steering, setSteering] = useState<Record<string, string>>({})
 
@@ -110,7 +111,7 @@ function AgentWorkTree() {
   if (!jobs.length) return null
   return (
     <div className="agent-work-tree">
-      <h3>Agent work</h3>
+      <h3>{t('activity.agentWork')}</h3>
       {jobs.map((job) => {
         const active = ACTIVE.has(job.lifecycle_state || job.state)
         const paused = job.progress === 'paused by user'
@@ -125,9 +126,17 @@ function AgentWorkTree() {
                 <div className={`agent-step status-${step.state}`} key={step.id}>
                   <strong>{step.ordinal + 1}. {step.title}</strong>
                   <span>
-                    {step.executor} · attempt {step.attempt || 0}/{(step.retry_budget || 0) + 1}
-                    {step.dependencies?.length ? ` · ${step.dependencies.length} deps` : ''}
-                    {step.evidence?.length ? ` · ${step.evidence.length} evidence` : ''}
+                    {t('activity.attempt', {
+                      executor: step.executor,
+                      attempt: step.attempt || 0,
+                      total: (step.retry_budget || 0) + 1,
+                    })}
+                    {step.dependencies?.length
+                      ? t('activity.deps', { count: step.dependencies.length })
+                      : ''}
+                    {step.evidence?.length
+                      ? t('activity.evidence', { count: step.evidence.length })
+                      : ''}
                   </span>
                   {step.strategy && <p>{step.strategy}</p>}
                 </div>
@@ -142,16 +151,16 @@ function AgentWorkTree() {
                         .catch(() => {})
                     }
                   >
-                    {paused ? 'Resume' : 'Pause'}
+                    {paused ? t('activity.resume') : t('activity.pause')}
                   </button>
                   <button
                     type="button"
                     onClick={() => api.cancelJob(job.id).then(refresh).catch(() => {})}
                   >
-                    Cancel
+                    {t('activity.cancel')}
                   </button>
                   <label>
-                    <span>Steer this plan</span>
+                    <span>{t('activity.steer')}</span>
                     <input
                       value={steering[job.id] || ''}
                       maxLength={4000}
@@ -186,13 +195,8 @@ function AgentWorkTree() {
   )
 }
 
-function ActivityTimeline({
-  items,
-  label = 'Rau activity timeline',
-}: {
-  items: ActivitySpan[]
-  label?: string
-}) {
+function ActivityTimeline({ items, label }: { items: ActivitySpan[]; label?: string }) {
+  const { t } = useLocale()
   const listRef = useRef<HTMLOListElement>(null)
   /** Stick to the newest edge (top) unless the user scrolls down into history. */
   const stickRef = useRef(true)
@@ -223,7 +227,7 @@ function ActivityTimeline({
     <ol
       ref={listRef}
       className="activity-timeline"
-      aria-label={label}
+      aria-label={label || t('activity.timeline')}
     >
       {items.map((span) => (
         <li key={span.id} className={`activity-item status-${span.status}`}>
@@ -237,12 +241,12 @@ function ActivityTimeline({
             {(span.step_id || span.job_id) && (
               <span className="activity-correlation">
                 {span.source}
-                {span.step_id ? ` · step ${span.step_id.slice(0, 8)}` : ''}
+                {span.step_id ? t('activity.step', { id: span.step_id.slice(0, 8) }) : ''}
               </span>
             )}
             {Object.keys(span.details || {}).length > 0 && (
               <details className="activity-details">
-                <summary>Technical details</summary>
+                <summary>{t('activity.details')}</summary>
                 <pre>{safeJson(span.details)}</pre>
               </details>
             )}
@@ -271,6 +275,7 @@ export default function ActivityInspector({
   variant?: 'fold' | 'sidebar'
   onClose?: () => void
 }) {
+  const { t } = useLocale()
   const { all, visible } = useActivity()
   const [open, setOpen] = useState(defaultOpen || variant === 'sidebar')
   const [agent, setAgent] = useState<ActivityAgent>('main')
@@ -314,36 +319,51 @@ export default function ActivityInspector({
   const done = active.length === 0 && items.some((item) => item.ended)
   const label =
     items.length === 0
-      ? 'Activity'
-      : active[0]?.label || (failed ? 'Activity failed' : done ? 'Activity complete' : 'Activity')
+      ? t('activity.label')
+      : active[0]?.label ||
+        (failed
+          ? t('activity.failed')
+          : done
+            ? t('activity.complete')
+            : t('activity.label'))
   const counts = [
-    tools ? `${tools} tool${tools === 1 ? '' : 's'}` : '',
-    jobs ? `${jobs} agent${jobs === 1 ? '' : 's'}` : '',
+    tools
+      ? tools === 1
+        ? t('activity.tools', { count: tools })
+        : t('activity.toolsPlural', { count: tools })
+      : '',
+    jobs
+      ? jobs === 1
+        ? t('activity.agents', { count: jobs })
+        : t('activity.agentsPlural', { count: jobs })
+      : '',
   ]
     .filter(Boolean)
     .join(' · ')
 
   const toolbar = (
     <div className="activity-toolbar">
-      <span>{items.length} events</span>
+      <span>{t('activity.events', { count: items.length })}</span>
       <button
         type="button"
         onClick={() => {
           activityStore.setVisible(false)
           onClose?.()
         }}
-        title="Hide activity in Chat and Face"
+        title={t('activity.hideTitle')}
       >
-        Hide activity
+        {t('activity.hide')}
       </button>
       {onClose && (
-        <button type="button" onClick={onClose}>Close</button>
+        <button type="button" onClick={onClose}>
+          {t('activity.close')}
+        </button>
       )}
     </div>
   )
 
   const agentSelector = global ? (
-    <div className="activity-agent-tabs" role="tablist" aria-label="Activity source">
+    <div className="activity-agent-tabs" role="tablist" aria-label={t('activity.source')}>
       <button
         type="button"
         role="tab"
@@ -351,7 +371,7 @@ export default function ActivityInspector({
         className={agent === 'main' ? 'is-active' : ''}
         onClick={() => setAgent('main')}
       >
-        Main agent
+        {t('activity.mainAgent')}
         {globalCounts.main > 0 && <span>{globalCounts.main}</span>}
       </button>
       <button
@@ -361,7 +381,7 @@ export default function ActivityInspector({
         className={agent === 'deep-work' ? 'is-active' : ''}
         onClick={() => setAgent('deep-work')}
       >
-        Deep work
+        {t('activity.deepWork')}
         {globalCounts.deepWork > 0 && <span>{globalCounts.deepWork}</span>}
       </button>
     </div>
@@ -371,19 +391,29 @@ export default function ActivityInspector({
     <div
       className={`activity-agent-panel activity-agent-panel-${agent}`}
       role={global ? 'tabpanel' : undefined}
-      aria-label={global ? (agent === 'main' ? 'Main agent activity' : 'Deep work activity') : undefined}
+      aria-label={
+        global
+          ? agent === 'main'
+            ? t('activity.mainPanel')
+            : t('activity.deepWorkPanel')
+          : undefined
+      }
     >
       {global && agent === 'deep-work' && <AgentWorkTree />}
       {items.length > 0 ? (
         <ActivityTimeline
           items={items}
-          label={agent === 'deep-work' ? 'Deep work activity timeline' : 'Main agent activity timeline'}
+          label={
+            agent === 'deep-work'
+              ? t('activity.deepWorkTimeline')
+              : t('activity.mainTimeline')
+          }
         />
       ) : (
         <p className="activity-empty">
           {global && agent === 'deep-work'
-            ? 'No Deep Work activity yet — subagent work will show up here.'
-            : 'No main-agent activity yet — it will show up here when Rau works.'}
+            ? t('activity.emptyDeepWork')
+            : t('activity.emptyMain')}
         </p>
       )}
     </div>

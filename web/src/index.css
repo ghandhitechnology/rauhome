@@ -78,6 +78,45 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
+   Rau — Hangul
+
+   Korean is not a translation layer bolted onto the Latin type; it is a second
+   script that has to sit on the same baseline at the same optical size. These
+   two faces were picked for that: Pretendard's x-height and cap height land
+   within a percent of DM Sans, and Nanum Myeongjo shares Instrument Serif's
+   high stroke contrast and beaked terminals. Nothing needs `size-adjust`.
+
+   `unicode-range` is what makes the pairing free. It covers only Hangul, so a
+   Latin character never reaches these files (it falls through to DM Sans /
+   Instrument Serif on the very next line of the stack), and an English-only
+   session never downloads them at all. A Korean line therefore renders as one
+   typeface per script rather than one font per run of text.
+   ───────────────────────────────────────────────────────────── */
+
+/* U+1100-11FF conjoining jamo, U+3130-318F compatibility jamo, U+AC00-D7A3 the
+   11,172 modern syllables, U+A960-D7FF the extended jamo, U+3000-303F and
+   U+FF01-FF60 the CJK punctuation Korean text mixes in. */
+@font-face {
+  font-family: "Pretendard";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/pretendard-variable-hangul.woff2") format("woff2");
+  unicode-range: U+1100-11FF, U+3000-303F, U+3130-318F, U+A960-A97F, U+AC00-D7A3, U+D7B0-D7FF,
+    U+FF01-FF60;
+}
+
+@font-face {
+  font-family: "Nanum Myeongjo";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/nanum-myeongjo-hangul.woff2") format("woff2");
+  unicode-range: U+1100-11FF, U+3000-303F, U+3130-318F, U+A960-A97F, U+AC00-D7A3, U+D7B0-D7FF,
+    U+FF01-FF60;
+}
+
+/* ─────────────────────────────────────────────────────────────
    Rau — design tokens
    Neutral graphite base, warm amber accent. No green.
    ───────────────────────────────────────────────────────────── */
@@ -150,9 +189,10 @@
   --s-7: 2rem;
   --s-8: 3rem;
 
-  /* type */
-  --font-display: "Instrument Serif", Georgia, serif;
-  --font-body: "DM Sans", system-ui, -apple-system, sans-serif;
+  /* type — the Hangul face leads each stack, and its unicode-range hands every
+     Latin character straight to the family behind it. */
+  --font-display: "Nanum Myeongjo", "Instrument Serif", Georgia, serif;
+  --font-body: "Pretendard", "DM Sans", system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 
   /* radii */

@@ -730,7 +730,14 @@ def reasoning_for(provider: str, model: str) -> Dict[str, Any]:
     return _normalize_reasoning(base)
 
 
-def catalog() -> Dict[str, Any]:
+def catalog(language: str | None = None) -> Dict[str, Any]:
+    """The whole catalog, in the reader's language.
+
+    `language` overrides the stored locale so the Settings page can ask for
+    Korean copy in the same breath as it switches: the preference is written
+    and the catalog refetched, and waiting for the write to land first would
+    show one panel of English between the two.
+    """
     # Attach reasoning metadata onto each curated model for the Settings UI.
     providers: Dict[str, Any] = {}
     for pid, meta in CATALOG.items():
@@ -740,7 +747,7 @@ def catalog() -> Dict[str, Any]:
             entry["reasoning"] = reasoning_for(pid, str(m.get("id") or ""))
             models_out.append(entry)
         providers[pid] = {**meta, "models": models_out}
-    return {
+    payload = {
         "providers": providers,
         "provider_auth": PROVIDER_AUTH,
         "provider_reasoning_defaults": {
@@ -755,3 +762,12 @@ def catalog() -> Dict[str, Any]:
         "stt_providers": STT_PROVIDERS,
         "browse_providers": BROWSE_PROVIDERS,
     }
+    from rau.language import get_locale
+
+    if (language or get_locale()) == "ko":
+        from rau.providers.korean import localize
+
+        # `provider_auth` is a map of ids to ids; localize() leaves it alone
+        # because none of its keys are a translatable field name.
+        return localize(payload)
+    return payload

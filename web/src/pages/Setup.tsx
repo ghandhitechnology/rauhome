@@ -60,7 +60,7 @@ export default function Setup({
   onFinished: () => void
 }) {
   const nav = useNavigate()
-  const { locale, hasChosenLocale, setLocale, t } = useLocale()
+  const { locale, hasChosenLocale, setLocale, t, tx } = useLocale()
   const [prelude, setPrelude] = useState<Prelude>(() => preludeFromStorage(hasChosenLocale))
   const [storyPage, setStoryPage] = useState(0)
   const [languageBusy, setLanguageBusy] = useState(false)
@@ -89,8 +89,11 @@ export default function Setup({
     setState(s)
   }, [])
 
+  // Also on a language change: the wizard's first screen is the language
+  // gate, so the catalog fetched on mount is always in the language the user
+  // has not chosen yet.
   useEffect(() => {
-    Promise.all([api.setupState(), api.catalog()])
+    Promise.all([api.setupState(), api.catalog(locale)])
       .then(([s, c]) => {
         setState(s)
         setCatalog(c)
@@ -128,7 +131,7 @@ export default function Setup({
         })
       })
       .catch((e) => setLoadError(e?.message || String(e)))
-  }, [])
+  }, [locale])
 
   useEffect(() => {
     // Storage can be unavailable (private windows, blocked contexts); the
@@ -174,15 +177,15 @@ export default function Setup({
 
   /** Why "Continue" is disabled, or empty when it is not. */
   const blocker = useMemo(() => {
-    if (step === 'origin' && !draft.origin) return 'Pick a starting point.'
+    if (step === 'origin' && !draft.origin) return t('setup.blockOrigin')
     if (step === 'identity') {
-      if (draft.identity.trim().length < 40) return 'identity.md needs a little more.'
-      if (draft.backstory.trim().length < 80) return 'backstory.md needs a little more.'
+      if (draft.identity.trim().length < 40) return t('setup.blockIdentity')
+      if (draft.backstory.trim().length < 80) return t('setup.blockBackstory')
     }
-    if (step === 'brains' && !chatConnected) return 'Connect at least one provider to continue.'
-    if (step === 'models' && !slotsReady) return 'Every role needs a provider and a model.'
+    if (step === 'brains' && !chatConnected) return t('setup.blockProvider')
+    if (step === 'models' && !slotsReady) return t('setup.blockSlots')
     return ''
-  }, [step, draft, chatConnected, slotsReady])
+  }, [step, draft, chatConnected, slotsReady, t])
 
   const stepProps: StepProps = { draft, patch, state, catalog, reload, verify, setVerify, go }
 
@@ -243,7 +246,7 @@ export default function Setup({
           <i />
           <span>Rau</span>
         </div>
-        <p className="eyebrow">Hello · 안녕하세요</p>
+        <p className="eyebrow">{t('language.greeting')}</p>
         <h1>{t('language.title')}</h1>
         <p className="prelude-lede">{t('language.lede')}</p>
         <div className="language-options">
@@ -314,7 +317,7 @@ export default function Setup({
           >
             ← {t('intro.back')}
           </button>
-          <div className="intro-dots" role="group" aria-label="Introduction progress">
+          <div className="intro-dots" role="group" aria-label={t('intro.progress')}>
             {pages.map((_, index) => (
               <button
                 type="button"
@@ -366,7 +369,7 @@ export default function Setup({
       <div className="setup-viewport">
         {loadError && (
           <div className="notice bad" style={{ marginBottom: '1.25rem' }}>
-            Could not reach the hub: {loadError}
+            {t('setup.hubUnreachable', { detail: loadError })}
           </div>
         )}
 
@@ -393,8 +396,7 @@ export default function Setup({
               </div>
               {state?.identity_ready && (
                 <p className="step-note subtle" style={{ marginTop: '1.5rem' }}>
-                  There is already a soul.md on disk. Running setup again replaces it — a timestamped
-                  backup is kept either way.
+                  {t('setup.soulExists')}
                 </p>
               )}
             </div>
@@ -422,8 +424,7 @@ export default function Setup({
                 <p className="eyebrow">{t('setup.awake')}</p>
                 <h2>{t('setup.doneTitle')}</h2>
                 <p className="step-lede">
-                  This is the compiled <span className="mono">soul.md</span>. Nightly dreams may
-                  rewrite it; editing the source files from the Identity page hard-steers it back.
+                  {tx('setup.doneLede', { file: <span className="mono">soul.md</span> })}
                 </p>
               </header>
               <pre className="doc soul-doc">{soul || '—'}</pre>

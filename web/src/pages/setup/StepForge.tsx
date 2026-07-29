@@ -4,14 +4,11 @@ import type { StepProps } from './types'
 import { useLocale } from '../../i18n'
 
 type TaskState = 'pending' | 'running' | 'done' | 'failed'
-type Task = { id: string; label: string; state: TaskState; detail?: string }
+type Task = { id: (typeof TASK_IDS)[number]; state: TaskState; detail?: string }
 
-const BASE_TASKS: Task[] = [
-  { id: 'models', label: 'Assigning models to face, subagent and dream', state: 'pending' },
-  { id: 'sources', label: 'Writing identity.md and backstory.md', state: 'pending' },
-  { id: 'soul', label: 'Distilling soul.md with DeepSeek V4 Pro', state: 'pending' },
-  { id: 'verify', label: 'Confirming Rau can boot', state: 'pending' },
-]
+const TASK_IDS = ['models', 'sources', 'soul', 'verify'] as const
+
+const BASE_TASKS: Task[] = TASK_IDS.map((id) => ({ id, state: 'pending' }))
 
 /** Minimum time a step is shown, so the sequence stays readable when calls are instant. */
 const BEAT = 420
@@ -22,7 +19,7 @@ export default function StepForge({
   reload,
   onForged,
 }: StepProps & { onForged: (soul: string) => void }) {
-  const { locale } = useLocale()
+  const { t } = useLocale()
   const [tasks, setTasks] = useState<Task[]>(BASE_TASKS)
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
@@ -72,13 +69,13 @@ export default function StepForge({
         )
 
         await run('soul', async () => {
-          if (!res?.soul) throw new Error('The hub returned an empty soul.md.')
+          if (!res?.soul) throw new Error(t('forge.emptySoul'))
           await wait(120)
         })
 
         await run('verify', async () => {
           const s = await api.setupState()
-          if (!s.identity_ready) throw new Error('soul.md was not written.')
+          if (!s.identity_ready) throw new Error(t('forge.noSoul'))
           await reload()
         })
 
@@ -88,28 +85,32 @@ export default function StepForge({
         setError(e?.message || String(e))
       }
     })()
-  }, [attempt, draft, state, reload, onForged])
+  }, [attempt, draft, state, reload, onForged, t])
 
   return (
     <div className="step step-center">
       <header className="step-head">
-        <p className="eyebrow">{locale === 'ko' ? '거의 다 됐어요' : 'Almost'}</p>
-        <h2>{locale === 'ko' ? 'Rau를 깨우는 중' : 'Bringing Rau up'}</h2>
-        <p className="step-lede">{locale === 'ko' ? '파일을 쓰고, 모델을 연결하고, Rau의 자아를 완성하고 있습니다.' : 'Writing files, wiring models, and compiling the operating self.'}</p>
+        <p className="eyebrow">{t('forge.eyebrow')}</p>
+        <h2>{t('forge.title')}</h2>
+        <p className="step-lede">{t('forge.lede')}</p>
       </header>
 
       <ol className="forge-list">
-        {tasks.map((t, i) => (
-          <li key={t.id} className={`forge-task ${t.state}`} style={{ '--i': i } as React.CSSProperties}>
+        {tasks.map((task, i) => (
+          <li
+            key={task.id}
+            className={`forge-task ${task.state}`}
+            style={{ '--i': i } as React.CSSProperties}
+          >
             <span className="forge-icon">
-              {t.state === 'running' && <i className="spinner" />}
-              {t.state === 'done' && <i className="tick" />}
-              {t.state === 'failed' && <i className="cross" />}
-              {t.state === 'pending' && <i className="dot" />}
+              {task.state === 'running' && <i className="spinner" />}
+              {task.state === 'done' && <i className="tick" />}
+              {task.state === 'failed' && <i className="cross" />}
+              {task.state === 'pending' && <i className="dot" />}
             </span>
             <span className="forge-label">
-              {t.label}
-              {t.detail && <em className="forge-detail">{t.detail}</em>}
+              {t(`forge.${task.id}`)}
+              {task.detail && <em className="forge-detail">{task.detail}</em>}
             </span>
           </li>
         ))}
@@ -117,18 +118,18 @@ export default function StepForge({
 
       {error && (
         <div className="notice bad" style={{ marginTop: '1.25rem' }}>
-          <strong>{locale === 'ko' ? '작업을 마치지 못했습니다.' : 'That did not finish.'}</strong>
+          <strong>{t('forge.failed')}</strong>
           <p style={{ margin: '0.35rem 0 0' }}>{error}</p>
           <div className="row" style={{ marginTop: '0.8rem' }}>
             <button
               className="btn sm"
               onClick={() => {
                 setError('')
-                setTasks(BASE_TASKS.map((t) => ({ ...t, state: 'pending' as TaskState })))
+                setTasks(BASE_TASKS.map((task) => ({ ...task, state: 'pending' as TaskState })))
                 setAttempt((a) => a + 1)
               }}
             >
-              {locale === 'ko' ? '다시 시도' : 'Try again'}
+              {t('forge.retry')}
             </button>
           </div>
         </div>

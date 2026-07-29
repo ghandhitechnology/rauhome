@@ -317,7 +317,11 @@ export const api = {
       body: JSON.stringify({ identity, backstory }),
     }),
   setupState: () => req<SetupState>('/api/setup/state'),
-  catalog: () => req<Catalog>('/api/models/catalog'),
+  /* The hub holds the durable language preference, but the interface changes
+     the moment you pick — so both of these carry the choice explicitly rather
+     than racing the PUT that persists it. */
+  catalog: (lang?: Locale) =>
+    req<Catalog>(`/api/models/catalog${lang ? `?lang=${lang}` : ''}`),
   voiceStatus: () => req<VoiceStatus>('/api/voice/status'),
   browseStatus: () => req<BrowseStatus>('/api/browse/status'),
   ttsVoices: (provider: string) =>
@@ -356,7 +360,8 @@ export const api = {
     req<any>('/api/goal', { method: 'PUT', body: JSON.stringify({ text }) }),
   clearGoal: () => req<any>('/api/goal', { method: 'DELETE' }),
   providers: () => req<any>('/api/providers/status'),
-  auth: () => req<{ providers: any[] }>('/api/auth'),
+  auth: (lang?: Locale) =>
+    req<{ providers: any[] }>(`/api/auth${lang ? `?lang=${lang}` : ''}`),
   setAuth: (providerId: string, key: string) =>
     req<any>(`/api/auth/${providerId}`, {
       method: 'PUT',

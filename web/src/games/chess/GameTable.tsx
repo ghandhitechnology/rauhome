@@ -79,7 +79,8 @@ import {
   type PieceColor,
   type Placed,
 } from './board'
-import { PIECE_NAMES, PROMOTION_CHOICES, resultLine, squareLabel } from './meta'
+import { pieceName, PROMOTION_CHOICES, resultLine, squareLabel } from './meta'
+import { useLocale } from '../../i18n'
 import {
   gameStore,
   phaseStore,
@@ -251,9 +252,10 @@ function PromotionPicker({
   onPick: (piece: Promotion) => void
   onCancel: () => void
 }) {
+  const { t } = useLocale()
   return (
-    <div className="ch-promote" role="group" aria-label="What the pawn becomes">
-      <h3>It gets to the end. What is it?</h3>
+    <div className="ch-promote" role="group" aria-label={t('chess.promoteLabel')}>
+      <h3>{t('chess.promoteTitle')}</h3>
       <div className="ch-promote-row">
         {PROMOTION_CHOICES.map((type) => (
           <button
@@ -262,16 +264,16 @@ function PromotionPicker({
             className="ch-promote-pick"
             disabled={busy}
             onClick={() => onPick(type)}
-            aria-label={PIECE_NAMES[type]}
-            title={PIECE_NAMES[type]}
+            aria-label={pieceName(type)}
+            title={pieceName(type)}
           >
             <ChessPiece type={type} finish={FINISH[color]} />
-            <span>{PIECE_NAMES[type]}</span>
+            <span>{pieceName(type)}</span>
           </button>
         ))}
       </div>
       <button type="button" className="ch-quiet" onClick={onCancel}>
-        Put it back
+        {t('chess.putBack')}
       </button>
     </div>
   )
@@ -294,22 +296,23 @@ function Controls({
   busy: boolean
   onMove: (move: Move) => void
 }) {
+  const { t } = useLocale()
   if (table.phase === 'over') return null
   const theirs = table.offer && table.offer.by === 'rau'
   const yours = table.offer && table.offer.by === 'user'
 
   return (
-    <div className="ch-controls" role="group" aria-label="The rest of what you can do">
+    <div className="ch-controls" role="group" aria-label={t('chess.controlsLabel')}>
       {theirs ? (
         <>
-          <span className="ch-offer">He is offering a draw.</span>
+          <span className="ch-offer">{t('chess.offering')}</span>
           <button
             type="button"
             className="ch-btn ch-btn-primary"
             disabled={busy}
             onClick={() => onMove({ move: 'accept_draw' })}
           >
-            Take it
+            {t('chess.takeIt')}
           </button>
           <button
             type="button"
@@ -317,12 +320,12 @@ function Controls({
             disabled={busy}
             onClick={() => onMove({ move: 'decline_draw' })}
           >
-            Play on
+            {t('chess.playOn')}
           </button>
         </>
       ) : (
         <>
-          {yours && <span className="ch-offer is-waiting">Draw offered.</span>}
+          {yours && <span className="ch-offer is-waiting">{t('chess.drawOffered')}</span>}
           {!yours && (
             <button
               type="button"
@@ -330,7 +333,7 @@ function Controls({
               disabled={busy}
               onClick={() => onMove({ move: 'offer_draw' })}
             >
-              Offer a draw
+              {t('chess.offerDraw')}
             </button>
           )}
           {table.can_claim_draw && (
@@ -339,9 +342,9 @@ function Controls({
               className="ch-btn"
               disabled={busy}
               onClick={() => onMove({ move: 'claim_draw' })}
-              title="Threefold repetition or fifty moves — the draw is yours to take"
+              title={t('chess.claimHint')}
             >
-              Claim the draw
+              {t('chess.claimDraw')}
             </button>
           )}
           <button
@@ -350,7 +353,7 @@ function Controls({
             disabled={busy}
             onClick={() => onMove({ move: 'resign' })}
           >
-            Resign
+            {t('chess.resign')}
           </button>
         </>
       )}
@@ -367,13 +370,14 @@ function GameOverScene({
   onAgain: () => void
   onLeave: () => void
 }) {
+  const { t } = useLocale()
   const { title, note } = resultLine(table)
   const drawn = table.winner === null
   return (
     <div
       className={`ch-over ${drawn ? 'is-draw' : table.winner === 'user' ? 'is-win' : 'is-loss'}`}
       role="alertdialog"
-      aria-label="Game over"
+      aria-label={t('chess.gameOver')}
     >
       <div className="ch-over-card">
         <h2>{title}</h2>
@@ -381,10 +385,10 @@ function GameOverScene({
         {table.result && <p className="ch-over-score">{table.result}</p>}
         <div className="ch-over-actions">
           <button type="button" className="ch-btn ch-btn-primary" onClick={onAgain}>
-            Set them up again
+            {t('chess.again')}
           </button>
           <button type="button" className="ch-btn ch-btn-quiet" onClick={onLeave}>
-            Leave the board
+            {t('chess.leaveBoard')}
           </button>
         </div>
       </div>
@@ -395,6 +399,7 @@ function GameOverScene({
 /* ───────────────────────────────────────────────────────────── board */
 
 export default memo(function ChessTable() {
+  const { t } = useLocale()
   const { table, busy, error } = useGame()
   const phase = usePhase()
 
@@ -677,7 +682,7 @@ export default memo(function ChessTable() {
   const waiting = !table.your_turn && table.phase !== 'over'
 
   return (
-    <div className="ch-room" role="region" aria-label="Chess">
+    <div className="ch-room" role="region" aria-label={t('chess.region')}>
       <PieceDefs />
 
       {/* ── on the table ─────────────────────────────────────────── */}
@@ -693,10 +698,7 @@ export default memo(function ChessTable() {
         <div
           className="ch-squares"
           role="group"
-          aria-label={
-            `Chess board. You are ${table.user_color}. ` +
-            'Arrow keys move around it, Enter picks a piece up and puts it down.'
-          }
+          aria-label={t('chess.boardLabel', { color: t(`piece.${table.user_color}`) })}
           onKeyDown={onGridKey}
         >
           {Array.from({ length: 64 }, (_, i) => {
@@ -783,15 +785,15 @@ export default memo(function ChessTable() {
         <div className="ch-strip">
           <span className={`ch-turn ${waiting ? 'is-his' : ''}`}>
             {table.phase === 'over'
-              ? 'Game over'
+              ? t('chess.gameOver')
               : table.your_turn
-                ? 'Your move'
+                ? t('chess.yourMove')
                 : table.phase === 'thinking'
-                  ? 'Rau is thinking…'
-                  : 'Rau to move'}
+                  ? t('chess.thinking')
+                  : t('chess.rauToMove')}
           </span>
           {table.check_square && table.phase !== 'over' && (
-            <span className="ch-alarm">Check</span>
+            <span className="ch-alarm">{t('chess.check')}</span>
           )}
           {lastLine && <span className="ch-log">{lastLine.text}</span>}
           <button
@@ -799,7 +801,7 @@ export default memo(function ChessTable() {
             className="ch-quiet ch-leave"
             onClick={() => void phaseStore.leave()}
           >
-            Leave
+            {t('chess.leave')}
           </button>
         </div>
 

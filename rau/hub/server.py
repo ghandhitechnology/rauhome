@@ -28,6 +28,21 @@ from rau.heartbeat.presence import start_heartbeat
 from rau.hub.security import LocalAccessMiddleware, allowed_hostnames
 from rau.identity import store as identity_store
 from rau.language import get_locale, set_locale
+
+
+def localized_auth(language: str | None = None) -> list:
+    """Connection cards in the reader's language.
+
+    The slot table in `rau.env` is the machine-facing record — env var names,
+    docs urls, whether a key is present — and stays in English. Only the two
+    fields a person reads are swapped, and only when the interface is Korean.
+    """
+    providers = auth_status()
+    if (language or get_locale()) != "ko":
+        return providers
+    from rau.providers.korean import localize
+
+    return localize(providers)
 from rau.mcp.client import MCP
 from rau.memory import store as memory_store
 from rau.paths import WEB_DIST, ensure_dirs
@@ -736,8 +751,8 @@ def api_providers():
 
 
 @app.get("/api/models/catalog")
-def api_models_catalog():
-    return catalog()
+def api_models_catalog(lang: str = ""):
+    return catalog(lang or None)
 
 
 @app.get("/api/voice/status")
@@ -998,7 +1013,7 @@ def api_goal_note(body: GoalNoteIn):
 @app.get("/api/setup/state")
 def api_setup_state():
     """Everything the setup wizard needs to decide which steps are already done."""
-    providers = auth_status()
+    providers = localized_auth()
     configured = {p["id"] for p in providers if p.get("configured")}
     models = load_models()
 
@@ -1034,8 +1049,8 @@ def api_setup_state():
 
 
 @app.get("/api/auth")
-def api_auth_list():
-    return {"providers": auth_status()}
+def api_auth_list(lang: str = ""):
+    return {"providers": localized_auth(lang or None)}
 
 
 @app.put("/api/auth/{provider_id}")
@@ -1047,7 +1062,7 @@ def api_auth_set(provider_id: str, body: AuthKeyIn):
         result = set_secret(slot["env"], body.key)
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-    return {"ok": True, "provider": provider_id, **result, "providers": auth_status()}
+    return {"ok": True, "provider": provider_id, **result, "providers": localized_auth()}
 
 
 @app.delete("/api/auth/{provider_id}")
@@ -1056,7 +1071,7 @@ def api_auth_clear(provider_id: str):
     if not slot:
         return JSONResponse({"ok": False, "error": "unknown provider"}, status_code=404)
     result = clear_secret(slot["env"])
-    return {"ok": True, "provider": provider_id, **result, "providers": auth_status()}
+    return {"ok": True, "provider": provider_id, **result, "providers": localized_auth()}
 
 
 @app.post("/api/auth/{provider_id}/verify")

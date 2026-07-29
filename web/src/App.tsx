@@ -67,9 +67,9 @@ function Shell() {
       // Keep that state distinct so a restart never sends an existing user
       // into a wizard whose own API calls cannot work either.
       .catch((error) => {
-        setBootError(error instanceof Error ? error.message : 'Could not reach the hub')
+        setBootError(error instanceof Error ? error.message : t('boot.couldNotReach'))
       })
-  }, [])
+  }, [t])
 
   useEffect(() => {
     checkIdentity()
@@ -171,7 +171,12 @@ function Shell() {
       </main>
 
       {isTalk && ready && (
-        <Link to="/dashboard" className="dash-corner" title="Dashboard" aria-label="Open dashboard">
+        <Link
+          to="/dashboard"
+          className="dash-corner"
+          title={t('app.dashboard')}
+          aria-label={t('app.openDashboard')}
+        >
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
             <rect x="1.5" y="1.5" width="5" height="5" rx="1.2" />
             <rect x="9.5" y="1.5" width="5" height="5" rx="1.2" />

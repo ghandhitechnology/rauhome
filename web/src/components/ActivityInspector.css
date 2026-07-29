@@ -349,12 +349,14 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* Prose, so it wraps like prose — see the note in ChatMarkdown.css. The
+   <pre> below keeps `anywhere`, since raw payloads have no words to protect. */
 .activity-copy p {
   margin: 0.18rem 0;
   color: var(--muted);
   line-height: 1.4;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .activity-correlation {
   display: block;

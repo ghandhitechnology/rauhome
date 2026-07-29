@@ -3,20 +3,28 @@ import { Link } from '../router'
 import ClawdAvatar from '../components/ClawdAvatar'
 import PageSkeleton from '../components/PageSkeleton'
 import { api, type Job } from '../api'
-import { useLocale } from '../i18n'
+import { useLocale, type TranslationKey } from '../i18n'
 import { live as liveChannel } from '../live'
 import './Dashboard.css'
 
-const HARD_STATES: Record<string, string> = {
-  idle: 'nothing running',
-  running: 'working',
-  awaiting_confirm: 'waiting on you',
-  done: 'finished',
-  cancelled: 'cancelled',
-  failed: 'failed',
-}
-
 const EFFORTS = ['low', 'medium', 'high', 'max'] as const
+type EffortLevel = (typeof EFFORTS)[number]
+
+const HARD_STATES = [
+  'idle',
+  'running',
+  'awaiting_confirm',
+  'done',
+  'cancelled',
+  'failed',
+] as const
+
+/** The hub's own vocabulary, said in the reader's language. */
+function hardStateLabel(state: string, t: (key: TranslationKey) => string): string {
+  return (HARD_STATES as readonly string[]).includes(state)
+    ? t(`hard.${state as (typeof HARD_STATES)[number]}`)
+    : state
+}
 
 type EffortSlotView = {
   supported: boolean
@@ -128,7 +136,7 @@ export default function Dashboard() {
       const res = await api.putEffort(body)
       setEffort(parseEffort(res))
     } catch (err) {
-      setEffortError(err instanceof Error ? err.message : 'Could not update effort')
+      setEffortError(err instanceof Error ? err.message : t('dashboard.effortFailed'))
     } finally {
       setBusyEffort('')
     }
@@ -153,16 +161,16 @@ export default function Dashboard() {
   const activeGoal = status?.goal
 
   const stats = [
-    { label: 'Voice', value: status?.voice_pipeline ? 'up' : 'off', on: !!status?.voice_pipeline },
-    { label: 'Face', value: status?.face_busy ? 'busy' : 'free', on: !!status?.face_busy },
+    { label: t('stat.voice'), value: status?.voice_pipeline ? t('stat.up') : t('stat.off'), on: !!status?.voice_pipeline },
+    { label: t('stat.face'), value: status?.face_busy ? t('stat.busy') : t('stat.free'), on: !!status?.face_busy },
     {
-      label: 'MCP',
+      label: t('stat.mcp'),
       value: status?.mcp?.servers?.composio?.configured ? 'composio' : '—',
       on: !!status?.mcp?.servers?.composio?.configured,
     },
-    { label: 'Diary today', value: String(status?.memory?.today_entries ?? 0), on: (status?.memory?.today_entries ?? 0) > 0 },
-    { label: 'Identity', value: status?.identity_ready ? 'ready' : 'setup', on: !!status?.identity_ready },
-    { label: 'Skills', value: String(status?.skills_count ?? skills.length), on: (status?.skills_count ?? skills.length) > 0 },
+    { label: t('stat.diary'), value: String(status?.memory?.today_entries ?? 0), on: (status?.memory?.today_entries ?? 0) > 0 },
+    { label: t('stat.identity'), value: status?.identity_ready ? t('stat.ready') : t('stat.setup'), on: !!status?.identity_ready },
+    { label: t('stat.skills'), value: String(status?.skills_count ?? skills.length), on: (status?.skills_count ?? skills.length) > 0 },
   ]
 
   if (!status) {
@@ -177,17 +185,17 @@ export default function Dashboard() {
           <div className="row">
             <span className={`pill ${live ? 'on' : 'off'}`}>
               <i className="pill-dot" />
-              {live ? 'live' : 'polling'}
+              {live ? t('dashboard.live') : t('dashboard.polling')}
             </span>
             <span className={`pill ${status?.listening ? 'on' : 'off'}`}>
               <i className="pill-dot" />
-              {status?.listening ? 'listening' : 'quiet'}
+              {status?.listening ? t('dashboard.listening') : t('dashboard.quiet')}
             </span>
           </div>
         </div>
 
         <p className="dash-sub">
-          Systems room. <Link to="/">Back to talk</Link>.
+          {t('dashboard.systemsRoom')} <Link to="/">{t('dashboard.backToTalk')}</Link>
         </p>
 
         <ClawdAvatar emotion={emotion} />
@@ -198,18 +206,18 @@ export default function Dashboard() {
             className="btn"
             onClick={() => api.control(status?.listening ? 'stop' : 'start').then(refresh).catch(() => {})}
           >
-            {status?.listening ? 'Pause listening' : 'Start listening'}
+            {status?.listening ? t('dashboard.pauseListening') : t('dashboard.startListening')}
           </button>
           <button className="btn" onClick={() => api.control('test').catch(() => {})}>
-            Test voice
+            {t('dashboard.testVoice')}
           </button>
           <button className="btn danger" onClick={() => api.control('shutdown').catch(() => {})}>
-            Shutdown face
+            {t('dashboard.shutdownFace')}
           </button>
         </div>
 
-        <h3 className="section-title">Model effort</h3>
-        <p className="muted" style={{ marginTop: 0 }}>Whole-runtime power profile</p>
+        <h3 className="section-title">{t('dashboard.modelEffort')}</h3>
+        <p className="muted" style={{ marginTop: 0 }}>{t('dashboard.powerProfile')}</p>
         <div className="effort-seg" style={{ marginBottom: '1rem' }}>
           {(['eco', 'balanced', 'performance'] as const).map((profile) => (
             <button
@@ -222,32 +230,25 @@ export default function Dashboard() {
                 }).catch(() => {})
               }}
             >
-              {profile}
+              {t(`profile.${profile}`)}
             </button>
           ))}
         </div>
-        <p className="muted" style={{ marginTop: 0 }}>
-          Thinking depth for the current provider/model. Levels adapt to what that
-          backend supports. Also `/effort …` in talk for face.
-        </p>
+        <p className="muted" style={{ marginTop: 0 }}>{t('dashboard.effortHelp')}</p>
         {effortError ? (
           <p className="muted" style={{ color: 'var(--danger)', marginTop: 0 }}>
             {effortError}
           </p>
         ) : null}
-        {([
-          ['face', 'Face'],
-          ['subagent', 'Subagent'],
-          ['dream', 'Dream'],
-        ] as const).map(([slot, label]) => {
+        {(['face', 'subagent', 'dream'] as const).map((slot) => {
           const view = effort.slots[slot]
           const allowed = view?.supported ? view.allowed || [] : []
           return (
             <div key={slot} className="effort-row">
-              <span className="effort-label">{label}</span>
+              <span className="effort-label">{t(`slot.${slot}`)}</span>
               {!view?.supported || allowed.length === 0 ? (
                 <span className="muted" style={{ fontSize: '0.85rem' }}>
-                  No reasoning control for this model
+                  {t('dashboard.noReasoning')}
                 </span>
               ) : (
                 <div className="effort-seg">
@@ -258,7 +259,7 @@ export default function Dashboard() {
                       disabled={busyEffort === slot || busyEffort === 'all'}
                       onClick={() => setSlotEffort(slot, level)}
                     >
-                      {level}
+                      {t(`effort.${level as EffortLevel}`)}
                     </button>
                   ))}
                 </div>
@@ -280,11 +281,11 @@ export default function Dashboard() {
                 onClick={() => setSlotEffort('all', level)}
                 title={
                   anyAccepts
-                    ? `Set every slot that supports ${level}`
-                    : `No current model accepts ${level}`
+                    ? t('dashboard.allToTitle', { level: t(`effort.${level}`) })
+                    : t('dashboard.allToNone', { level: t(`effort.${level}`) })
                 }
               >
-                All → {level}
+                {t('dashboard.allTo', { level: t(`effort.${level}`) })}
               </button>
             )
           })}
@@ -292,14 +293,14 @@ export default function Dashboard() {
 
         {confirm && (
           <div className="confirm-box">
-            <h3>Confirm</h3>
+            <h3>{t('dashboard.confirm')}</h3>
             <p>{confirm.summary}</p>
             <div className="row end">
               <button className="btn danger sm" onClick={() => api.confirm(false, confirm.id).then(refresh).catch(() => {})}>
-                Deny
+                {t('talk.deny')}
               </button>
               <button className="btn primary sm" onClick={() => api.confirm(true, confirm.id).then(refresh).catch(() => {})}>
-                Allow
+                {t('talk.allow')}
               </button>
             </div>
           </div>
@@ -311,15 +312,19 @@ export default function Dashboard() {
           <h2>{t('dashboard.deepWork')}</h2>
           <span className={`pill ${hardState === 'running' ? 'on' : 'off'}`}>
             <i className="pill-dot" />
-            {HARD_STATES[hardState] || hardState}
+            {hardStateLabel(hardState, t)}
           </span>
         </div>
 
         {activeGoal?.text && (
           <div className="goal-box">
             <div className="dash-head" style={{ marginBottom: '0.35rem' }}>
-              <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontWeight: 400 }}>Active goal</h3>
-              <button className="btn sm danger" onClick={() => api.clearGoal().then(refresh).catch(() => {})}>Clear</button>
+              <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontWeight: 400 }}>
+                {t('dashboard.activeGoal')}
+              </h3>
+              <button className="btn sm danger" onClick={() => api.clearGoal().then(refresh).catch(() => {})}>
+                {t('dashboard.clear')}
+              </button>
             </div>
             <p style={{ margin: 0 }}>{activeGoal.text}</p>
           </div>
@@ -351,7 +356,9 @@ export default function Dashboard() {
             disabled={activeJobs.length === 0}
             onClick={() => api.cancelHardTask().then(refresh).catch(() => {})}
           >
-            {activeJobs.length > 1 ? `Cancel all (${activeJobs.length})` : t('dashboard.cancel')}
+            {activeJobs.length > 1
+              ? t('dashboard.cancelAll', { count: activeJobs.length })
+              : t('dashboard.cancel')}
           </button>
         </div>
 
@@ -367,16 +374,16 @@ export default function Dashboard() {
                   className="btn danger sm"
                   onClick={() => api.cancelJob(j.id).then(refresh).catch(() => {})}
                 >
-                  Stop
+                  {t('dashboard.stop')}
                 </button>
               </div>
             ))}
           </div>
         )}
 
-        <h3 className="section-title">Skills</h3>
+        <h3 className="section-title">{t('dashboard.skills')}</h3>
         <p className="muted" style={{ marginTop: 0 }}>
-          Always available. Slash in talk: {skills.slice(0, 4).map((s) => s.slash).join(' ')}…
+          {t('dashboard.skillsHelp', { list: skills.slice(0, 4).map((s) => s.slash).join(' ') })}
         </p>
         <div className="skills-list">
           {skills.map((s) => (
@@ -385,10 +392,10 @@ export default function Dashboard() {
               <span>{s.name}</span>
             </div>
           ))}
-          {skills.length === 0 && <span className="muted">No skills loaded</span>}
+          {skills.length === 0 && <span className="muted">{t('dashboard.noSkills')}</span>}
         </div>
 
-        <h3 className="section-title">Systems</h3>
+        <h3 className="section-title">{t('dashboard.systems')}</h3>
         <div className="status-grid stagger">
           {stats.map((s, i) => (
             <div key={s.label} className={s.on ? 'on' : ''} style={{ '--i': i } as React.CSSProperties}>
