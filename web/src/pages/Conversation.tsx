@@ -15,6 +15,7 @@ import ActivityInspector, {
 import ClawdAvatar from '../components/ClawdAvatar'
 import PermissionMenu from '../components/PermissionMenu'
 import SlashMenu from '../components/SlashMenu'
+import { HyperToggle } from '../components/HyperMode'
 import { ThreadSkeleton } from '../components/PageSkeleton'
 import { api } from '../api'
 import { live } from '../live'
@@ -758,23 +759,11 @@ export default function Conversation() {
             />
             <div className="compose-actions">
               {modeSupportsHyper(mode) && (
-                <button
-                  type="button"
-                  className={`hyper-toggle ${voiceLatency === 'hyper' ? 'on' : ''}`}
-                  aria-label="Hyper-low-latency voice"
-                  aria-pressed={voiceLatency === 'hyper'}
+                <HyperToggle
+                  profile={voiceLatency}
+                  setProfile={setVoiceLatency}
                   disabled={voice.phase !== 'idle'}
-                  title={
-                    voice.phase === 'idle'
-                      ? 'Use the same voice model and features with the lowest-latency pipeline'
-                      : 'Hyper can be changed after the current voice turn'
-                  }
-                  onClick={() =>
-                    setVoiceLatency(voiceLatency === 'hyper' ? 'normal' : 'hyper')
-                  }
-                >
-                  ⚡ Hyper
-                </button>
+                />
               )}
               <PermissionMenu />
               <button

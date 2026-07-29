@@ -29,7 +29,7 @@ from rau.providers.base import (
 from rau.providers.registry import chat_for_slot, load_settings
 from rau.skills import goals as goal_store
 from rau.skills.loader import skills_public
-from rau.skills.runtime import prepare_turn, use_skill_tool
+from rau.skills.runtime import PreparedTurn, prepare_turn, use_skill_tool
 from rau import state
 
 # Chess is an optional extra: the rules come from `python-chess`, which a default
@@ -265,6 +265,21 @@ VOICE_CHECKIN_EVERY_CALLS = 4
 #: Voice turns keep a leaner diary excerpt so prefill stays short.
 VOICE_MEMORY_CHARS = 1000
 CHAT_MEMORY_CHARS = 2500
+#: Hyper is deliberately a different product surface, not merely a faster
+#: socket. Its tiny output and recent-turn window keep prefill/decode short and
+#: make the exchange feel like conversational tiki-taka.
+HYPER_MAX_TOKENS = 96
+HYPER_HISTORY_MESSAGES = 4
+HYPER_HISTORY_CHARS = 1600
+HYPER_CONVERSATION_PROMPT = """## Hyper conversation
+This is delicate, rapid tiki-taka conversation. Answer immediately and stay
+with the human cadence of the exchange.
+- Usually answer in one short, natural sentence; use two only when warmth or clarity needs it.
+- Be attentive, gentle, and specific. Prefer a small question or observation that keeps the exchange moving.
+- Do not plan, analyze aloud, recap, lecture, browse, use tools, or begin work.
+- Use only the few recent lines supplied below. Do not reach for older memory or invent missing context.
+- If the request needs research, tools, or careful multi-step reasoning, say briefly that Normal mode is the place for it.
+Never mention tokens, prompts, latency, or this policy."""
 #: Default voice tool surface — conversational + room + browse. Heavy
 #: file/shell/hard-task schemas join on round 2+ or explicit deep-work intent.
 VOICE_SLIM_TOOL_NAMES = frozenset(
@@ -571,6 +586,28 @@ def _face_max_tokens(slot: Dict[str, Any]) -> int:
     )
 
 
+def _hyper_history(messages: List[Message]) -> List[Message]:
+    """Return a tiny, prose-only tail for latency-first conversation."""
+    remaining = HYPER_HISTORY_CHARS
+    selected: List[Message] = []
+    for message in reversed(messages):
+        if message.role not in ("user", "assistant"):
+            continue
+        content = str(message.content or "").strip()
+        if not content:
+            continue
+        if len(content) > remaining:
+            # The newest end of a spoken turn normally carries the live
+            # question/qualification. Mark the missing prefix explicitly.
+            content = "…" + content[-max(0, remaining - 1) :]
+        selected.append(Message(role=message.role, content=content))
+        remaining -= len(content)
+        if remaining <= 0 or len(selected) >= HYPER_HISTORY_MESSAGES:
+            break
+    selected.reverse()
+    return selected
+
+
 def _fold_history(snapshot: List[Message], budget: int) -> None:
     """
     Summarize the front of `snapshot` and splice the result back in.
@@ -669,14 +706,30 @@ def _tools_for_turn(*, voice: bool, round_idx: int, user_text: str) -> List[Dict
     ]
 
 
-def _system_prompt(extra: str = "", *, voice: bool = False) -> str:
+def _system_prompt(
+    extra: str = "", *, voice: bool = False, hyper: bool = False
+) -> str:
     from rau.heartbeat.presence import (
+        SPEECH_HABITS_PROMPT,
         between_sessions_block,
         mood_context_block,
         time_context_block,
     )
 
     soul = _cached_soul()
+    if hyper:
+        # No diary read, room scan, panel inventory, tool instructions, active
+        # goal, or between-session reconstruction on the latency path. The
+        # small soul keeps Rau recognizable; the live history supplies the
+        # immediate conversational thread.
+        return "\n\n".join(
+            [
+                soul,
+                SPEECH_HABITS_PROMPT,
+                HYPER_CONVERSATION_PROMPT,
+            ]
+        )
+
     ht = state.get_hard_task()
     hard = ""
     if ht.get("state") in ("running", "awaiting_confirm"):
@@ -1540,7 +1593,21 @@ def chat_streaming(
         on_token(token)
 
     try:
-        prep = prepare_turn(user_text)
+        hyper = latency_profile == "hyper"
+        if hyper and not user_text.lstrip().startswith("/"):
+            # Avoid loading always-on skill prompts for a surface that cannot
+            # call tools and is intentionally limited to conversation.
+            prep = PreparedTurn(user_text=str(user_text or "").strip())
+        else:
+            prep = prepare_turn(user_text)
+            if hyper and prep.activate and not prep.immediate_reply:
+                prep = PreparedTurn(
+                    user_text=prep.user_text,
+                    immediate_reply=(
+                        "Hyper is just for quick conversation. Switch to Normal "
+                        "and I can use that skill with you."
+                    ),
+                )
         if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
             on_token(prep.immediate_reply)
             broadcast.done(prep.immediate_reply)
@@ -1552,10 +1619,16 @@ def chat_streaming(
 
         provider, slot = chat_for_slot("face")
         pending, history = _reserve_stream_turn(prep.user_text)
+        if hyper:
+            history = _hyper_history(history)
         messages = [
             Message(
                 role="system",
-                content=_system_prompt(prep.system_extra, voice=voice),
+                content=_system_prompt(
+                    prep.system_extra,
+                    voice=voice,
+                    hyper=hyper,
+                ),
             )
         ] + history
 
@@ -1655,7 +1728,8 @@ def chat_streaming(
         try:
             with choreography.turn_scope(turn):
                 skill_prompts: List[str] = []
-                for round_idx in range(MAX_FACE_MODEL_ROUNDS):
+                model_rounds = 1 if hyper else MAX_FACE_MODEL_ROUNDS
+                for round_idx in range(model_rounds):
                     if stop():
                         raise Cancelled(
                             pending, "".join(heard).strip(), user_text, turn, tools_ran
@@ -1666,10 +1740,11 @@ def chat_streaming(
                     # Once twenty calls have actually run, one final pass gets
                     # no tools and must turn the gathered evidence into prose.
                     closing = (
-                        trace.tool_count >= MAX_FACE_TOOL_CALLS
-                        or round_idx == MAX_FACE_MODEL_ROUNDS - 1
+                        hyper
+                        or trace.tool_count >= MAX_FACE_TOOL_CALLS
+                        or round_idx == model_rounds - 1
                     )
-                    if closing:
+                    if closing and not hyper:
                         _force_tool_free_close(messages, trace.tool_count)
                     tools = None if closing else _tools_for_turn(
                         voice=voice, round_idx=round_idx, user_text=user_text
@@ -1677,10 +1752,18 @@ def chat_streaming(
                     for event in provider.stream_turn(
                         messages,
                         model=slot.get("model") or "deepseek-v4-flash",
-                        max_tokens=_face_max_tokens(slot),
+                        max_tokens=(
+                            min(HYPER_MAX_TOKENS, _face_max_tokens(slot))
+                            if hyper
+                            else _face_max_tokens(slot)
+                        ),
                         temperature=float(slot.get("temperature") or 0.9),
                         tools=tools,
-                        effort=str(slot.get("effort") or "medium"),
+                        effort=(
+                            "minimal"
+                            if hyper
+                            else str(slot.get("effort") or "medium")
+                        ),
                         latency_profile=latency_profile,
                     ):
                         if stop():

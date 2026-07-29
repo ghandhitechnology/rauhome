@@ -25,6 +25,7 @@ import { useVoiceSession } from '../voice'
 import { api } from '../api'
 import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
+import { HyperToggle } from '../components/HyperMode'
 import { panelStore, type PanelSummary } from '../panels'
 
 import { gameStore, useGame } from '../games/kittens/useGame'
@@ -701,23 +702,11 @@ export default function Face() {
             <em>⇧␣</em>
           </span>
           {modeSupportsHyper(mode) && (
-            <button
-              type="button"
-              className={`hyper-toggle ${voiceLatency === 'hyper' ? 'on' : ''}`}
-              aria-label="Hyper-low-latency voice"
-              aria-pressed={voiceLatency === 'hyper'}
+            <HyperToggle
+              profile={voiceLatency}
+              setProfile={setVoiceLatency}
               disabled={voice.phase !== 'idle'}
-              title={
-                voice.phase === 'idle'
-                  ? 'Use the same voice model and features with the lowest-latency pipeline'
-                  : 'Hyper can be changed after the current voice turn'
-              }
-              onClick={() =>
-                setVoiceLatency(voiceLatency === 'hyper' ? 'normal' : 'hyper')
-              }
-            >
-              ⚡ Hyper
-            </button>
+            />
           )}
           {/*
             Starting a game without asking him. He can still deal or set up the

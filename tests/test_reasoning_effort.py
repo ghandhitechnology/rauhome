@@ -55,6 +55,24 @@ class ClampAndBuildTests(unittest.TestCase):
         fields = build_reasoning_fields("kimi", "kimi-k3", "medium")
         self.assertEqual(fields.get("reasoning_effort"), "high")
 
+    def test_internal_minimal_effort_uses_the_cheapest_provider_shape(self) -> None:
+        from rau.providers.reasoning import build_reasoning_fields
+
+        self.assertEqual(
+            build_reasoning_fields(
+                "openrouter", "deepseek/deepseek-v4-flash", "minimal"
+            ),
+            {"thinking": {"type": "disabled"}},
+        )
+        self.assertEqual(
+            build_reasoning_fields("openai", "gpt-5.6-sol", "minimal"),
+            {"reasoning_effort": "low"},
+        )
+        self.assertEqual(
+            build_reasoning_fields("kimi_code", "k3", "minimal"),
+            {},
+        )
+
 
 class OpenAICompatWireTests(unittest.TestCase):
     def test_apply_on_payload(self) -> None:

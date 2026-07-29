@@ -477,9 +477,10 @@
 }
 
 .compose-actions .hyper-toggle.on {
-  color: var(--accent);
-  border-color: var(--accent-a40);
-  background: var(--accent-a12);
+  color: var(--hyper-soft);
+  border-color: var(--hyper-a65);
+  background: var(--hyper-a14);
+  box-shadow: 0 0 14px var(--hyper-a35);
 }
 
 .compose-actions .hyper-toggle:disabled {
