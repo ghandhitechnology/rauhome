@@ -451,9 +451,10 @@
 }
 
 .hyper-toggle.on {
-  color: var(--accent);
-  border-color: var(--accent-a40);
-  box-shadow: 0 0 12px var(--accent-a12);
+  color: var(--hyper-soft);
+  border-color: var(--hyper-a65);
+  background: var(--hyper-a14);
+  box-shadow: 0 0 16px var(--hyper-a35);
 }
 
 .hyper-toggle:disabled {

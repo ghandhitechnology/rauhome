@@ -21,6 +21,8 @@ class CaptureWorklet extends AudioWorkletProcessor {
     this._pos = 0
     this._out = new Int16Array(FRAME)
     this._n = 0
+    this._frameSquares = 0
+    this._framePeak = 0
     this._level = 0
     this._running = true
     this.port.onmessage = (e) => {
@@ -50,12 +52,29 @@ class CaptureWorklet extends AudioWorkletProcessor {
       const b = idx + 1 < ch.length ? ch[idx + 1] : a
       const s = a + (b - a) * frac
       this._out[this._n++] = Math.max(-32768, Math.min(32767, s * 32767))
+      this._frameSquares += s * s
+      this._framePeak = Math.max(this._framePeak, Math.abs(s))
       if (this._n >= FRAME) {
+        // VAD must see this frame's actual energy, not `_level`: that meter
+        // intentionally has a slow release, which smears a mouse/keyboard
+        // click across enough frames to look like sustained speech.
+        const speechLevel = Math.sqrt(this._frameSquares / FRAME)
+        const crest = this._framePeak / Math.max(speechLevel, 0.000001)
+        // A click concentrates most of its energy into a few samples. Speech
+        // has a much lower peak-to-RMS ratio over a 20ms frame, including
+        // ordinary plosives. The absolute floor avoids classifying quiet
+        // numerical noise as an impulse.
+        const transient = this._framePeak >= 0.08 && crest >= 7
         // One copy, transferred — the worklet's own buffer is refilled
         // immediately, so it must not be the thing handed across.
         const copy = this._out.slice()
-        this.port.postMessage({ pcm: copy.buffer, level: this._level }, [copy.buffer])
+        this.port.postMessage(
+          { pcm: copy.buffer, level: this._level, speechLevel, transient },
+          [copy.buffer],
+        )
         this._n = 0
+        this._frameSquares = 0
+        this._framePeak = 0
       }
       this._pos += this._ratio
     }

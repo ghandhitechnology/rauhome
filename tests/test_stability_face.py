@@ -207,6 +207,26 @@ class BrainTurnTests(unittest.TestCase):
         self.assertIn("I’ve completed 4 checks", spoken)
         self.assertEqual(str(reply).split()[-2:], ["I’m", "done."])
 
+    def test_body_choreography_never_becomes_a_spoken_checkin(self) -> None:
+        provider = ScriptedProvider(
+            [
+                tool_round("move_1", "body_choreography", ""),
+                {"deltas": ["Here I am."], "content": "Here I am."},
+            ]
+        )
+        self.install(provider)
+        tokens: List[str] = []
+
+        reply = brain.chat_streaming(
+            "wave hello",
+            on_token=tokens.append,
+            voice=True,
+        )
+
+        self.assertEqual("".join(tokens), "Here I am.")
+        self.assertEqual(str(reply), "Here I am.")
+        self.assertNotIn("planning movement", str(reply).lower())
+
     def test_observable_summary_exists_without_provider_reasoning(self) -> None:
         provider = ScriptedProvider(
             [{"deltas": ["Direct answer."], "content": "Direct answer."}]
@@ -237,6 +257,36 @@ class BrainTurnTests(unittest.TestCase):
             if "observable actions" in item.get("summary", "")
         )
         self.assertIn("no tool calls were needed", summary.lower())
+
+    def test_an_empty_stream_gets_a_tool_free_visible_retry(self) -> None:
+        provider = ScriptedProvider(
+            [
+                {"content": ""},
+                {
+                    "deltas": ["A specific recovered answer."],
+                    "content": "A specific recovered answer.",
+                },
+            ]
+        )
+        self.install(provider)
+        spoken: List[str] = []
+
+        reply = brain.chat_streaming("tell me something", on_token=spoken.append)
+
+        self.assertEqual(str(reply), "A specific recovered answer.")
+        self.assertEqual("".join(spoken), "A specific recovered answer.")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertIsNone(provider.calls[-1]["tools"])
+        self.assertEqual(provider.calls[-1]["effort"], "minimal")
+
+    def test_last_resort_empty_replies_rotate_and_match_the_language(self) -> None:
+        first = brain._local_empty_reply("hello")
+        second = brain._local_empty_reply("hello")
+        korean = brain._local_empty_reply("안녕하세요")
+
+        self.assertNotEqual(first, second)
+        self.assertNotIn("with you", first.lower())
+        self.assertRegex(korean, r"[가-힣]")
 
     def test_a_barge_in_keeps_the_tools_that_ran_and_a_user_role_note(self) -> None:
         # F2 + F3 + F4: executed tools leave a one-line marker, the note is a

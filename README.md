@@ -71,6 +71,11 @@ Heartbeat (adaptive presence) + daily dream (soul rewrite + daily log)
   finished thinking, and interrupting him trims his memory to only what you
   actually heard.
 
+Voice also offers **Hyper** for delicate, rapid conversational tiki-taka. It
+uses early endpointing, warm streaming connections, a tiny recent-turn window,
+minimal reasoning, short replies, and no tools. Switch back to Normal for
+research, durable memory context, or multi-step work.
+
 ```
 Browser mic ─(PCM16 16k)─▶ /ws/voice ─▶ STT ─▶ face model (streaming + tools)
                                                     │

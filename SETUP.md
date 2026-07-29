@@ -118,12 +118,19 @@ Quit the hub to stop the pet. Menu-bar / right-click **Quit pet** leaves the hub
 
 ## 7. Voice mode
 
-Rau has two conversational modes. **Shift+Space** switches between them from
+Rau has four conversational modes. **Shift+Space** rotates through them from
 anywhere in the UI.
 
 - **Chat** — type, as before.
 - **Voice** — live listening, Rau speaks as he generates, and you can talk over
   him to cut him off mid-sentence.
+- **Talk** — type to Rau and hear the answer aloud; the microphone stays off.
+- **Space Talk** — hold Space to speak and release it to send; the microphone
+  ignores everything while the key is up.
+
+Voice and Space Talk both support **Hyper**, the shorter low-latency
+conversation profile. Talk stays on Normal because it has no microphone
+turn-taking latency to optimize.
 
 Voice mode runs its audio **in the browser tab**, not through the Python
 pipeline. That is deliberate: the browser gives us hardware echo cancellation,

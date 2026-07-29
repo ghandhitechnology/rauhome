@@ -25,6 +25,7 @@ import { useVoiceSession } from '../voice'
 import { api } from '../api'
 import { live } from '../live'
 import PanelViewer from '../components/PanelViewer'
+import { HyperToggle } from '../components/HyperMode'
 import { panelStore, type PanelSummary } from '../panels'
 
 import { gameStore, useGame } from '../games/kittens/useGame'
@@ -230,7 +231,8 @@ export default function Face() {
   const voice = useVoiceSession({
     enabled: voiceOn,
     listen: modeListens(mode),
-    profile: mode === 'voice' ? voiceLatency : 'normal',
+    pushToTalk: mode === 'space-talk',
+    profile: modeSupportsHyper(mode) ? voiceLatency : 'normal',
   })
   const [stream, setStream] = useState<FaceStream>(IDLE_FACE_STREAM)
   const streamRef = useRef(stream)
@@ -694,30 +696,18 @@ export default function Face() {
           />
           <span
             className={`mode-pill ${isVoice ? 'on' : ''}`}
-            title="Shift+Space to switch — chat, voice, or talk (type in, speak out)"
+            title="Shift+Space to switch — chat, voice, talk, or hold-Space-to-talk"
           >
             <i className="mode-dot" />
             {modeLabel(mode)}
             <em>⇧␣</em>
           </span>
           {modeSupportsHyper(mode) && (
-            <button
-              type="button"
-              className={`hyper-toggle ${voiceLatency === 'hyper' ? 'on' : ''}`}
-              aria-label="Hyper-low-latency voice"
-              aria-pressed={voiceLatency === 'hyper'}
+            <HyperToggle
+              profile={voiceLatency}
+              setProfile={setVoiceLatency}
               disabled={voice.phase !== 'idle'}
-              title={
-                voice.phase === 'idle'
-                  ? 'Use the same voice model and features with the lowest-latency pipeline'
-                  : 'Hyper can be changed after the current voice turn'
-              }
-              onClick={() =>
-                setVoiceLatency(voiceLatency === 'hyper' ? 'normal' : 'hyper')
-              }
-            >
-              ⚡ Hyper
-            </button>
+            />
           )}
           {/*
             Starting a game without asking him. He can still deal or set up the
@@ -963,12 +953,14 @@ export default function Face() {
         happens at a real table. Draft state lives in FaceComposer so typing
         does not re-render the room or the card table.
       */}
-      <FaceComposer
-        inGame={inGame}
-        open={composerOpen}
-        onOpenChange={setComposerOpen}
-        onSend={send}
-      />
+      {mode !== 'space-talk' && (
+        <FaceComposer
+          inGame={inGame}
+          open={composerOpen}
+          onOpenChange={setComposerOpen}
+          onSend={send}
+        />
+      )}
     </div>
   )
 }

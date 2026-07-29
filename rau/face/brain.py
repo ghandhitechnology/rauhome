@@ -29,7 +29,7 @@ from rau.providers.base import (
 from rau.providers.registry import chat_for_slot, load_settings
 from rau.skills import goals as goal_store
 from rau.skills.loader import skills_public
-from rau.skills.runtime import prepare_turn, use_skill_tool
+from rau.skills.runtime import PreparedTurn, prepare_turn, use_skill_tool
 from rau import state
 
 # Chess is an optional extra: the rules come from `python-chess`, which a default
@@ -262,9 +262,54 @@ MAX_FACE_MODEL_ROUNDS = MAX_FACE_TOOL_CALLS + 1
 #: During a long spoken run, provide an evidence-based update at this cadence
 #: if the model itself has not said anything useful between tool rounds.
 VOICE_CHECKIN_EVERY_CALLS = 4
+#: These are internal/embodied actions, not work the user needs narrated.
+#: Their activity remains visible in the inspector, but no generated progress
+#: sentence is allowed onto the voice token stream.
+VOICE_SILENT_TOOL_NAMES = frozenset({"body_choreography"})
 #: Voice turns keep a leaner diary excerpt so prefill stays short.
 VOICE_MEMORY_CHARS = 1000
 CHAT_MEMORY_CHARS = 2500
+#: Hyper is deliberately a different product surface, not merely a faster
+#: socket. Its tiny output and recent-turn window keep prefill/decode short and
+#: make the exchange feel like conversational tiki-taka.
+HYPER_MAX_TOKENS = 96
+HYPER_HISTORY_MESSAGES = 4
+HYPER_HISTORY_CHARS = 1600
+#: An upstream model can finish after emitting reasoning but before emitting
+#: user-visible prose. Give it fresh, tool-free attempts before the face falls
+#: back locally. Retrying here keeps one bad completion from turning into a
+#: repeated stock phrase in chat or voice.
+EMPTY_REPLY_RETRIES = 2
+HYPER_CONVERSATION_PROMPT = """## Hyper conversation
+This is delicate, rapid tiki-taka conversation. Answer immediately and stay
+with the human cadence of the exchange.
+- Usually answer in one short, natural sentence; use two only when warmth or clarity needs it.
+- Be attentive, gentle, and specific. Prefer a small question or observation that keeps the exchange moving.
+- Do not plan, analyze aloud, recap, lecture, browse, use tools, or begin work.
+- Use only the few recent lines supplied below. Do not reach for older memory or invent missing context.
+- If the request needs research, tools, or careful multi-step reasoning, say briefly that Normal mode is the place for it.
+Never mention tokens, prompts, latency, or this policy."""
+
+_EMPTY_REPLY_PROMPT = """
+
+## User-visible answer required
+The previous attempt ended without any user-visible answer. Respond to the
+latest user message now with non-empty natural language. Be specific to what
+they said. Do not output a generic acknowledgement, do not use tools, and do
+not discuss this retry instruction."""
+_EMPTY_REPLY_EN = (
+    "My answer dropped out before it reached you. Could you try that once more?",
+    "That response came back blank. Say the last part again and I’ll take another pass.",
+    "I lost the reply on my side. Could you repeat what you just said?",
+)
+_EMPTY_REPLY_KO = (
+    "답변이 전달되기 전에 사라졌어요. 방금 말을 한 번만 다시 해 줄래요?",
+    "응답이 비어 버렸어요. 마지막 부분을 다시 말해 주면 바로 이어갈게요.",
+    "제 쪽에서 답변을 놓쳤어요. 방금 한 말을 한 번만 다시 들려주세요.",
+)
+_empty_reply_lock = threading.Lock()
+_empty_reply_index = 0
+
 #: Default voice tool surface — conversational + room + browse. Heavy
 #: file/shell/hard-task schemas join on round 2+ or explicit deep-work intent.
 VOICE_SLIM_TOOL_NAMES = frozenset(
@@ -571,6 +616,28 @@ def _face_max_tokens(slot: Dict[str, Any]) -> int:
     )
 
 
+def _hyper_history(messages: List[Message]) -> List[Message]:
+    """Return a tiny, prose-only tail for latency-first conversation."""
+    remaining = HYPER_HISTORY_CHARS
+    selected: List[Message] = []
+    for message in reversed(messages):
+        if message.role not in ("user", "assistant"):
+            continue
+        content = str(message.content or "").strip()
+        if not content:
+            continue
+        if len(content) > remaining:
+            # The newest end of a spoken turn normally carries the live
+            # question/qualification. Mark the missing prefix explicitly.
+            content = "…" + content[-max(0, remaining - 1) :]
+        selected.append(Message(role=message.role, content=content))
+        remaining -= len(content)
+        if remaining <= 0 or len(selected) >= HYPER_HISTORY_MESSAGES:
+            break
+    selected.reverse()
+    return selected
+
+
 def _fold_history(snapshot: List[Message], budget: int) -> None:
     """
     Summarize the front of `snapshot` and splice the result back in.
@@ -669,14 +736,30 @@ def _tools_for_turn(*, voice: bool, round_idx: int, user_text: str) -> List[Dict
     ]
 
 
-def _system_prompt(extra: str = "", *, voice: bool = False) -> str:
+def _system_prompt(
+    extra: str = "", *, voice: bool = False, hyper: bool = False
+) -> str:
     from rau.heartbeat.presence import (
+        SPEECH_HABITS_PROMPT,
         between_sessions_block,
         mood_context_block,
         time_context_block,
     )
 
     soul = _cached_soul()
+    if hyper:
+        # No diary read, room scan, panel inventory, tool instructions, active
+        # goal, or between-session reconstruction on the latency path. The
+        # small soul keeps Rau recognizable; the live history supplies the
+        # immediate conversational thread.
+        return "\n\n".join(
+            [
+                soul,
+                SPEECH_HABITS_PROMPT,
+                HYPER_CONVERSATION_PROMPT,
+            ]
+        )
+
     ht = state.get_hard_task()
     hard = ""
     if ht.get("state") in ("running", "awaiting_confirm"):
@@ -1017,6 +1100,63 @@ def _force_tool_free_close(messages: List[Message], tool_count: int) -> None:
     messages[0] = Message(role="system", content=messages[0].content + suffix)
 
 
+def _empty_retry_messages(messages: List[Message], attempt: int) -> List[Message]:
+    """Return a fresh prompt that insists on prose after an empty completion."""
+    retried = list(messages)
+    if retried and retried[0].role == "system":
+        retried[0] = Message(
+            role="system",
+            content=(
+                retried[0].content
+                + _EMPTY_REPLY_PROMPT
+                + f"\nThis is recovery attempt {attempt + 1}."
+            ),
+        )
+    return retried
+
+
+def _local_empty_reply(user_text: str) -> str:
+    """Last-resort text that never repeats on adjacent empty turns."""
+    global _empty_reply_index
+    choices = (
+        _EMPTY_REPLY_KO
+        if re.search(r"[가-힣]", user_text or "")
+        else _EMPTY_REPLY_EN
+    )
+    with _empty_reply_lock:
+        reply = choices[_empty_reply_index % len(choices)]
+        _empty_reply_index += 1
+    return reply
+
+
+def _retry_empty_blocking_reply(
+    provider: Any,
+    slot: Dict[str, Any],
+    messages: List[Message],
+    *,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Any:
+    """Retry a reasoning-only/empty blocking completion with thinking minimized."""
+    last = None
+    for attempt in range(EMPTY_REPLY_RETRIES):
+        if should_stop is not None and should_stop():
+            return last
+        last = provider.chat(
+            _empty_retry_messages(messages, attempt),
+            model=slot.get("model") or "deepseek-v4-flash",
+            max_tokens=min(_face_max_tokens(slot), 512),
+            temperature=min(
+                1.2,
+                max(0.2, float(slot.get("temperature") or 0.9) + 0.1 * attempt),
+            ),
+            tools=None,
+            effort="minimal",
+        )
+        if str(getattr(last, "content", "") or "").strip():
+            return last
+    return last
+
+
 def _record_tool_round(
     messages: List[Message],
     result: Any,
@@ -1295,8 +1435,29 @@ def chat(
             broadcast.error(str(exc))
             raise
 
+        if not spoken and not stop():
+            try:
+                retry = _retry_empty_blocking_reply(
+                    provider,
+                    slot,
+                    messages,
+                    should_stop=stop,
+                )
+            except Exception as exc:
+                _finish_stream_turn(pending, "")
+                broadcast.error(str(exc))
+                raise
+            if retry is not None:
+                if retry.reasoning or retry.reasoning_details:
+                    trace.provider_reasoning = True
+                spoken = (retry.content or "").strip()
+        if stop():
+            cancelled = Cancelled(pending, "", user_text, turn, tools_ran)
+            finish_interrupted_turn(cancelled, "")
+            broadcast.cancelled("")
+            raise cancelled
         if not spoken:
-            spoken = "Okay. I'm with you."
+            spoken = _local_empty_reply(user_text)
         from rau.heartbeat.presence import apply_reply_mood
 
         spoken, _ = apply_reply_mood(spoken)
@@ -1540,7 +1701,21 @@ def chat_streaming(
         on_token(token)
 
     try:
-        prep = prepare_turn(user_text)
+        hyper = latency_profile == "hyper"
+        if hyper and not user_text.lstrip().startswith("/"):
+            # Avoid loading always-on skill prompts for a surface that cannot
+            # call tools and is intentionally limited to conversation.
+            prep = PreparedTurn(user_text=str(user_text or "").strip())
+        else:
+            prep = prepare_turn(user_text)
+            if hyper and prep.activate and not prep.immediate_reply:
+                prep = PreparedTurn(
+                    user_text=prep.user_text,
+                    immediate_reply=(
+                        "Hyper is just for quick conversation. Switch to Normal "
+                        "and I can use that skill with you."
+                    ),
+                )
         if prep.immediate_reply and (prep.activate == [] or "goal" in prep.activate):
             on_token(prep.immediate_reply)
             broadcast.done(prep.immediate_reply)
@@ -1552,10 +1727,16 @@ def chat_streaming(
 
         provider, slot = chat_for_slot("face")
         pending, history = _reserve_stream_turn(prep.user_text)
+        if hyper:
+            history = _hyper_history(history)
         messages = [
             Message(
                 role="system",
-                content=_system_prompt(prep.system_extra, voice=voice),
+                content=_system_prompt(
+                    prep.system_extra,
+                    voice=voice,
+                    hyper=hyper,
+                ),
             )
         ] + history
 
@@ -1622,6 +1803,7 @@ def chat_streaming(
             # model round available to supply its own progress sentence.
             if (
                 voice
+                and name not in VOICE_SILENT_TOOL_NAMES
                 and trace.tool_count - last_voice_checkin_at
                 >= VOICE_CHECKIN_EVERY_CALLS
                 and not stop()
@@ -1652,10 +1834,12 @@ def chat_streaming(
 
         reasoning_span_id: Optional[str] = None
         response_span_id: Optional[str] = None
+        answer_visible = False
         try:
             with choreography.turn_scope(turn):
                 skill_prompts: List[str] = []
-                for round_idx in range(MAX_FACE_MODEL_ROUNDS):
+                model_rounds = 1 if hyper else MAX_FACE_MODEL_ROUNDS
+                for round_idx in range(model_rounds):
                     if stop():
                         raise Cancelled(
                             pending, "".join(heard).strip(), user_text, turn, tools_ran
@@ -1666,10 +1850,11 @@ def chat_streaming(
                     # Once twenty calls have actually run, one final pass gets
                     # no tools and must turn the gathered evidence into prose.
                     closing = (
-                        trace.tool_count >= MAX_FACE_TOOL_CALLS
-                        or round_idx == MAX_FACE_MODEL_ROUNDS - 1
+                        hyper
+                        or trace.tool_count >= MAX_FACE_TOOL_CALLS
+                        or round_idx == model_rounds - 1
                     )
-                    if closing:
+                    if closing and not hyper:
                         _force_tool_free_close(messages, trace.tool_count)
                     tools = None if closing else _tools_for_turn(
                         voice=voice, round_idx=round_idx, user_text=user_text
@@ -1677,10 +1862,18 @@ def chat_streaming(
                     for event in provider.stream_turn(
                         messages,
                         model=slot.get("model") or "deepseek-v4-flash",
-                        max_tokens=_face_max_tokens(slot),
+                        max_tokens=(
+                            min(HYPER_MAX_TOKENS, _face_max_tokens(slot))
+                            if hyper
+                            else _face_max_tokens(slot)
+                        ),
                         temperature=float(slot.get("temperature") or 0.9),
                         tools=tools,
-                        effort=str(slot.get("effort") or "medium"),
+                        effort=(
+                            "minimal"
+                            if hyper
+                            else str(slot.get("effort") or "medium")
+                        ),
                         latency_profile=latency_profile,
                     ):
                         if stop():
@@ -1732,17 +1925,25 @@ def chat_streaming(
                         assistant_content: Optional[str] = (
                             "".join(chunks) if chunks and not result.content else None
                         )
+                        checkin_call = next(
+                            (
+                                call
+                                for call in result.tool_calls
+                                if call.name not in VOICE_SILENT_TOOL_NAMES
+                            ),
+                            None,
+                        )
                         round_spoke = bool("".join(chunks).strip())
                         if round_spoke:
                             last_voice_checkin_at = trace.tool_count
-                        elif voice and (
+                        elif voice and checkin_call is not None and (
                             trace.tool_count == 0
                             or trace.tool_count - last_voice_checkin_at
                             >= VOICE_CHECKIN_EVERY_CALLS
                         ):
                             checkin = _voice_tool_checkin(
                                 trace.tool_count,
-                                result.tool_calls[0].name,
+                                checkin_call.name,
                             )
                             assistant_content = checkin
                             heard.append(checkin + " ")
@@ -1784,7 +1985,105 @@ def chat_streaming(
                         # Provider returned prose only in the terminal event.
                         heard.append(result.content)
                         emit_prose(result.content)
+                    answer_visible = bool(
+                        "".join(chunks).strip() or (result.content or "").strip()
+                    )
                     break
+
+                # A reasoning-capable provider can end cleanly with thoughts
+                # but no visible answer. Retry with tools and thinking disabled
+                # before allowing any local recovery text onto the wire.
+                if not answer_visible:
+                    for attempt in range(EMPTY_REPLY_RETRIES):
+                        if stop():
+                            raise Cancelled(
+                                pending,
+                                "",
+                                user_text,
+                                turn,
+                                tools_ran,
+                            )
+                        retry_chunks: List[str] = []
+                        retry_result = None
+                        for event in provider.stream_turn(
+                            _empty_retry_messages(messages, attempt),
+                            model=slot.get("model") or "deepseek-v4-flash",
+                            max_tokens=(
+                                HYPER_MAX_TOKENS
+                                if hyper
+                                else min(_face_max_tokens(slot), 512)
+                            ),
+                            temperature=min(
+                                1.2,
+                                max(
+                                    0.2,
+                                    float(slot.get("temperature") or 0.9)
+                                    + 0.1 * attempt,
+                                ),
+                            ),
+                            tools=None,
+                            effort="minimal",
+                            latency_profile=latency_profile,
+                        ):
+                            if stop():
+                                raise Cancelled(
+                                    pending,
+                                    "".join(heard).strip(),
+                                    user_text,
+                                    turn,
+                                    tools_ran,
+                                )
+                            if isinstance(event, TextDelta):
+                                retry_chunks.append(event.text)
+                                heard.append(event.text)
+                                emit_prose(event.text)
+                                if response_span_id is None:
+                                    response_span_id = ACTIVITY.start(
+                                        "execution",
+                                        "Responding",
+                                        source="face",
+                                        summary="Composing the response",
+                                        turn_id=turn,
+                                    )["id"]
+                            elif isinstance(event, ReasoningDelta):
+                                trace.provider_reasoning = True
+                                if reasoning_span_id is None:
+                                    reasoning_span_id = ACTIVITY.start(
+                                        "reasoning",
+                                        "Reasoning",
+                                        source=getattr(
+                                            event,
+                                            "provider_format",
+                                            "provider",
+                                        ),
+                                        summary="",
+                                        turn_id=turn,
+                                    )["id"]
+                                ACTIVITY.delta(reasoning_span_id, text=event.text)
+                            elif isinstance(event, StreamDone):
+                                retry_result = event.result
+                        if retry_result is not None and (
+                            retry_result.reasoning
+                            or retry_result.reasoning_details
+                        ):
+                            trace.provider_reasoning = True
+                        if (
+                            not retry_chunks
+                            and retry_result is not None
+                            and retry_result.content
+                        ):
+                            heard.append(retry_result.content)
+                            emit_prose(retry_result.content)
+                        retry_text = "".join(retry_chunks).strip()
+                        if not retry_text and retry_result is not None:
+                            retry_text = (retry_result.content or "").strip()
+                        if retry_text:
+                            answer_visible = True
+                            break
+                if not answer_visible:
+                    recovery = _local_empty_reply(user_text)
+                    heard.append(recovery)
+                    emit_prose(recovery)
                 tail = leading_tag.flush()
                 if tail:
                     emit(tail)
@@ -1845,7 +2144,7 @@ def chat_streaming(
 
         spoken = "".join(heard).strip()
         if not spoken:
-            spoken = "Okay. I'm with you."
+            spoken = _local_empty_reply(user_text)
             emit(spoken)
         from rau.heartbeat.presence import apply_reply_mood
 

@@ -113,6 +113,13 @@
   --accent-a25: rgba(240, 168, 60, 0.25);
   --accent-a40: rgba(240, 168, 60, 0.4);
 
+  /* Hyper is intentionally distinct from Rau's everyday amber. */
+  --hyper: #bd7cff;
+  --hyper-soft: #e1c2ff;
+  --hyper-a14: rgba(189, 124, 255, 0.14);
+  --hyper-a35: rgba(189, 124, 255, 0.35);
+  --hyper-a65: rgba(189, 124, 255, 0.65);
+
   --danger: #ff6f5e;
   --danger-a12: rgba(255, 111, 94, 0.12);
   --danger-a35: rgba(255, 111, 94, 0.35);
@@ -224,6 +231,82 @@ body::before {
 #root {
   position: relative;
   z-index: 1;
+}
+
+/* A click-origin pulse announces the switch to Hyper, then gets entirely out
+   of the way before the next conversational beat. */
+.hyper-activation-ripple {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at var(--hyper-x) var(--hyper-y),
+      rgba(225, 194, 255, 0.26) 0,
+      rgba(189, 124, 255, 0.13) 18%,
+      transparent 58%
+    );
+  mix-blend-mode: screen;
+  animation: hyper-veil 540ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hyper-wave {
+  position: absolute;
+  left: var(--hyper-x);
+  top: var(--hyper-y);
+  width: 8vmax;
+  aspect-ratio: 1;
+  border: 2px solid var(--hyper-a65);
+  border-radius: 50%;
+  box-shadow:
+    0 0 22px 4px var(--hyper-a35),
+    inset 0 0 22px 4px var(--hyper-a14);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.08);
+  animation: hyper-wave 520ms cubic-bezier(0.12, 0.72, 0.24, 1) both;
+}
+
+.hyper-wave-two {
+  border-width: 1px;
+  animation-delay: 42ms;
+}
+
+@keyframes hyper-veil {
+  0% {
+    opacity: 0;
+  }
+  16% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes hyper-wave {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.08);
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(32);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hyper-activation-ripple {
+    animation-duration: 180ms;
+  }
+
+  .hyper-wave {
+    display: none;
+  }
 }
 
 button,

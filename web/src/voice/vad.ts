@@ -27,7 +27,9 @@ const DEFAULTS: Required<VadOptions> = {
   // speech. The old 0.055 margin required shouting on many laptop mics.
   threshold: 0.012,
   onsetMs: 100,
-  hangoverMs: 520,
+  // Raw frame energy lets us stop sooner without a click extending the tail.
+  // Transcript-aware scaling still stretches unfinished thoughts to 684ms.
+  hangoverMs: 360,
   bargeMs: 240,
 }
 
@@ -87,7 +89,7 @@ export class Vad {
    * Feed one level sample.
    * Returns 'start' / 'end' on a transition, otherwise null.
    */
-  push(level: number, dtMs: number): 'start' | 'end' | null {
+  push(level: number, dtMs: number, transient = false): 'start' | 'end' | null {
     // Track the quietest recent level as the noise floor, rising slowly so a
     // fan or street noise stops triggering after a few seconds.
     if (!this.active) {
@@ -98,7 +100,10 @@ export class Vad {
     // consonant, and a single gate at the entry level drops out inside words
     // like "st-op", restarting the hangover mid-syllable. Staying in costs
     // less evidence than getting in, which is how the ear works too.
-    const loud = level > (this.active ? enter * 0.62 : enter)
+    // Treat an impulse as silence. This matters both before speech (a click
+    // must not open a stream) and during the tail (a click must not reset the
+    // silence clock and delay the reply).
+    const loud = !transient && level > (this.active ? enter * 0.62 : enter)
     this.present = loud
 
     if (loud) {

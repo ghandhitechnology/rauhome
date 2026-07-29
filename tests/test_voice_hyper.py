@@ -5,10 +5,10 @@ import base64
 import json
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from rau.providers.anthropic_compat import AnthropicCompatProvider
-from rau.providers.base import Message
+from rau.providers.base import ChatResult, Message, StreamDone, TextDelta
 from rau.providers.openai_compat import OpenAICompatProvider
 from rau.voice.stt.base import Transcript
 
@@ -158,6 +158,100 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(hello["profile"], "hyper")
         self.assertIn("latency_profile", hello["capabilities"])
         self.assertIn("latency_metrics", hello["capabilities"])
+
+
+class HyperConversationPolicyTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        from rau.face import brain
+
+        brain.reset_history()
+
+    def test_hyper_prompt_skips_diary_and_tool_context(self) -> None:
+        from rau.face import brain
+
+        with patch.object(
+            brain,
+            "recent_context",
+            side_effect=AssertionError("Hyper must not read diary memory"),
+        ):
+            prompt = brain._system_prompt(voice=True, hyper=True)
+
+        self.assertIn("delicate, rapid tiki-taka conversation", prompt)
+        self.assertNotIn("Recent memory excerpt", prompt)
+        self.assertNotIn("Before any tool call", prompt)
+
+    def test_hyper_history_keeps_only_a_small_recent_prose_tail(self) -> None:
+        from rau.face import brain
+
+        messages = [
+            Message("user", f"old-{index}-" + ("x" * 600))
+            if index % 2 == 0
+            else Message("assistant", f"reply-{index}-" + ("y" * 600))
+            for index in range(8)
+        ]
+        messages.insert(6, Message("tool", "tool output"))
+
+        compact = brain._hyper_history(messages)
+
+        self.assertLessEqual(len(compact), brain.HYPER_HISTORY_MESSAGES)
+        self.assertLessEqual(
+            sum(len(message.content) for message in compact),
+            brain.HYPER_HISTORY_CHARS + 1,
+        )
+        self.assertTrue(all(message.role in ("user", "assistant") for message in compact))
+        self.assertTrue(compact[-1].content.endswith("y" * 20))
+
+    def test_hyper_stream_is_one_short_tool_free_minimal_effort_round(self) -> None:
+        from rau.face import brain
+
+        class Provider:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def stream_turn(self, messages, **kwargs):
+                self.calls.append((messages, kwargs))
+                yield TextDelta("Right here.")
+                yield StreamDone(ChatResult(content="Right here."))
+
+        provider = Provider()
+        activity = Mock()
+        activity.start.side_effect = lambda *args, **kwargs: {
+            "id": f"span-{len(activity.start.call_args_list)}"
+        }
+        brain._append_history(
+            *[
+                Message(
+                    "user" if index % 2 == 0 else "assistant",
+                    f"turn {index} " + ("z" * 500),
+                )
+                for index in range(8)
+            ]
+        )
+
+        with (
+            patch.object(
+                brain,
+                "chat_for_slot",
+                return_value=(provider, {"model": "fast", "max_tokens": 4096}),
+            ),
+            patch.object(brain, "ACTIVITY", activity),
+        ):
+            reply = brain.chat_streaming(
+                "stay with me",
+                on_token=lambda _token: None,
+                voice=True,
+                latency_profile="hyper",
+                defer_diary=True,
+            )
+
+        self.assertEqual(str(reply), "Right here.")
+        self.assertEqual(len(provider.calls), 1)
+        sent_messages, options = provider.calls[0]
+        self.assertEqual(options["latency_profile"], "hyper")
+        self.assertEqual(options["effort"], "minimal")
+        self.assertEqual(options["max_tokens"], brain.HYPER_MAX_TOKENS)
+        self.assertIsNone(options["tools"])
+        self.assertLessEqual(len(sent_messages), brain.HYPER_HISTORY_MESSAGES + 1)
 
 
 class ProfileAndEndpointTests(unittest.IsolatedAsyncioTestCase):

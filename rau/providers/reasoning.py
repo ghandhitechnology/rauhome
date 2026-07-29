@@ -44,10 +44,24 @@ def build_reasoning_fields(
     cap = reasoning_for(provider, model)
     if not cap.get("supported"):
         return {}
+    param = str(cap.get("param") or "openai")
+
+    # Internal low-latency turns use a level below the user-facing effort
+    # ladder. Omitting the field is not enough: several providers interpret an
+    # absent effort as their normal/default reasoning level. Use each wire
+    # format's cheapest valid shape instead.
+    if str(effort or "").lower().strip() == "minimal":
+        if param == "deepseek":
+            return {"thinking": {"type": "disabled"}}
+        if param in ("openai", "kimi"):
+            return {"reasoning_effort": "low"}
+        # Anthropic-compatible extended thinking is opt-in, so no block is the
+        # minimum-latency request.
+        return {}
+
     mapped = clamp_effort(provider, model, effort)
     if not mapped:
         return {}
-    param = str(cap.get("param") or "openai")
 
     if param == "deepseek":
         # DeepSeek V4: only high/max are meaningful; enable thinking explicitly.
@@ -119,17 +133,16 @@ def apply_reasoning_payload(
 ) -> Dict[str, Any]:
     """Merge reasoning fields; nest ``extra_body`` when present."""
     fields = build_reasoning_fields(provider, model, effort)
-    if not fields:
-        return payload
-    extra = fields.pop("extra_body", None)
-    payload.update(fields)
-    _reconcile_thinking_budget(payload)
-    if isinstance(extra, dict):
-        nested = payload.get("extra_body")
-        if isinstance(nested, dict):
-            nested.update(extra)
-        else:
-            payload["extra_body"] = extra
+    if fields:
+        extra = fields.pop("extra_body", None)
+        payload.update(fields)
+        _reconcile_thinking_budget(payload)
+        if isinstance(extra, dict):
+            nested = payload.get("extra_body")
+            if isinstance(nested, dict):
+                nested.update(extra)
+            else:
+                payload["extra_body"] = extra
     # Catalog-flagged models (strict OpenAI reasoning endpoints, Anthropic
     # thinking) reject a non-default temperature with HTTP 400 — omit it.
     if reasoning_for(provider, model).get("fixed_temperature"):
