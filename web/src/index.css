@@ -478,12 +478,15 @@ h3 {
   }
 }
 
+/* One gradient tile of travel, starting at the phase the old -180%
+   background-position put the lattice at. See `.skeleton::after` for why one
+   tile is the whole loop, and for the arithmetic behind these two numbers. */
 @keyframes shimmer {
   from {
-    background-position: -180% 0;
+    transform: translate3d(-1.212121%, 0, 0);
   }
   to {
-    background-position: 180% 0;
+    transform: translate3d(-67.878788%, 0, 0);
   }
 }
 
@@ -1095,10 +1098,48 @@ html[data-view-transitions='on'] .route-fade {
 /* ── loading skeleton ──────────────────────────────────────── */
 
 .skeleton {
+  position: relative;
+  overflow: hidden;
   border-radius: var(--r-md);
+}
+
+/* The sweep was an animated `background-position`, which is a paint property:
+   every skeleton on screen re-rasterised on every frame, during the one window
+   where the main thread is busy parsing the route chunk the skeleton exists to
+   cover. Same gradient, same speed — moved onto a transform so it composites.
+
+   Sizing, in box widths. The tile is 2.2 and the old sweep slid the lattice
+   from +2.16 to -2.16, so 4.32 of travel — but it started at phase -0.04, not
+   0, which puts the far end at -4.36 and the floor for a strip that spans the
+   whole loop at 4.36 + 1 = 5.36, not the 5.32 this comment used to claim. 660%
+   was over a box-width of slack on top of that, and even 536% would not be
+   enough: the widest skeleton is not Talk's 760px composer, it is the
+   full-width Operations panel body at ~1100px, where 5.36 is 5900 CSS px —
+   11800 device px at DPR 2, past the 8192 texture cap a promoted layer has to
+   stay under to keep being composited rather than tiled and repainted.
+
+   So the loop is one tile rather than the old two-and-a-bit. The lattice
+   repeats every 2.2, so travelling 2.2 and wrapping draws the same picture at
+   the same 2.88 box-widths a second: 2.2 / 2.88 = 0.763889s. That holds the
+   strip's left edge in [-2.24, -0.04], needing 3.24 to keep the box covered at
+   the far end; 3.3 is a whole 1.5 tiles and leaves ~60px of margin, and 3630
+   CSS px is 7260 device px at DPR 2.
+
+   Not identical forever, and this is the one deliberate difference: 4.32 falls
+   0.08 short of two whole tiles, so the old loop hitched by that much every
+   1.5s. Wrapping on a tile boundary removes the hitch. The first 1.5s — which
+   is most of the life of most skeletons — is frame-for-frame the old sweep.
+
+   Skeletons are empty divs, so `overflow: hidden` has nothing to clip but
+   this. */
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 330%;
   background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
-  background-size: 220% 100%;
-  animation: shimmer 1.5s linear infinite;
+  background-size: calc(100% / 1.5) 100%;
+  animation: shimmer 0.763889s linear infinite;
 }
 
 .skeleton-line {

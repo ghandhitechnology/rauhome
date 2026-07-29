@@ -9,11 +9,35 @@
   position: fixed;
   border: 3px solid var(--accent);
   border-radius: 50%;
+  animation: tour-pencil-pulse 2.2s var(--ease-in-out) infinite;
+}
+
+/*
+  The tour's scrim: that 200vmax spread is what dims everything outside the
+  spotlight, and the ring's own box is the hole.
+
+  It used to be the first of .tour-orbit's three box-shadows, which made the
+  ring's paint bounds ~400vmax square — past max texture size, so
+  tour-pencil-pulse's brightness() fell back to a main-thread full-viewport
+  repaint every frame for the whole of onboarding. Carrying it on a sibling
+  that never animates cuts the pulse down to the ring itself.
+
+  The two accent glows had to come along: being listed first, the scrim painted
+  over them, and a separate element can only sit wholly above or wholly below
+  the ring — so splitting them apart would have reordered the stack.
+  tutorial.tsx renders this as the ring's sibling with an identical box, so the
+  hole lands exactly where the ring is.
+*/
+.tour-scrim {
+  position: fixed;
+  /* Below the ring, its two dashed outlines and the card, but still above the
+     page: .tour-layer is z-index 12000 and establishes the stacking context. */
+  z-index: -1;
+  border-radius: 50%;
   box-shadow:
     0 0 0 200vmax rgba(6, 6, 9, 0.78),
     0 0 0 7px rgba(240, 168, 60, 0.1),
     0 0 28px rgba(240, 168, 60, 0.48);
-  animation: tour-pencil-pulse 2.2s var(--ease-in-out) infinite;
 }
 
 .tour-orbit::before,
@@ -115,15 +139,31 @@
   background: var(--accent-deep);
 }
 
+/*
+  Rotate and brighten, but do not scale.
+
+  The scrim is a separate, static element now, so its hole no longer travels
+  with the ring. A ±1.5% scale moves the ring's outer edge by 0.0075·D, which
+  the 3px stroke only covers while D stays under ~394px — and the spotlight is
+  590px on the room composer and over 1100px on the Dashboard panels, where the
+  ring would visibly detach from the rim twice a cycle. Rotation is free of that
+  problem: the ring is a circle, so its edge does not move.
+
+  Be honest about what the rotation still buys. The dashed outlines' irregular
+  radii vary by only ~8px over a quarter turn, so 0.7deg of swing moves their
+  silhouette about 0.2px — sub-pixel. What actually reads is the dash pattern
+  sliding ~3.8px along the circumference. The ring's shape is effectively still;
+  the life in it now comes from the brightness pulse and that travelling dash.
+*/
 @keyframes tour-pencil-pulse {
   0%,
   100% {
     filter: brightness(0.92);
-    transform: scale(0.985) rotate(-0.35deg);
+    transform: rotate(-0.35deg);
   }
   50% {
     filter: brightness(1.16);
-    transform: scale(1.015) rotate(0.35deg);
+    transform: rotate(0.35deg);
   }
 }
 

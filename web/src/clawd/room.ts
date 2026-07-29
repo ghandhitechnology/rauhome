@@ -168,6 +168,63 @@ function glow(
   ctx.restore()
 }
 
+/**
+ * Fade-to-nothing ramps for the live passes, shared across frames.
+ *
+ * The same argument as `glowGradients`, for the fills that are not radials
+ * about a light. The floor sheen and its lamp pool, the window shaft, the
+ * screen's reflection and the lamp's cone and pool all have geometry that is a
+ * pure function of the unit and stops that are a constant or the sky — they
+ * vary through `globalAlpha`, never through the ramp. All six sit past the
+ * backdrop blit, so each was building a fresh colour table every frame it drew
+ * in order to draw the same one again.
+ */
+const rampGradients = new Map<string, CanvasGradient>()
+
+function stashRamp(key: string, g: CanvasGradient, colour: string): CanvasGradient {
+  g.addColorStop(0, colour)
+  g.addColorStop(1, 'rgba(0,0,0,0)')
+  rampGradients.set(key, g)
+  // One entry per ramp per window size, plus whatever the sky drifts through
+  // in the two it tints — the cap is a leak guard, not a policy.
+  if (rampGradients.size > 32) {
+    const oldest = rampGradients.keys().next().value
+    if (oldest !== undefined) rampGradients.delete(oldest)
+  }
+  return g
+}
+
+function linearRamp(
+  ctx: Ctx,
+  name: string,
+  u: number,
+  colour: string,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): CanvasGradient {
+  const key = `${name}|${u}|${colour}`
+  const hit = rampGradients.get(key)
+  if (hit) return hit
+  return stashRamp(key, ctx.createLinearGradient(x0, y0, x1, y1), colour)
+}
+
+function radialRamp(
+  ctx: Ctx,
+  name: string,
+  u: number,
+  colour: string,
+  cx: number,
+  cy: number,
+  radius: number,
+): CanvasGradient {
+  const key = `${name}|${u}|${colour}`
+  const hit = rampGradients.get(key)
+  if (hit) return hit
+  return stashRamp(key, ctx.createRadialGradient(cx, cy, 0, cx, cy, radius), colour)
+}
+
 /** How much daylight there is, 0..1. */
 function daylightAt(hour: number): number {
   return 1 - clamp01((Math.abs(hour - 13) - 3.5) / 5.5)
@@ -948,17 +1005,19 @@ function drawFloorSheen(ctx: Ctx, u: number, s: RoomState) {
   ctx.globalCompositeOperation = 'lighter'
   if (day > 0.05) {
     ctx.globalAlpha = 0.06 * day
-    const sheen = ctx.createLinearGradient(0, FLOOR_Y * u, 0, STAGE.h * u)
-    sheen.addColorStop(0, skyAt(s.hour).light)
-    sheen.addColorStop(1, 'rgba(0,0,0,0)')
+    const sheen = linearRamp(
+      ctx, 'sheen', u, skyAt(s.hour).light,
+      0, FLOOR_Y * u, 0, STAGE.h * u,
+    )
     ctx.fillStyle = sheen
     ctx.fillRect(ROOM_LEFT * u, FLOOR_Y * u, ROOM_W * u, depth * u)
   }
   if (s.lamp > 0.02) {
     ctx.globalAlpha = 0.09 * s.lamp
-    const pool = ctx.createLinearGradient(0, FLOOR_Y * u, 0, (FLOOR_Y + depth * 0.8) * u)
-    pool.addColorStop(0, ROOM.lamp)
-    pool.addColorStop(1, 'rgba(0,0,0,0)')
+    const pool = linearRamp(
+      ctx, 'floorPool', u, ROOM.lamp,
+      0, FLOOR_Y * u, 0, (FLOOR_Y + depth * 0.8) * u,
+    )
     ctx.fillStyle = pool
     ctx.fillRect((DESK.x + 4) * u, FLOOR_Y * u, 26 * u, depth * 0.8 * u)
   }
@@ -976,9 +1035,10 @@ function drawLightShaft(ctx: Ctx, u: number, s: RoomState) {
   ctx.globalCompositeOperation = 'lighter'
   ctx.globalAlpha = 0.15 * daylight
 
-  const shaft = ctx.createLinearGradient(x * u, y * u, (x + w + 34) * u, FLOOR_Y * u)
-  shaft.addColorStop(0, sky.light)
-  shaft.addColorStop(1, 'rgba(0,0,0,0)')
+  const shaft = linearRamp(
+    ctx, 'shaft', u, sky.light,
+    x * u, y * u, (x + w + 34) * u, FLOOR_Y * u,
+  )
   ctx.fillStyle = shaft
 
   // Skewed quad from the window opening down to the floor.
@@ -1124,9 +1184,10 @@ function drawMonitor(ctx: Ctx, u: number, s: RoomState) {
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.globalAlpha = 0.1 + s.screen * 0.14
-  const refl = ctx.createLinearGradient(0, y * u, 0, (y + 2.4) * u)
-  refl.addColorStop(0, ROOM.screenGlow)
-  refl.addColorStop(1, 'rgba(0,0,0,0)')
+  const refl = linearRamp(
+    ctx, 'screenRefl', u, ROOM.screenGlow,
+    0, y * u, 0, (y + 2.4) * u,
+  )
   ctx.fillStyle = refl
   ctx.fillRect((mx - 1) * u, y * u, 18 * u, 2.4 * u)
   ctx.restore()
@@ -1233,9 +1294,10 @@ function drawLamp(ctx: Ctx, u: number, s: RoomState) {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
     ctx.globalAlpha = 0.17 * s.lamp
-    const g = ctx.createLinearGradient(0, head.y * u, 0, (DESK.y + 3) * u)
-    g.addColorStop(0, ROOM.lamp)
-    g.addColorStop(1, 'rgba(0,0,0,0)')
+    const g = linearRamp(
+      ctx, 'lampCone', u, ROOM.lamp,
+      0, head.y * u, 0, (DESK.y + 3) * u,
+    )
     ctx.fillStyle = g
     ctx.beginPath()
     ctx.moveTo((head.x - 2.9) * u, (head.y + 3) * u)
@@ -1270,12 +1332,10 @@ function drawLamp(ctx: Ctx, u: number, s: RoomState) {
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
     ctx.globalAlpha = 0.16 * s.lamp
-    const pool = ctx.createRadialGradient(
-      (head.x + 1) * u, (DESK.y + 1) * u, 0,
+    const pool = radialRamp(
+      ctx, 'lampPool', u, ROOM.lamp,
       (head.x + 1) * u, (DESK.y + 1) * u, 15 * u,
     )
-    pool.addColorStop(0, ROOM.lamp)
-    pool.addColorStop(1, 'rgba(0,0,0,0)')
     ctx.fillStyle = pool
     ctx.fillRect((head.x - 15) * u, DESK.y * u, 32 * u, 3 * u)
     ctx.restore()

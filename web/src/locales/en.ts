@@ -28,10 +28,12 @@ export const EN = {
   'language.title': 'Choose your language',
   'language.lede': 'You can change Rau’s interface and reply language later in Settings.',
   'language.greeting': 'Hello · 안녕하세요',
+  // The first-run toggle labels itself ENGLISH / KOREAN in both languages —
+  // see LanguageToggle. These two are the Settings switcher, which names each
+  // language in its own script.
   'language.english': 'English',
-  'language.englishNote': 'Continue in English',
   'language.korean': '한국어',
-  'language.koreanNote': '한국어로 계속하기',
+  'language.continue': 'Continue',
 
   // ── first run: three-page story ──────────────────────────────
   'intro.skip': 'Skip',

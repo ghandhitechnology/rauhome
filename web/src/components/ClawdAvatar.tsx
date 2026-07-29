@@ -73,6 +73,8 @@ export default function ClawdAvatar({
   const centre = useRef({ x: 0, y: 0 })
   /** The canvas's viewport position, cached — see the effect below. */
   const canvasPos = useRef({ left: 0, top: 0 })
+  /** Set when something may have moved the canvas; cleared by the next frame. */
+  const posStale = useRef(true)
   const desired = useRef<MotionName>('idle')
   const smile = useRef(0)
   /** The cue holding this avatar, and the timer for its walk-in-place. */
@@ -95,8 +97,12 @@ export default function ClawdAvatar({
     if (!trackPointer) return
     const onMove = (e: PointerEvent) => {
       pointer.current = { x: e.clientX, y: e.clientY }
+      // Content can reflow the avatar without a scroll or a resize, so a moving
+      // pointer also means the cached position is suspect — but only flag it,
+      // never measure here. See the position effect below.
+      posStale.current = true
     }
-    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointermove', onMove, { passive: true })
     return () => window.removeEventListener('pointermove', onMove)
   }, [trackPointer])
 
@@ -156,10 +162,17 @@ export default function ClawdAvatar({
     const x = w / 2
     const y = h - unit * 2.6
 
-    centre.current = {
-      x: canvasPos.current.left + x,
-      y: canvasPos.current.top + y - unit * 5,
+    if (posStale.current) {
+      posStale.current = false
+      const rect = ctx.canvas.getBoundingClientRect()
+      canvasPos.current.left = rect.left
+      canvasPos.current.top = rect.top
     }
+
+    // Mutated rather than replaced: rig.update only reads x and y off this and
+    // never keeps it, so a fresh object every frame is pure nursery pressure.
+    centre.current.x = canvasPos.current.left + x
+    centre.current.y = canvasPos.current.top + y - unit * 5
 
     const held = cue.current
     if (held) {
@@ -188,28 +201,27 @@ export default function ClawdAvatar({
     drawClawd(ctx, rig.params, { unit, x, y })
   }, [rig, trackPointer])
 
-  // A getBoundingClientRect per frame is a forced layout per frame, on a page
-  // whose DOM mutates constantly while streaming. Resize and scroll move the
-  // canvas, but so does content reflowing without a scroll — a thread growing
-  // above the avatar pushes it down silently. The position only feeds the
-  // pointer gaze, so it is re-measured on pointer moves as well: fresh exactly
-  // when it is read, and still never a forced layout per frame.
+  // Resize and scroll move the canvas, but so does content reflowing without a
+  // scroll — a thread growing above the avatar pushes it down silently. These
+  // only raise a flag; the read itself happens in the frame that consumes it,
+  // because a getBoundingClientRect from a raw handler is a forced layout per
+  // *event*, and pointermove and scroll both fire faster than the display on
+  // engines that do not coalesce them. Flagged, it is one read per drawn frame
+  // at worst and none at all while the page is still. The position only feeds
+  // the pointer gaze, which is allowed to be a frame behind.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const measure = () => {
-      const rect = canvas.getBoundingClientRect()
-      canvasPos.current = { left: rect.left, top: rect.top }
+    const stale = () => {
+      posStale.current = true
     }
-    measure()
-    const ro = new ResizeObserver(measure)
+    stale()
+    const ro = new ResizeObserver(stale)
     ro.observe(canvas)
-    window.addEventListener('scroll', measure, true)
-    window.addEventListener('pointermove', measure, { passive: true })
+    window.addEventListener('scroll', stale, { capture: true, passive: true })
     return () => {
       ro.disconnect()
-      window.removeEventListener('scroll', measure, true)
-      window.removeEventListener('pointermove', measure)
+      window.removeEventListener('scroll', stale, true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
