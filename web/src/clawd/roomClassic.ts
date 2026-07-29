@@ -561,17 +561,28 @@ export function drawRoomGrade(ctx: Ctx, u: number, s: RoomState) {
     ctx.restore()
   }
 
-  // Vignette.
+  // Vignette. Fixed stops and geometry, so it is built once per unit rather
+  // than once per frame.
   ctx.save()
-  const vig = ctx.createRadialGradient(
+  ctx.fillStyle = vignette(ctx, u)
+  ctx.fillRect(0, 0, STAGE.w * u, STAGE.h * u)
+  ctx.restore()
+}
+
+/** The grade's vignette, rebuilt only when the unit changes. */
+let vigCache: { u: number; g: CanvasGradient } | null = null
+
+function vignette(ctx: Ctx, u: number): CanvasGradient {
+  const key = Math.round(u * 4) / 4
+  if (vigCache && vigCache.u === key) return vigCache.g
+  const g = ctx.createRadialGradient(
     (STAGE.w / 2) * u, (STAGE.h / 2) * u, STAGE.h * u * 0.34,
     (STAGE.w / 2) * u, (STAGE.h / 2) * u, STAGE.w * u * 0.72,
   )
-  vig.addColorStop(0, 'rgba(0,0,0,0)')
-  vig.addColorStop(1, 'rgba(0,0,0,0.55)')
-  ctx.fillStyle = vig
-  ctx.fillRect(0, 0, STAGE.w * u, STAGE.h * u)
-  ctx.restore()
+  g.addColorStop(0, 'rgba(0,0,0,0)')
+  g.addColorStop(1, 'rgba(0,0,0,0.55)')
+  vigCache = { u: key, g }
+  return g
 }
 
 /**

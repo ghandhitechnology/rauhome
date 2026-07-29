@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { FULL_RATE, pacingFor, watchActivity } from './activity'
 
 /**
  * Runs a device-pixel-correct canvas render loop.
@@ -6,6 +7,10 @@ import { useEffect, useRef } from 'react'
  * Handles DPR, resize observation, pausing when the tab is hidden, and clamps
  * dt so a backgrounded tab does not resume with one enormous timestep that
  * teleports the character across the room.
+ *
+ * The rate is the display's own whenever anybody is around — a 120Hz panel
+ * gets 120 drawn frames a second — and a quiet 15fps only once the room has
+ * been left alone for five minutes (see `activity.ts`).
  */
 export function useClawdCanvas(
   draw: (ctx: CanvasRenderingContext2D, dt: number, w: number, h: number) => void,
@@ -42,18 +47,14 @@ export function useClawdCanvas(
     resize()
     const ro = new ResizeObserver(resize)
     ro.observe(canvas)
+    watchActivity()
 
     const targetFps = () => {
       const root = document.documentElement.dataset
-      // A hand of cards is the one thing here you are actually *playing*, and
-      // a card sliding at 30fps under a hand that moves at 120 is the one
-      // place the whole room reads as a cartoon of an interface. It gets the
-      // display's own rate for as long as the table is out, and gives it back
-      // the moment he stands up.
-      if (root.rauTable === 'true') return 60
-      const profile = root.resourceProfile || 'balanced'
-      const active = root.rauActive === 'true'
-      return profile === 'performance' ? 60 : active ? 30 : profile === 'eco' ? 15 : 24
+      return pacingFor({
+        table: root.rauTable === 'true',
+        profile: root.resourceProfile || 'balanced',
+      })
     }
 
     /*
@@ -65,12 +66,15 @@ export function useClawdCanvas(
       when the budget for the target rate has not elapsed. The 0.6 slack is a
       half-ish frame: without it a 16.66ms vsync always lands a hair under a
       16.67ms budget and every frame is skipped.
+
+      FULL_RATE draws every vsync: the budget is negative, so the skip branch
+      can never fire and the display — 60Hz, 120Hz, 144Hz — sets the pace.
     */
     const frame = (now: number) => {
       raf = 0
       if (disposed) return
       const fps = targetFps()
-      const budget = 1000 / fps - 0.6
+      const budget = fps === FULL_RATE ? -1 : 1000 / fps - 0.6
       const elapsed = now - last
       if (elapsed < budget) {
         scheduleFrame()
