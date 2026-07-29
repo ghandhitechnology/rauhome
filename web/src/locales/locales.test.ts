@@ -18,10 +18,8 @@ const SHARED = new Set<TranslationKey>([
   // Both languages happen to name a piece in the same order: 백 나이트.
   'chess.pieceLabel',
   'chess.squareLabel',
-  'language.english', // each option is written in its own language
-  'language.englishNote',
+  'language.english', // the Settings switcher names each language in its own script
   'language.korean',
-  'language.koreanNote',
   'language.greeting',
   'stat.mcp',
   'ops.cron',

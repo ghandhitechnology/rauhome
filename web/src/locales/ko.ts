@@ -43,9 +43,8 @@ export const KO: Record<TranslationKey, string> = {
   'language.lede': 'Rau의 화면과 대화 언어는 언제든 설정에서 바꿀 수 있어요.',
   'language.greeting': 'Hello · 안녕하세요',
   'language.english': 'English',
-  'language.englishNote': 'Continue in English',
   'language.korean': '한국어',
-  'language.koreanNote': '한국어로 계속하기',
+  'language.continue': '계속하기',
 
   // ── first run: three-page story ──────────────────────────────
   'intro.skip': '건너뛰기',

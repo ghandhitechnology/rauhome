@@ -3,6 +3,7 @@ import { useNavigate } from '../router'
 import { api, type Catalog, type SetupState } from '../api'
 import { useLocale, type Locale } from '../i18n'
 import ClawdAvatar from '../components/ClawdAvatar'
+import LanguageToggle from './setup/LanguageToggle'
 import StepOrigin from './setup/StepOrigin'
 import StepIdentity from './setup/StepIdentity'
 import StepBrains from './setup/StepBrains'
@@ -64,6 +65,9 @@ export default function Setup({
   const [prelude, setPrelude] = useState<Prelude>(() => preludeFromStorage(hasChosenLocale))
   const [storyPage, setStoryPage] = useState(0)
   const [languageBusy, setLanguageBusy] = useState(false)
+  // Set the moment the toggle is touched, so the auto-advance below stops
+  // treating "a language is chosen" as "the gate is answered".
+  const [languageTouched, setLanguageTouched] = useState(false)
   const [step, setStep] = useState<StepId>('welcome')
   const [dir, setDir] = useState<1 | -1>(1)
   const [draft, setDraft] = useState<Draft>(loadDraft)
@@ -80,9 +84,13 @@ export default function Setup({
     { id: 'voice' as StepId, label: t('setup.voice') },
   ]
 
+  // Skip the gate for someone who already answered it — the backend's stored
+  // language arrives after mount, so this cannot be decided on the first
+  // render alone. Once the toggle has been touched, flipping it is a preview
+  // and must not carry the reader off the screen.
   useEffect(() => {
-    if (prelude === 'language' && hasChosenLocale) setPrelude('story')
-  }, [hasChosenLocale, prelude])
+    if (prelude === 'language' && hasChosenLocale && !languageTouched) setPrelude('story')
+  }, [hasChosenLocale, languageTouched, prelude])
 
   const reload = useCallback(async () => {
     const s = await api.setupState()
@@ -207,14 +215,30 @@ export default function Setup({
     localStorage.removeItem(DRAFT_KEY)
   }
 
-  async function chooseLanguage(next: Locale) {
+  /**
+   * Flip the whole interface to a language without leaving the gate, so the
+   * choice is made by reading the result rather than by trusting a label.
+   *
+   * This writes to the backend on every flip. A reader who toggles quickly can
+   * land two writes out of order, which is why `confirmLanguage` writes once
+   * more on the way out — that one is awaited and lands last.
+   */
+  function previewLanguage(next: Locale) {
+    if (next === locale) return
+    setLanguageTouched(true)
+    void setLocale(next).catch(() => {
+      // The local choice is already active; confirming re-sends it.
+    })
+  }
+
+  async function confirmLanguage() {
     setLanguageBusy(true)
     setDraft((current) => ({
       ...current,
-      stt: { ...current.stt, language: next },
+      stt: { ...current.stt, language: locale },
     }))
     try {
-      await setLocale(next)
+      await setLocale(locale)
     } catch {
       // The local choice is already active; the next successful settings save
       // will make the backend durable too.
@@ -249,24 +273,14 @@ export default function Setup({
         <p className="eyebrow">{t('language.greeting')}</p>
         <h1>{t('language.title')}</h1>
         <p className="prelude-lede">{t('language.lede')}</p>
-        <div className="language-options">
-          <button
-            type="button"
-            disabled={languageBusy}
-            onClick={() => void chooseLanguage('en')}
-          >
-            <strong>{t('language.english')}</strong>
-            <span>{t('language.englishNote')}</span>
-          </button>
-          <button
-            type="button"
-            disabled={languageBusy}
-            onClick={() => void chooseLanguage('ko')}
-          >
-            <strong>{t('language.korean')}</strong>
-            <span>{t('language.koreanNote')}</span>
-          </button>
-        </div>
+        <LanguageToggle
+          locale={locale}
+          busy={languageBusy}
+          groupLabel={t('language.title')}
+          confirmLabel={t('language.continue')}
+          onSelect={previewLanguage}
+          onConfirm={() => void confirmLanguage()}
+        />
       </div>
     )
   }
