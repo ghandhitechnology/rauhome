@@ -271,6 +271,11 @@ CHAT_MEMORY_CHARS = 2500
 HYPER_MAX_TOKENS = 96
 HYPER_HISTORY_MESSAGES = 4
 HYPER_HISTORY_CHARS = 1600
+#: An upstream model can finish after emitting reasoning but before emitting
+#: user-visible prose. Give it fresh, tool-free attempts before the face falls
+#: back locally. Retrying here keeps one bad completion from turning into a
+#: repeated stock phrase in chat or voice.
+EMPTY_REPLY_RETRIES = 2
 HYPER_CONVERSATION_PROMPT = """## Hyper conversation
 This is delicate, rapid tiki-taka conversation. Answer immediately and stay
 with the human cadence of the exchange.
@@ -280,6 +285,27 @@ with the human cadence of the exchange.
 - Use only the few recent lines supplied below. Do not reach for older memory or invent missing context.
 - If the request needs research, tools, or careful multi-step reasoning, say briefly that Normal mode is the place for it.
 Never mention tokens, prompts, latency, or this policy."""
+
+_EMPTY_REPLY_PROMPT = """
+
+## User-visible answer required
+The previous attempt ended without any user-visible answer. Respond to the
+latest user message now with non-empty natural language. Be specific to what
+they said. Do not output a generic acknowledgement, do not use tools, and do
+not discuss this retry instruction."""
+_EMPTY_REPLY_EN = (
+    "My answer dropped out before it reached you. Could you try that once more?",
+    "That response came back blank. Say the last part again and I’ll take another pass.",
+    "I lost the reply on my side. Could you repeat what you just said?",
+)
+_EMPTY_REPLY_KO = (
+    "답변이 전달되기 전에 사라졌어요. 방금 말을 한 번만 다시 해 줄래요?",
+    "응답이 비어 버렸어요. 마지막 부분을 다시 말해 주면 바로 이어갈게요.",
+    "제 쪽에서 답변을 놓쳤어요. 방금 한 말을 한 번만 다시 들려주세요.",
+)
+_empty_reply_lock = threading.Lock()
+_empty_reply_index = 0
+
 #: Default voice tool surface — conversational + room + browse. Heavy
 #: file/shell/hard-task schemas join on round 2+ or explicit deep-work intent.
 VOICE_SLIM_TOOL_NAMES = frozenset(
@@ -1070,6 +1096,63 @@ def _force_tool_free_close(messages: List[Message], tool_count: int) -> None:
     messages[0] = Message(role="system", content=messages[0].content + suffix)
 
 
+def _empty_retry_messages(messages: List[Message], attempt: int) -> List[Message]:
+    """Return a fresh prompt that insists on prose after an empty completion."""
+    retried = list(messages)
+    if retried and retried[0].role == "system":
+        retried[0] = Message(
+            role="system",
+            content=(
+                retried[0].content
+                + _EMPTY_REPLY_PROMPT
+                + f"\nThis is recovery attempt {attempt + 1}."
+            ),
+        )
+    return retried
+
+
+def _local_empty_reply(user_text: str) -> str:
+    """Last-resort text that never repeats on adjacent empty turns."""
+    global _empty_reply_index
+    choices = (
+        _EMPTY_REPLY_KO
+        if re.search(r"[가-힣]", user_text or "")
+        else _EMPTY_REPLY_EN
+    )
+    with _empty_reply_lock:
+        reply = choices[_empty_reply_index % len(choices)]
+        _empty_reply_index += 1
+    return reply
+
+
+def _retry_empty_blocking_reply(
+    provider: Any,
+    slot: Dict[str, Any],
+    messages: List[Message],
+    *,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Any:
+    """Retry a reasoning-only/empty blocking completion with thinking minimized."""
+    last = None
+    for attempt in range(EMPTY_REPLY_RETRIES):
+        if should_stop is not None and should_stop():
+            return last
+        last = provider.chat(
+            _empty_retry_messages(messages, attempt),
+            model=slot.get("model") or "deepseek-v4-flash",
+            max_tokens=min(_face_max_tokens(slot), 512),
+            temperature=min(
+                1.2,
+                max(0.2, float(slot.get("temperature") or 0.9) + 0.1 * attempt),
+            ),
+            tools=None,
+            effort="minimal",
+        )
+        if str(getattr(last, "content", "") or "").strip():
+            return last
+    return last
+
+
 def _record_tool_round(
     messages: List[Message],
     result: Any,
@@ -1348,8 +1431,29 @@ def chat(
             broadcast.error(str(exc))
             raise
 
+        if not spoken and not stop():
+            try:
+                retry = _retry_empty_blocking_reply(
+                    provider,
+                    slot,
+                    messages,
+                    should_stop=stop,
+                )
+            except Exception as exc:
+                _finish_stream_turn(pending, "")
+                broadcast.error(str(exc))
+                raise
+            if retry is not None:
+                if retry.reasoning or retry.reasoning_details:
+                    trace.provider_reasoning = True
+                spoken = (retry.content or "").strip()
+        if stop():
+            cancelled = Cancelled(pending, "", user_text, turn, tools_ran)
+            finish_interrupted_turn(cancelled, "")
+            broadcast.cancelled("")
+            raise cancelled
         if not spoken:
-            spoken = "Okay. I'm with you."
+            spoken = _local_empty_reply(user_text)
         from rau.heartbeat.presence import apply_reply_mood
 
         spoken, _ = apply_reply_mood(spoken)
@@ -1725,6 +1829,7 @@ def chat_streaming(
 
         reasoning_span_id: Optional[str] = None
         response_span_id: Optional[str] = None
+        answer_visible = False
         try:
             with choreography.turn_scope(turn):
                 skill_prompts: List[str] = []
@@ -1867,7 +1972,105 @@ def chat_streaming(
                         # Provider returned prose only in the terminal event.
                         heard.append(result.content)
                         emit_prose(result.content)
+                    answer_visible = bool(
+                        "".join(chunks).strip() or (result.content or "").strip()
+                    )
                     break
+
+                # A reasoning-capable provider can end cleanly with thoughts
+                # but no visible answer. Retry with tools and thinking disabled
+                # before allowing any local recovery text onto the wire.
+                if not answer_visible:
+                    for attempt in range(EMPTY_REPLY_RETRIES):
+                        if stop():
+                            raise Cancelled(
+                                pending,
+                                "",
+                                user_text,
+                                turn,
+                                tools_ran,
+                            )
+                        retry_chunks: List[str] = []
+                        retry_result = None
+                        for event in provider.stream_turn(
+                            _empty_retry_messages(messages, attempt),
+                            model=slot.get("model") or "deepseek-v4-flash",
+                            max_tokens=(
+                                HYPER_MAX_TOKENS
+                                if hyper
+                                else min(_face_max_tokens(slot), 512)
+                            ),
+                            temperature=min(
+                                1.2,
+                                max(
+                                    0.2,
+                                    float(slot.get("temperature") or 0.9)
+                                    + 0.1 * attempt,
+                                ),
+                            ),
+                            tools=None,
+                            effort="minimal",
+                            latency_profile=latency_profile,
+                        ):
+                            if stop():
+                                raise Cancelled(
+                                    pending,
+                                    "".join(heard).strip(),
+                                    user_text,
+                                    turn,
+                                    tools_ran,
+                                )
+                            if isinstance(event, TextDelta):
+                                retry_chunks.append(event.text)
+                                heard.append(event.text)
+                                emit_prose(event.text)
+                                if response_span_id is None:
+                                    response_span_id = ACTIVITY.start(
+                                        "execution",
+                                        "Responding",
+                                        source="face",
+                                        summary="Composing the response",
+                                        turn_id=turn,
+                                    )["id"]
+                            elif isinstance(event, ReasoningDelta):
+                                trace.provider_reasoning = True
+                                if reasoning_span_id is None:
+                                    reasoning_span_id = ACTIVITY.start(
+                                        "reasoning",
+                                        "Reasoning",
+                                        source=getattr(
+                                            event,
+                                            "provider_format",
+                                            "provider",
+                                        ),
+                                        summary="",
+                                        turn_id=turn,
+                                    )["id"]
+                                ACTIVITY.delta(reasoning_span_id, text=event.text)
+                            elif isinstance(event, StreamDone):
+                                retry_result = event.result
+                        if retry_result is not None and (
+                            retry_result.reasoning
+                            or retry_result.reasoning_details
+                        ):
+                            trace.provider_reasoning = True
+                        if (
+                            not retry_chunks
+                            and retry_result is not None
+                            and retry_result.content
+                        ):
+                            heard.append(retry_result.content)
+                            emit_prose(retry_result.content)
+                        retry_text = "".join(retry_chunks).strip()
+                        if not retry_text and retry_result is not None:
+                            retry_text = (retry_result.content or "").strip()
+                        if retry_text:
+                            answer_visible = True
+                            break
+                if not answer_visible:
+                    recovery = _local_empty_reply(user_text)
+                    heard.append(recovery)
+                    emit_prose(recovery)
                 tail = leading_tag.flush()
                 if tail:
                     emit(tail)
@@ -1928,7 +2131,7 @@ def chat_streaming(
 
         spoken = "".join(heard).strip()
         if not spoken:
-            spoken = "Okay. I'm with you."
+            spoken = _local_empty_reply(user_text)
             emit(spoken)
         from rau.heartbeat.presence import apply_reply_mood
 

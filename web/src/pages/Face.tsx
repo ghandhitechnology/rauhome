@@ -231,7 +231,8 @@ export default function Face() {
   const voice = useVoiceSession({
     enabled: voiceOn,
     listen: modeListens(mode),
-    profile: mode === 'voice' ? voiceLatency : 'normal',
+    pushToTalk: mode === 'space-talk',
+    profile: modeSupportsHyper(mode) ? voiceLatency : 'normal',
   })
   const [stream, setStream] = useState<FaceStream>(IDLE_FACE_STREAM)
   const streamRef = useRef(stream)
@@ -695,7 +696,7 @@ export default function Face() {
           />
           <span
             className={`mode-pill ${isVoice ? 'on' : ''}`}
-            title="Shift+Space to switch — chat, voice, or talk (type in, speak out)"
+            title="Shift+Space to switch — chat, voice, talk, or hold-Space-to-talk"
           >
             <i className="mode-dot" />
             {modeLabel(mode)}
@@ -952,12 +953,14 @@ export default function Face() {
         happens at a real table. Draft state lives in FaceComposer so typing
         does not re-render the room or the card table.
       */}
-      <FaceComposer
-        inGame={inGame}
-        open={composerOpen}
-        onOpenChange={setComposerOpen}
-        onSend={send}
-      />
+      {mode !== 'space-talk' && (
+        <FaceComposer
+          inGame={inGame}
+          open={composerOpen}
+          onOpenChange={setComposerOpen}
+          onSend={send}
+        />
+      )}
     </div>
   )
 }

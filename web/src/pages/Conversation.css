@@ -112,6 +112,24 @@
   margin: 0.45rem 0 0 auto;
 }
 
+.space-talk-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.space-talk-controls em {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-style: normal;
+  text-align: right;
+}
+
 .convo-activity-sidebar {
   flex: 0 0 clamp(17.5rem, 30vw, 22rem);
   min-width: 0;
@@ -464,7 +482,8 @@
   font-size: 0.74rem;
   color: var(--faint);
 }
-.compose-actions .hyper-toggle {
+.compose-actions .hyper-toggle,
+.space-talk-controls .hyper-toggle {
   border: 1px solid var(--line-2);
   border-radius: 999px;
   padding: 0.34rem 0.58rem;
@@ -476,14 +495,16 @@
   cursor: pointer;
 }
 
-.compose-actions .hyper-toggle.on {
+.compose-actions .hyper-toggle.on,
+.space-talk-controls .hyper-toggle.on {
   color: var(--hyper-soft);
   border-color: var(--hyper-a65);
   background: var(--hyper-a14);
   box-shadow: 0 0 14px var(--hyper-a35);
 }
 
-.compose-actions .hyper-toggle:disabled {
+.compose-actions .hyper-toggle:disabled,
+.space-talk-controls .hyper-toggle:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }

@@ -1,7 +1,7 @@
 {
   "face": {
     "provider": "openrouter",
-    "model": "google/gemini-3.6-flash",
+    "model": "x-ai/grok-4.5",
     "max_tokens": 4090,
     "temperature": 0.9,
     "effort": "high"
@@ -32,7 +32,7 @@
     "voice_id": "e1717dc3-b87b-4720-aa7f-b6db290e0609",
     "model": "sonic-3.5",
     "preset": "custom",
-    "effect": "none",
+    "effect": "robot",
     "voice_settings": {
       "stability": 0.72,
       "similarity_boost": 0.72,

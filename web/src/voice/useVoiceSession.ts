@@ -96,11 +96,14 @@ export type VoiceTurnEnd = { interrupted: boolean; heard: string; at: number }
 export const useVoiceSession = ({
   enabled,
   listen = true,
+  pushToTalk = false,
   profile = 'normal',
 }: {
   enabled: boolean
   /** When false, keep the voice socket and TTS but do not open the mic. */
   listen?: boolean
+  /** When true, capture speech only while unmodified Space is held. */
+  pushToTalk?: boolean
   /** Hyper is intentionally only effective when the microphone is enabled. */
   profile?: VoiceLatencyProfile
 }): VoiceSession => {
@@ -159,6 +162,8 @@ export const useVoiceSession = ({
     let disposed = false
     let retries = 0
     let retryTimer: number | null = null
+    let pushHeld = false
+    let pushStarting = false
 
     const send = (payload: Record<string, unknown>) => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload))
@@ -192,9 +197,96 @@ export const useVoiceSession = ({
       drain()
     }
 
+    const beginPush = async () => {
+      if (
+        !pushToTalk ||
+        !pushHeld ||
+        pushStarting ||
+        streamingRef.current ||
+        !ws ||
+        ws.readyState !== WebSocket.OPEN
+      ) {
+        return
+      }
+      pushStarting = true
+      try {
+        if (phaseRef.current === 'speaking') {
+          bargingRef.current = true
+          await bargeIn()
+        } else {
+          send({ t: 'speech_start' })
+          streamingRef.current = true
+          drain()
+        }
+      } finally {
+        pushStarting = false
+        // A quick press can be released while playback.flush() is completing.
+        // Close the utterance after its buffered beginning has been delivered.
+        if (!pushHeld && streamingRef.current) {
+          endpointAtRef.current = lastVoiceAtRef.current || performance.now()
+          send({ t: 'speech_end' })
+          streamingRef.current = false
+          held.length = 0
+        }
+      }
+    }
+
+    const endPush = () => {
+      if (!pushToTalk || !pushHeld) return
+      pushHeld = false
+      if (!streamingRef.current) return
+      endpointAtRef.current = lastVoiceAtRef.current || performance.now()
+      send({ t: 'speech_end' })
+      streamingRef.current = false
+      held.length = 0
+    }
+
+    const onPushKeyDown = (event: KeyboardEvent) => {
+      if (
+        !pushToTalk ||
+        event.code !== 'Space' ||
+        event.shiftKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        event.repeat ||
+        event.isComposing
+      ) {
+        return
+      }
+      event.preventDefault()
+      pushHeld = true
+      held.length = 0
+      vad.reset()
+      void beginPush()
+    }
+
+    const onPushKeyUp = (event: KeyboardEvent) => {
+      if (!pushToTalk || event.code !== 'Space') return
+      event.preventDefault()
+      endPush()
+    }
+
+    const onPushBlur = () => endPush()
+    window.addEventListener('keydown', onPushKeyDown, { capture: true })
+    window.addEventListener('keyup', onPushKeyUp, { capture: true })
+    window.addEventListener('blur', onPushBlur)
+
     capture.onFrame((pcm, level) => {
       micRef.current = level
       if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+      if (pushToTalk) {
+        if (!pushHeld) {
+          held.length = 0
+          return
+        }
+        lastVoiceAtRef.current = performance.now()
+        held.push(pcm)
+        if (!streamingRef.current && !pushStarting) void beginPush()
+        if (streamingRef.current) drain()
+        return
+      }
 
       const event = vad.push(level, FRAME_MS)
       if (vad.voicePresent) lastVoiceAtRef.current = performance.now()
@@ -495,6 +587,9 @@ export const useVoiceSession = ({
       void playback.close()
       playbackRef.current = null
       vadRef.current = null
+      window.removeEventListener('keydown', onPushKeyDown, { capture: true })
+      window.removeEventListener('keyup', onPushKeyUp, { capture: true })
+      window.removeEventListener('blur', onPushBlur)
       streamingRef.current = false
       bargingRef.current = false
       mutedRef.current = false
@@ -518,7 +613,7 @@ export const useVoiceSession = ({
       lastVoiceAtRef.current = 0
       applyPhase('idle')
     }
-  }, [enabled, listen, applyPhase])
+  }, [enabled, listen, pushToTalk, applyPhase])
 
   useEffect(() => {
     if (!enabled || !listen || !supportsProfileCommand || phase !== 'idle') return

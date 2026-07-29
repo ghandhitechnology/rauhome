@@ -236,7 +236,8 @@ export default function Conversation() {
   const voice = useVoiceSession({
     enabled: voiceOn,
     listen: modeListens(mode),
-    profile: mode === 'voice' ? voiceLatency : 'normal',
+    pushToTalk: mode === 'space-talk',
+    profile: modeSupportsHyper(mode) ? voiceLatency : 'normal',
   })
   const [log, setLog] = useState<any[]>([])
   /** Until the first fetch settles, an empty `log` means "unknown", not "none". */
@@ -606,6 +607,27 @@ export default function Conversation() {
             onToggle={() => setActivityOpen((value) => !value)}
             className="convo-activity-chip"
           />
+          {mode === 'space-talk' && (
+            <div className="space-talk-controls" role="status">
+              <span>
+                {!voice.connected
+                  ? 'Connecting…'
+                  : voice.phase === 'thinking'
+                    ? 'Thinking…'
+                    : voice.phase === 'speaking'
+                      ? 'Rau is speaking'
+                      : voice.phase === 'listening'
+                        ? 'Listening — release Space to send'
+                        : 'Hold Space to talk'}
+              </span>
+              <HyperToggle
+                profile={voiceLatency}
+                setProfile={setVoiceLatency}
+                disabled={voice.phase !== 'idle'}
+              />
+              {voice.error && <em>{voice.error}</em>}
+            </div>
+          )}
         </div>
       </header>
 
@@ -710,6 +732,7 @@ export default function Conversation() {
         <div ref={bottomRef} aria-hidden className="convo-thread-end" />
       </section>
 
+      {mode !== 'space-talk' && (
       <footer ref={composeRef} className="convo-compose">
         <div className="compose-wrap">
           <SlashMenu
@@ -789,6 +812,7 @@ export default function Conversation() {
                 : 'Enter sends · Shift+Enter for a new line · / for commands · Shift+Space cycles modes'}
         </p>
       </footer>
+      )}
       </div>
 
       {activityOpen && (

@@ -7,13 +7,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
  * - `chat`  — type in, text out
  * - `voice` — speak in, voice out (mic on)
  * - `talk`  — type in, voice out (mic off)
+ * - `space-talk` — hold Space to speak, voice out
  *
  * Shift+Space rotates through these in order.
  */
-export type Mode = 'chat' | 'voice' | 'talk'
+export type Mode = 'chat' | 'voice' | 'talk' | 'space-talk'
 export type VoiceLatencyProfile = 'normal' | 'hyper'
 
-export const MODES: readonly Mode[] = ['chat', 'voice', 'talk'] as const
+export const MODES: readonly Mode[] = ['chat', 'voice', 'talk', 'space-talk'] as const
 
 const MODE_KEY = 'rau.mode'
 const VOICE_LATENCY_KEY = 'rau.voice.latency'
@@ -29,7 +30,7 @@ type ModeContextValue = {
 const ModeContext = createContext<ModeContextValue | null>(null)
 
 const isMode = (v: unknown): v is Mode =>
-  v === 'chat' || v === 'voice' || v === 'talk'
+  v === 'chat' || v === 'voice' || v === 'talk' || v === 'space-talk'
 
 export function nextMode(mode: Mode): Mode {
   const i = MODES.indexOf(mode)
@@ -38,17 +39,17 @@ export function nextMode(mode: Mode): Mode {
 
 /** Voice socket + TTS are live (mic may or may not be). */
 export function modeUsesVoice(mode: Mode): boolean {
-  return mode === 'voice' || mode === 'talk'
+  return mode === 'voice' || mode === 'talk' || mode === 'space-talk'
 }
 
 /** Mic is open and listening for speech. */
 export function modeListens(mode: Mode): boolean {
-  return mode === 'voice'
+  return mode === 'voice' || mode === 'space-talk'
 }
 
-/** Hyper is a microphone voice policy; typed Talk always stays Normal. */
+/** Hyper belongs to microphone modes; typed Talk always stays Normal. */
 export function modeSupportsHyper(mode: Mode): boolean {
-  return mode === 'voice'
+  return mode === 'voice' || mode === 'space-talk'
 }
 
 export function normalizeVoiceLatency(value: unknown): VoiceLatencyProfile {
@@ -58,6 +59,7 @@ export function normalizeVoiceLatency(value: unknown): VoiceLatencyProfile {
 export function modeLabel(mode: Mode): string {
   if (mode === 'voice') return 'voice'
   if (mode === 'talk') return 'talk'
+  if (mode === 'space-talk') return 'space talk'
   return 'chat'
 }
 
