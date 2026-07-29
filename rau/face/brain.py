@@ -15,6 +15,7 @@ from rau.agent.danger import classify_tool
 from rau.events import BUS
 from rau.activity import ACTIVITY
 from rau.face import choreography, panels, props, web
+from rau.face.phrases import phrase, tool_label, trace_summary, voice_checkin
 from rau.games.kittens import session as kittens
 from rau.games.kittens import tools as kittens_tools
 from rau.identity.store import load_soul
@@ -957,40 +958,8 @@ def _desk_tool_finish(
     )
 
 
-_TOOL_ACTIVITY_LABELS = {
-    "read_file": "Reading a file",
-    "write_file": "Writing a file",
-    "edit_file": "Editing a file",
-    "run_shell": "Running a command",
-    "browse_web": "Browsing the web",
-    "start_hard_task": "Starting deep work",
-    "cancel_hard_task": "Stopping deep work",
-    "redirect_hard_task": "Redirecting deep work",
-    "use_skill": "Loading a skill",
-    "list_skills": "Checking available skills",
-    "set_goal": "Setting the goal",
-    "clear_goal": "Clearing the goal",
-    "goal_note": "Recording goal progress",
-    "memory_write": "Saving a memory",
-    "memory_read": "Checking memory",
-    "body_choreography": "Planning movement",
-    "move_object": "Moving an object",
-    "start_kittens": "Dealing a game",
-    "end_kittens": "Clearing the table",
-    "start_chess": "Setting the board up",
-    "chess_move": "Making a decision at the board",
-    "end_chess": "Putting the board away",
-    "show_panel": "Making something to look at",
-    "list_panels": "Looking at the wall",
-    "update_panel": "Changing a panel",
-    "close_panel": "Taking a panel down",
-    "present_panel": "Putting a panel up on screen",
-    "commission_panel": "Sending someone to build a panel",
-}
-
-
 def _tool_activity_label(name: str) -> str:
-    return _TOOL_ACTIVITY_LABELS.get(name, f"Using {name.replace('_', ' ')}")
+    return tool_label(name)
 
 
 class _TurnTrace:
@@ -1032,49 +1001,25 @@ class _TurnTrace:
         }
 
     def summary(self, *, final: bool = False, interrupted: bool = False) -> str:
-        if not self.tools:
-            if interrupted:
-                base = "The turn was interrupted before any tool call completed."
-            elif final:
-                base = "Answered directly; no tool calls were needed."
-            else:
-                base = "Working out a direct response."
-        else:
-            counts = Counter(name for name, _ok in self.tools)
-            actions = ", ".join(
-                f"{_tool_activity_label(name).lower()} ×{count}"
-                if count > 1
-                else _tool_activity_label(name).lower()
-                for name, count in counts.most_common(4)
-            )
-            failures = sum(1 for _name, ok in self.tools if not ok)
-            state = "completed" if final else "completed so far"
-            base = f"{self.tool_count} tool calls {state}: {actions}."
-            if failures:
-                base += f" {failures} reported a failure."
-            if interrupted:
-                base += " The foreground turn was then interrupted."
-            elif final:
-                base += " Used the results to compose the response."
-        if self.provider_reasoning:
-            base += (
-                " Action summary uses observable work; the provider also "
-                "exposed a reasoning trace."
-            )
-        else:
-            base += (
-                " Summary is based on observable actions; the provider "
-                "exposed no reasoning trace."
-            )
-        return base
+        counts = Counter(name for name, _ok in self.tools)
+        actions = ", ".join(
+            f"{_tool_activity_label(name).lower()} ×{count}"
+            if count > 1
+            else _tool_activity_label(name).lower()
+            for name, count in counts.most_common(4)
+        )
+        return trace_summary(
+            tool_count=self.tool_count,
+            actions=actions,
+            failures=sum(1 for _name, ok in self.tools if not ok),
+            final=final,
+            interrupted=interrupted,
+            provider_reasoning=self.provider_reasoning,
+        )
 
 
 def _voice_tool_checkin(completed: int, next_tool: str) -> str:
-    action = _tool_activity_label(next_tool)
-    action = action[:1].lower() + action[1:]
-    if completed <= 0:
-        return f"I’m starting by {action}."
-    return f"I’ve completed {completed} checks. Next, I’m {action}."
+    return voice_checkin(completed, _tool_activity_label(next_tool))
 
 
 def _history_with_trace(spoken: str, trace: _TurnTrace) -> str:
@@ -1242,7 +1187,7 @@ def _record_tool_round(
             ACTIVITY.finish(
                 public_span["id"],
                 status="failed",
-                summary=f"{label} failed",
+                summary=phrase("failed_suffix", label=label),
                 details={"tool": tc.name, "error": str(exc)},
             )
             raise
@@ -1254,9 +1199,9 @@ def _record_tool_round(
             public_span["id"],
             status="completed" if ok else "failed",
             summary=(
-                str(tr.get("summary") or "Finished")
+                str(tr.get("summary") or phrase("finished"))
                 if ok
-                else str(tr.get("error") or "Tool failed")
+                else str(tr.get("error") or phrase("tool_failed"))
             ),
             details={
                 "tool": tc.name,
@@ -1762,7 +1707,7 @@ def chat_streaming(
             if approach_span_id is None:
                 approach_span_id = ACTIVITY.start(
                     "planning",
-                    "Approach summary",
+                    phrase("approach"),
                     source="face",
                     summary=trace.summary(),
                     details=trace.details(),
@@ -1892,9 +1837,9 @@ def chat_streaming(
                             if response_span_id is None:
                                 response_span_id = ACTIVITY.start(
                                     "execution",
-                                    "Responding",
+                                    phrase("responding"),
                                     source="face",
-                                    summary="Composing the response",
+                                    summary=phrase("composing"),
                                     turn_id=turn,
                                 )["id"]
                         elif isinstance(event, ReasoningDelta):
@@ -1902,7 +1847,7 @@ def chat_streaming(
                             if reasoning_span_id is None:
                                 reasoning_span_id = ACTIVITY.start(
                                     "reasoning",
-                                    "Reasoning",
+                                    phrase("reasoning"),
                                     source=getattr(
                                         event, "provider_format", "provider"
                                     ),
@@ -2043,9 +1988,9 @@ def chat_streaming(
                                 if response_span_id is None:
                                     response_span_id = ACTIVITY.start(
                                         "execution",
-                                        "Responding",
+                                        phrase("responding"),
                                         source="face",
-                                        summary="Composing the response",
+                                        summary=phrase("composing"),
                                         turn_id=turn,
                                     )["id"]
                             elif isinstance(event, ReasoningDelta):
@@ -2053,7 +1998,7 @@ def chat_streaming(
                                 if reasoning_span_id is None:
                                     reasoning_span_id = ACTIVITY.start(
                                         "reasoning",
-                                        "Reasoning",
+                                        phrase("reasoning"),
                                         source=getattr(
                                             event,
                                             "provider_format",
@@ -2091,11 +2036,11 @@ def chat_streaming(
                 if tail:
                     emit(tail)
                 if reasoning_span_id is not None:
-                    ACTIVITY.finish(reasoning_span_id, summary="Reasoning complete")
+                    ACTIVITY.finish(reasoning_span_id, summary=phrase("reasoning_done"))
                 if response_span_id is not None:
                     ACTIVITY.finish(
                         response_span_id,
-                        summary="Response ready",
+                        summary=phrase("response_ready"),
                     )
                 finish_approach()
         except Cancelled:
@@ -2103,13 +2048,13 @@ def chat_streaming(
                 ACTIVITY.finish(
                     reasoning_span_id,
                     status="cancelled",
-                    summary="Reasoning interrupted",
+                    summary=phrase("reasoning_interrupted"),
                 )
             if response_span_id is not None:
                 ACTIVITY.finish(
                     response_span_id,
                     status="cancelled",
-                    summary="Response interrupted",
+                    summary=phrase("response_interrupted"),
                 )
             finish_approach(status="interrupted", interrupted=True)
             broadcast.cancelled("".join(heard).strip())
@@ -2131,14 +2076,14 @@ def chat_streaming(
                 ACTIVITY.finish(
                     reasoning_span_id,
                     status="failed",
-                    summary="Reasoning failed",
+                    summary=phrase("reasoning_failed"),
                     details={"error": str(exc)},
                 )
             if response_span_id is not None:
                 ACTIVITY.finish(
                     response_span_id,
                     status="failed",
-                    summary="Response failed",
+                    summary=phrase("response_failed"),
                     details={"error": str(exc)},
                 )
             finish_approach(status="failed")

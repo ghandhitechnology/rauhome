@@ -29,6 +29,19 @@
   align-items: flex-start;
 }
 
+/* Operations borrows `.dash-head` for its section headings, but the rule lives
+   in Dashboard.css — which is only fetched once the Dashboard route mounts.
+   Arriving here directly left the count pill unstyled underneath the heading
+   instead of beside it. Restated locally so the page stands on its own. */
+.operations .dash-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
 .ops-head h1,
 .operations h2 {
   margin: 0;

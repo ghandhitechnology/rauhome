@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { useLocale } from '../i18n'
 import PageSkeleton from '../components/PageSkeleton'
 import './Identity.css'
 
 export default function Identity() {
+  const { t } = useLocale()
   const [identity, setIdentity] = useState('')
   const [backstory, setBackstory] = useState('')
   const [soul, setSoul] = useState('')
@@ -39,16 +41,17 @@ export default function Identity() {
       setDirty(false)
       if (res.fallback) {
         setMsg(
-          `Saved sources, but distill fell back to a lean compile${
-            res.error ? ` (${res.error})` : ''
-          }.${res.backup ? ` Previous soul → ${res.backup}` : ''}`,
+          t('identity.fallback', {
+            detail: res.error ? ` (${res.error})` : '',
+            backup: res.backup ? t('identity.fallbackBackup', { path: res.backup }) : '',
+          }),
         )
       } else {
-        const via = res.model ? ` via ${res.model}` : ' via DeepSeek V4 Pro'
+        const via = res.model ? t('identity.via', { model: res.model }) : ''
         setMsg(
           res.backup
-            ? `Hard-steered${via}. Previous soul backed up to ${res.backup}`
-            : `Hard-steered${via}.`,
+            ? t('identity.steeredBackup', { via, path: res.backup })
+            : t('identity.steered', { via }),
         )
       }
     } catch (e: any) {
@@ -68,13 +71,10 @@ export default function Identity() {
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2>Sources</h2>
-            <p className="muted panel-sub">
-              These are the files you own. Hard steer saves them, then DeepSeek V4 Pro distills
-              them into soul.md — not a paste. Previous soul gets a timestamped backup.
-            </p>
+            <h2>{t('identity.sources')}</h2>
+            <p className="muted panel-sub">{t('identity.sourcesSub')}</p>
           </div>
-          {dirty && <span className="pill bad">unsaved</span>}
+          {dirty && <span className="pill bad">{t('identity.unsaved')}</span>}
         </div>
 
         <div className="field">
@@ -108,7 +108,7 @@ export default function Identity() {
             onClick={steer}
           >
             {busy && <i className="spinner" />}
-            {busy ? 'Distilling with V4 Pro…' : 'Hard steer'}
+            {busy ? t('identity.distilling') : t('identity.hardSteer')}
           </button>
         </div>
 
@@ -118,15 +118,12 @@ export default function Identity() {
       <section className="panel soul-panel">
         <div className="panel-head">
           <div>
-            <h2>Living soul.md</h2>
-            <p className="muted panel-sub">
-              What every agent loads — a compressed self, not the raw sources. Nightly dreams may
-              rewrite this on their own.
-            </p>
+            <h2>{t('identity.soul')}</h2>
+            <p className="muted panel-sub">{t('identity.soulSub')}</p>
           </div>
           <span className="pill on">
             <i className="pill-dot" />
-            {soul ? `${soul.split('\n').length} lines` : 'empty'}
+            {soul ? t('identity.lines', { count: soul.split('\n').length }) : t('identity.empty')}
           </span>
         </div>
         <pre className="doc soul-view">{soul || '—'}</pre>

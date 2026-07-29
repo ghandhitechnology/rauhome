@@ -7,7 +7,7 @@ import { useLocale } from '../../i18n'
 const RECOMMENDED = 'openrouter'
 
 export default function StepBrains({ state, catalog, reload, verify, setVerify }: StepProps) {
-  const { locale } = useLocale()
+  const { t, tx } = useLocale()
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState('')
   const [open, setOpen] = useState<string | null>(null)
@@ -21,15 +21,15 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
     const key = (drafts[id] || '').trim()
     if (!key) return
     setBusy(id)
-    setVerify(id, { status: 'checking', detail: 'Calling the provider…' })
+    setVerify(id, { status: 'checking', detail: t('settings.calling') })
     try {
       const res = await api.verifyAuth(id, key)
       if (!res.ok) {
-        setVerify(id, { status: 'bad', detail: res.detail || 'Key rejected.' })
+        setVerify(id, { status: 'bad', detail: res.detail || t('settings.rejected') })
         return
       }
       await api.setAuth(id, key)
-      setVerify(id, { status: 'ok', detail: res.detail || 'Connected.' })
+      setVerify(id, { status: 'ok', detail: res.detail || t('settings.connectedOk') })
       setDrafts((d) => ({ ...d, [id]: '' }))
       setOpen(null)
       await reload()
@@ -42,12 +42,12 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
 
   async function recheck(id: string) {
     setBusy(id)
-    setVerify(id, { status: 'checking', detail: 'Re-checking saved key…' })
+    setVerify(id, { status: 'checking', detail: t('settings.rechecking') })
     try {
       const res = await api.verifyAuth(id)
       setVerify(id, {
         status: res.ok ? 'ok' : 'bad',
-        detail: res.detail || (res.ok ? 'Connected.' : 'Key rejected.'),
+        detail: res.detail || (res.ok ? t('settings.connectedOk') : t('settings.rejected')),
       })
     } catch (e: any) {
       setVerify(id, { status: 'bad', detail: e?.message || String(e) })
@@ -70,14 +70,10 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
   return (
     <div className="step">
       <header className="step-head">
-        <p className="eyebrow">{locale === 'ko' ? '세 번째 단계' : 'Step three'}</p>
-        <h2>{locale === 'ko' ? 'Rau에게 생각할 두뇌를 주세요' : 'Give Rau something to think with'}</h2>
+        <p className="eyebrow">{t('brains.eyebrow')}</p>
+        <h2>{t('brains.title')}</h2>
         <p className="step-lede">
-          {locale === 'ko' ? (
-            <>키는 저장 전에 실제 제공자에서 확인하고 이 컴퓨터의 <span className="mono">.env</span>에만 보관합니다. 제공자 하나면 충분합니다.</>
-          ) : (
-            <>Keys are checked against the live provider before anything is written, then stored in{' '}<span className="mono">.env</span> on this machine only. One provider is enough to finish.</>
-          )}
+          {tx('brains.lede', { file: <span className="mono">.env</span> })}
         </p>
       </header>
 
@@ -85,8 +81,10 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
         <span className="tally-count">{connected}</span>
         <span>
           {connected === 0
-            ? 'no providers connected yet — connect at least one'
-            : `provider${connected > 1 ? 's' : ''} connected`}
+            ? t('brains.noneYet')
+            : connected > 1
+              ? t('brains.connectedPlural')
+              : t('brains.connected')}
         </span>
       </div>
 
@@ -104,7 +102,7 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
               masked={p.masked}
               bad={v.status === 'bad'}
               index={i}
-              tag={p.id === RECOMMENDED ? 'easiest start' : undefined}
+              tag={p.id === RECOMMENDED ? t('brains.easiest') : undefined}
               open={isOpen}
               onToggle={() => setOpen(isOpen ? '' : p.id)}
             >
@@ -114,7 +112,7 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
                       type="password"
                       autoComplete="off"
                       spellCheck={false}
-                      placeholder={p.configured ? 'paste a new key to replace' : 'paste API key'}
+                      placeholder={p.configured ? t('settings.pasteReplace') : t('settings.pasteKey')}
                       value={drafts[p.id] || ''}
                       onChange={(e) => setDrafts((d) => ({ ...d, [p.id]: e.target.value }))}
                       onKeyDown={(e) => {
@@ -135,18 +133,18 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
                       onClick={() => checkAndSave(p.id)}
                     >
                       {busy === p.id && <i className="spinner" />}
-                      {busy === p.id ? (locale === 'ko' ? '확인 중…' : 'Checking…') : (locale === 'ko' ? '확인하고 저장' : 'Check & save')}
+                      {busy === p.id ? t('settings.checking') : t('settings.checkSave')}
                     </button>
                     {p.configured && (
                       <button className="btn sm" disabled={busy === p.id} onClick={() => recheck(p.id)}>
-                        {locale === 'ko' ? '다시 확인' : 'Re-check'}
+                        {t('settings.recheck')}
                       </button>
                     )}
                     <button
                       className="btn sm ghost"
                       onClick={() => window.open(p.docs_url, '_blank', 'noopener,noreferrer')}
                     >
-                      {locale === 'ko' ? '키 받기 ↗' : 'Get a key ↗'}
+                      {t('settings.getKey')}
                     </button>
                     {p.configured && (
                       <button
@@ -154,7 +152,7 @@ export default function StepBrains({ state, catalog, reload, verify, setVerify }
                         disabled={busy === p.id}
                         onClick={() => disconnect(p.id)}
                       >
-                        {locale === 'ko' ? '연결 해제' : 'Disconnect'}
+                        {t('settings.disconnect')}
                       </button>
                     )}
                   </div>

@@ -6,6 +6,7 @@
  * an action, a cat, or one of the two cards the whole game is about. The art
  * folder owns how a card is drawn; this owns what it is called.
  */
+import { tr, type TranslationKey } from '../../i18n'
 import type { CardId } from './art'
 import { PALETTE } from './art'
 import type { CardKind } from './art/frame'
@@ -18,87 +19,46 @@ export type CardMeta = {
   effect: string
 }
 
-export const CARD_META: Record<CardId, CardMeta> = {
+/**
+ * The thirteen cards, named in the reader's language.
+ *
+ * A function rather than a constant because the language can change with a
+ * game already dealt: a frozen record would leave the hand in English while
+ * the rest of the table moved to Korean. The five cat cards share one effect
+ * line, since what they do is precisely that they do nothing on their own.
+ */
+const CARDS: Record<CardId, { accent: string; kind: CardKind; effect: TranslationKey }> = {
   exploding_kitten: {
-    title: 'Exploding Kitten',
     accent: PALETTE.red,
     kind: 'kitten',
-    effect: 'Draw this without a Defuse and you are out.',
+    effect: 'card.exploding_kitten.effect',
   },
-  defuse: {
-    title: 'Defuse',
-    accent: PALETTE.green,
-    kind: 'defuse',
-    effect: 'Saves you from a kitten, then you hide it back in the deck.',
-  },
-  nope: {
-    title: 'Nope',
-    accent: PALETTE.red,
-    kind: 'action',
-    effect: 'Cancels what is on the table. Can be Noped right back.',
-  },
-  attack: {
-    title: 'Attack',
-    accent: PALETTE.violet,
-    kind: 'action',
-    effect: 'End your turn without drawing. They take two turns.',
-  },
-  skip: {
-    title: 'Skip',
-    accent: PALETTE.blue,
-    kind: 'action',
-    effect: 'End one turn without drawing.',
-  },
-  favor: {
-    title: 'Favor',
-    accent: PALETTE.gold,
-    kind: 'action',
-    effect: 'They choose a card and hand it over.',
-  },
-  shuffle: {
-    title: 'Shuffle',
-    accent: PALETTE.green,
-    kind: 'action',
-    effect: 'Shuffle the draw pile. Nobody knows anything any more.',
-  },
+  defuse: { accent: PALETTE.green, kind: 'defuse', effect: 'card.defuse.effect' },
+  nope: { accent: PALETTE.red, kind: 'action', effect: 'card.nope.effect' },
+  attack: { accent: PALETTE.violet, kind: 'action', effect: 'card.attack.effect' },
+  skip: { accent: PALETTE.blue, kind: 'action', effect: 'card.skip.effect' },
+  favor: { accent: PALETTE.gold, kind: 'action', effect: 'card.favor.effect' },
+  shuffle: { accent: PALETTE.green, kind: 'action', effect: 'card.shuffle.effect' },
   see_the_future: {
-    title: 'See the Future',
     accent: PALETTE.violet,
     kind: 'action',
-    effect: 'Look at the top three cards, privately.',
+    effect: 'card.see_the_future.effect',
   },
-  tacocat: {
-    title: 'Tacocat',
-    accent: PALETTE.gold,
-    kind: 'cat',
-    effect: 'Does nothing alone. Collect matching pairs.',
-  },
-  rainbow_ralphing_cat: {
-    title: 'Rainbow-Ralphing Cat',
-    accent: PALETTE.pink,
-    kind: 'cat',
-    effect: 'Does nothing alone. Collect matching pairs.',
-  },
-  cattermelon: {
-    title: 'Cattermelon',
-    accent: PALETTE.green,
-    kind: 'cat',
-    effect: 'Does nothing alone. Collect matching pairs.',
-  },
-  hairy_potato_cat: {
-    title: 'Hairy Potato Cat',
-    accent: PALETTE.gold,
-    kind: 'cat',
-    effect: 'Does nothing alone. Collect matching pairs.',
-  },
-  beard_cat: {
-    title: 'Beard Cat',
-    accent: PALETTE.blue,
-    kind: 'cat',
-    effect: 'Does nothing alone. Collect matching pairs.',
-  },
+  tacocat: { accent: PALETTE.gold, kind: 'cat', effect: 'card.cat.effect' },
+  rainbow_ralphing_cat: { accent: PALETTE.pink, kind: 'cat', effect: 'card.cat.effect' },
+  cattermelon: { accent: PALETTE.green, kind: 'cat', effect: 'card.cat.effect' },
+  hairy_potato_cat: { accent: PALETTE.gold, kind: 'cat', effect: 'card.cat.effect' },
+  beard_cat: { accent: PALETTE.blue, kind: 'cat', effect: 'card.cat.effect' },
 }
 
+export function cardMeta(id: CardId): CardMeta {
+  const { accent, kind, effect } = CARDS[id]
+  return { accent, kind, title: tr(`card.${id}`), effect: tr(effect) }
+}
+
+/** Every card, in deck order — for pickers that offer the whole set. */
+export const CARD_IDS = Object.keys(CARDS) as CardId[]
+
 export function cardTitle(id: string): string {
-  return CARD_META[id as CardId]?.title ?? id
+  return id in CARDS ? cardMeta(id as CardId).title : id
 }

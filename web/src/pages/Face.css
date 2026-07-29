@@ -590,7 +590,7 @@
   color: var(--ink-2);
   font-size: 0.94rem;
   line-height: 1.45;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 /* Interim words are still guesses and may be rewritten. */

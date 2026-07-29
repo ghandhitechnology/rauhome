@@ -8,6 +8,7 @@ import {
 } from 'react'
 
 import type { VoiceLatencyProfile } from '../mode'
+import { useLocale } from '../i18n'
 
 const HYPER_ACTIVATE_EVENT = 'rau:hyper-activate'
 
@@ -30,6 +31,7 @@ export function HyperToggle({
   setProfile: (profile: VoiceLatencyProfile) => void
   disabled: boolean
 }) {
+  const { t } = useLocale()
   const enabling = profile !== 'hyper'
 
   function toggle(event: MouseEvent<HTMLButtonElement>) {
@@ -46,17 +48,13 @@ export function HyperToggle({
     <button
       type="button"
       className={`hyper-toggle ${profile === 'hyper' ? 'on' : ''}`}
-      aria-label="Hyper conversation mode"
+      aria-label={t('hyper.aria')}
       aria-pressed={profile === 'hyper'}
       disabled={disabled}
-      title={
-        disabled
-          ? 'Hyper can be changed after the current voice turn'
-          : 'Ultra-low-latency, short conversation with minimal reasoning and recent context'
-      }
+      title={disabled ? t('hyper.busy') : t('hyper.hint')}
       onClick={toggle}
     >
-      ⚡ Hyper
+      {t('hyper.label')}
     </button>
   )
 }

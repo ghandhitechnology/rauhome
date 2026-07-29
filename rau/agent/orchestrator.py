@@ -15,6 +15,7 @@ from rau.agent.compaction import maybe_compact, provider_summarizer
 from rau.agent.danger import classify_tool
 from rau.agent.tools import run_tool
 from rau.activity import ACTIVITY
+from rau.face.phrases import known_tool_label, phrase
 from rau.events import BUS
 from rau.identity.store import load_soul
 from rau.memory.store import append_diary, append_trace
@@ -259,9 +260,9 @@ def start_job(
         )
         planning_span = ACTIVITY.start(
             "planning",
-            "Planning the work",
+            phrase("planning"),
             source="scheduler" if scheduled_run_id else "subagent",
-            summary="Building a validated execution plan",
+            summary=phrase("planning_summary"),
             turn_id=origin_turn_id,
             job_id=job.id,
         )
@@ -278,16 +279,16 @@ def start_job(
         job.step = plan.steps[0]
         job.activity_span_id = ACTIVITY.start(
             "execution",
-            "Working on the task",
+            phrase("working"),
             source="scheduler" if scheduled_run_id else "subagent",
-            summary="Queued",
+            summary=phrase("queued"),
             turn_id=origin_turn_id,
             job_id=job.id,
             status="running",
         )["id"]
         ACTIVITY.finish(
             planning_span["id"],
-            summary=f"Created a {len(plan.steps)}-step plan",
+            summary=phrase("plan_made", count=len(plan.steps)),
             details={"step_count": len(plan.steps), "revision": plan.revision},
         )
         _jobs[job.id] = job
@@ -458,7 +459,7 @@ def pause_job(job_id: str) -> Dict[str, Any]:
     if job.activity_span_id:
         ACTIVITY.delta(
             job.activity_span_id,
-            summary="Paused by user",
+            summary=phrase("paused"),
             details={"paused": True},
             force=True,
         )
@@ -476,7 +477,7 @@ def resume_job(job_id: str) -> Dict[str, Any]:
     if job.activity_span_id:
         ACTIVITY.delta(
             job.activity_span_id,
-            summary="Resuming",
+            summary=phrase("resuming"),
             details={"paused": False},
             force=True,
         )
@@ -510,9 +511,9 @@ def steer_job(job_id: str, instruction: str) -> Dict[str, Any]:
             control_store.upsert_step(step.to_dict())
     span = ACTIVITY.start(
         "planning",
-        "Plan revised",
+        phrase("plan_revised"),
         source="user",
-        summary="Added a bounded steering step",
+        summary=phrase("steering_added"),
         details={
             "revision": job.plan_revision,
             "step_id": step.id,
@@ -522,7 +523,9 @@ def steer_job(job_id: str, instruction: str) -> Dict[str, Any]:
         job_id=job.id,
         step_id=step.id,
     )
-    ACTIVITY.finish(span["id"], summary=f"Plan revision {job.plan_revision} ready")
+    ACTIVITY.finish(
+        span["id"], summary=phrase("revision_ready", revision=job.plan_revision)
+    )
     BUS.emit(
         "job_steered",
         id=job_id,
@@ -728,7 +731,7 @@ def _await_confirm(
     }
     approval_span = ACTIVITY.start(
         "approval",
-        "Waiting for approval",
+        phrase("awaiting_approval"),
         source="scheduler",
         summary=summary,
         details={
@@ -783,7 +786,7 @@ def _await_confirm(
     ACTIVITY.finish(
         approval_span["id"],
         status="completed" if approved else "failed",
-        summary="Approved" if approved else "Denied or expired",
+        summary=phrase("approved") if approved else phrase("denied"),
         details={"confirmation_id": cid, "approved": approved},
     )
     return approved
@@ -885,7 +888,7 @@ def _job_thread(job: Job) -> None:
                     "execution",
                     step.title,
                     source=step.executor,
-                    summary=f"Attempt {attempt}",
+                    summary=phrase("attempt", attempt=attempt),
                     details={
                         "attempt": attempt,
                         "dependencies": step.dependencies,
@@ -925,9 +928,9 @@ def _job_thread(job: Job) -> None:
                     _persist_plan_step(job, step)
                     verify_span = ACTIVITY.start(
                         "verification",
-                        "Checking the result",
+                        phrase("checking"),
                         source="scheduler",
-                        summary="Evaluating the step evidence",
+                        summary=phrase("checking_summary"),
                         turn_id=job.origin_turn_id,
                         job_id=job.id,
                         step_id=step.id,
@@ -937,9 +940,9 @@ def _job_thread(job: Job) -> None:
                     ACTIVITY.finish(
                         verify_span["id"],
                         summary=(
-                            f"Verified with {len(evidence)} evidence item(s)"
+                            phrase("verified", count=len(evidence))
                             if evidence
-                            else "Completion contract accepted"
+                            else phrase("contract_accepted")
                         ),
                         details={"evidence": evidence},
                     )
@@ -992,9 +995,9 @@ def _job_thread(job: Job) -> None:
                     ):
                         retry_span = ACTIVITY.start(
                             "retry",
-                            "Trying a different strategy",
+                            phrase("retrying"),
                             source="scheduler",
-                            summary=f"Retrying after: {message}",
+                            summary=phrase("retry_after", message=message),
                             details={
                                 "attempt": attempt + 1,
                                 "previous_strategy": step.strategy,
@@ -1006,7 +1009,7 @@ def _job_thread(job: Job) -> None:
                         )
                         ACTIVITY.finish(
                             retry_span["id"],
-                            summary=f"Attempt {attempt + 1} queued",
+                            summary=phrase("attempt_queued", attempt=attempt + 1),
                         )
                         continue
                     if "verifier rejected result:" in message:
@@ -1036,7 +1039,7 @@ def _job_thread(job: Job) -> None:
                             )
                             revision_span = ACTIVITY.start(
                                 "planning",
-                                "Adding a repair step",
+                                phrase("repair_step"),
                                 source="scheduler",
                                 summary=message,
                                 details={
@@ -1050,7 +1053,9 @@ def _job_thread(job: Job) -> None:
                             )
                             ACTIVITY.finish(
                                 revision_span["id"],
-                                summary=f"Plan revision {job.plan_revision} ready",
+                                summary=phrase(
+                                    "revision_ready", revision=job.plan_revision
+                                ),
                             )
                             break
                     step.state = "failed"
@@ -1278,26 +1283,19 @@ def _step_verification_error(
 
 
 def _natural_tool_label(name: str, arguments: Dict[str, Any]) -> str:
-    labels = {
-        "read_file": "Reading a file",
-        "write_file": "Writing a file",
-        "edit_file": "Editing a file",
-        "run_shell": "Running a command",
-        "memory_read": "Checking memory",
-        "memory_write": "Saving a note",
-        "spawn_subagent": "Delegating read-only work",
-        "computer_observe": "Observing the screen",
-        "computer_inspect_ui": "Inspecting the interface",
-        "computer_act": "Using the computer",
-        "computer_assert": "Checking the interface",
-        "create_schedule": "Creating a schedule",
-        "update_schedule": "Updating a schedule",
-        "list_schedules": "Reading schedules",
-        "finish": "Finishing the step",
-    }
+    """What the Deep Work timeline calls a tool call, in the reader's language.
+
+    A read with a path names the file instead of the verb: at ten steps deep
+    the useful thing on the line is which file, not that it was a read.
+    """
     if name == "read_file" and arguments.get("path"):
-        return f"Reading {str(arguments['path']).rsplit('/', 1)[-1]}"
-    return labels.get(name, name.replace("_", " ").capitalize())
+        return phrase(
+            "reading_named", name=str(arguments["path"]).rsplit("/", 1)[-1]
+        )
+    if name == "memory_write":
+        return known_tool_label("memory_write_note")
+    # An unrecognised tool keeps the label this plane has always given it.
+    return known_tool_label(name) or name.replace("_", " ").capitalize()
 
 
 def _provider_name(provider: Any, slot: Dict[str, Any]) -> str:
@@ -1606,7 +1604,7 @@ def _run_subagent(
             if result.reasoning:
                 reasoning_span = ACTIVITY.start(
                     "reasoning",
-                    "Reasoning about the step",
+                    phrase("step_reasoning"),
                     source=str(getattr(provider, "name", "provider")),
                     summary=result.reasoning,
                     turn_id=job.origin_turn_id,
@@ -1693,7 +1691,7 @@ def _run_subagent(
                     "tool",
                     _natural_tool_label(tc.name, arguments),
                     source=job.executor,
-                    summary="Validating arguments",
+                    summary=phrase("validating"),
                     details={"tool": tc.name, "arguments": arguments},
                     turn_id=job.origin_turn_id,
                     job_id=job.id,

@@ -45,7 +45,7 @@ export default function FaceComposer({
       await onSend(text)
     } catch {
       setDraft((d) => d || text)
-      setError('Could not reach Rau — that message was not sent.')
+      setError(t('face.sendFailed'))
       if (inGame) onOpenChange(true)
     } finally {
       setSending(false)
@@ -72,10 +72,10 @@ export default function FaceComposer({
           type="button"
           className="face-chip"
           onClick={() => onOpenChange(true)}
-          title="Say something to Rau"
+          title={t('face.chipTitle')}
         >
           <span className="face-chip-dot" aria-hidden />
-          talk to Rau
+          {t('face.chip')}
         </button>
       ) : (
         <>
@@ -101,7 +101,7 @@ export default function FaceComposer({
                 }
               }}
               placeholder={t('face.say')}
-              aria-label="Message Rau"
+              aria-label={t('talk.messageLabel')}
               autoComplete="off"
               enterKeyHint="send"
             />

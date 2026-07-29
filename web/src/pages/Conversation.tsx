@@ -232,7 +232,7 @@ function pendingEchoFor(log: any[], text: string): PendingEcho {
 }
 
 export default function Conversation() {
-  const { locale, t } = useLocale()
+  const { t } = useLocale()
   const { mode, voiceLatency, setVoiceLatency } = useMode()
   const voiceOn = modeUsesVoice(mode)
   const voice = useVoiceSession({
@@ -539,7 +539,7 @@ export default function Conversation() {
         // Give the newest message back instead of losing it. A superseded
         // request must never overwrite what the user is typing now.
         setDraft(text)
-        setSendError('Could not reach Rau — that message was not sent.')
+        setSendError(t('talk.sendFailed'))
       }
     } finally {
       if (sendSeq === sendSeqRef.current) {
@@ -592,11 +592,7 @@ export default function Conversation() {
           <h1>Rau</h1>
           <p className="convo-sub" role="status">
             <span className={`state-dot ${offline ? 'offline' : working ? 'working' : ''}`} />
-            {offline
-              ? 'Can’t reach Rau right now — retrying…'
-              : working
-                ? 'Still working on something — talk whenever.'
-                : 'One continuous mind. Just talk.'}
+            {offline ? t('talk.offline') : working ? t('talk.working') : t('talk.idle')}
           </p>
         </div>
         <div className="convo-eyes">
@@ -613,14 +609,14 @@ export default function Conversation() {
             <div className="space-talk-controls" role="status">
               <span>
                 {!voice.connected
-                  ? 'Connecting…'
+                  ? t('talk.spaceConnecting')
                   : voice.phase === 'thinking'
-                    ? 'Thinking…'
+                    ? t('talk.spaceThinking')
                     : voice.phase === 'speaking'
-                      ? 'Rau is speaking'
+                      ? t('talk.spaceSpeaking')
                       : voice.phase === 'listening'
-                        ? 'Listening — release Space to send'
-                        : 'Hold Space to talk'}
+                        ? t('talk.spaceListening')
+                        : t('talk.spaceHold')}
               </span>
               <HyperToggle
                 profile={voiceLatency}
@@ -636,15 +632,15 @@ export default function Conversation() {
       {confirm && (
         <div className="convo-confirm">
           <div className="confirm-copy">
-            <strong>Needs your yes</strong>
+            <strong>{t('talk.confirmTitle')}</strong>
             <p>{confirm.summary}</p>
           </div>
           <div className="row">
             <button className="btn danger sm" onClick={() => api.confirm(false, confirm.id).then(refresh).catch(() => {})}>
-              Deny
+              {t('talk.deny')}
             </button>
             <button className="btn primary sm" onClick={() => api.confirm(true, confirm.id).then(refresh).catch(() => {})}>
-              Allow
+              {t('talk.allow')}
             </button>
           </div>
         </div>
@@ -655,11 +651,11 @@ export default function Conversation() {
         className="convo-thread"
         role="log"
         aria-live="polite"
-        aria-label="Conversation with Rau"
+        aria-label={t('talk.threadLabel')}
       >
         {displayLog.length === 0 &&
           (logLoaded ? (
-            <div className="convo-empty">Say something — voice or text.</div>
+            <div className="convo-empty">{t('talk.empty')}</div>
           ) : (
             <ThreadSkeleton />
           ))}
@@ -672,7 +668,7 @@ export default function Conversation() {
               className={`convo-msg ${m.role}${used ? ' slash-msg' : ''}`}
             >
               <div className="meta">
-                <span className="who">{m.role === 'user' ? 'You' : 'Rau'}</span>
+                <span className="who">{m.role === 'user' ? t('talk.you') : t('talk.rau')}</span>
                 <span className="time">{m.time}</span>
               </div>
               {used ? (
@@ -684,7 +680,7 @@ export default function Conversation() {
                   {used.arg ? (
                     <ChatMarkdown className="slash-arg" text={used.arg} />
                   ) : (
-                    <p className="slash-empty">{used.cmd.description || 'Command'}</p>
+                    <p className="slash-empty">{used.cmd.description || t('talk.command')}</p>
                   )}
                 </>
               ) : (
@@ -699,8 +695,8 @@ export default function Conversation() {
         {voiceLine && (
           <article className="convo-msg user is-streaming">
             <div className="meta">
-              <span className="who">You</span>
-              <span className="time">now</span>
+              <span className="who">{t('talk.you')}</span>
+              <span className="time">{t('talk.now')}</span>
             </div>
             <ChatMarkdown text={voiceLine} />
           </article>
@@ -708,8 +704,8 @@ export default function Conversation() {
         {liveReply && (
           <article className="convo-msg rau is-streaming">
             <div className="meta">
-              <span className="who">Rau</span>
-              <span className="time">now</span>
+              <span className="who">{t('talk.rau')}</span>
+              <span className="time">{t('talk.now')}</span>
             </div>
             <ChatMarkdown text={liveReply} />
             {streaming?.turnId && (
@@ -724,7 +720,7 @@ export default function Conversation() {
           <div
             className={`convo-typing${deskWorking ? ' working' : ''}`}
             role="status"
-            aria-label={deskWorking ? 'Rau is at the computer' : 'Rau is thinking'}
+            aria-label={deskWorking ? t('talk.atComputerLabel') : t('talk.thinkingLabel')}
           >
             <i />
             <i />
@@ -762,7 +758,7 @@ export default function Conversation() {
                   ? activeSlash.arg.length > 42
                     ? `${activeSlash.arg.slice(0, 42)}…`
                     : activeSlash.arg
-                  : activeSlash.cmd.description || 'ready'}
+                  : activeSlash.cmd.description || t('talk.ready')}
               </span>
             </div>
           )}
@@ -773,10 +769,8 @@ export default function Conversation() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onComposeKey}
-              placeholder={
-                locale === 'ko' ? 'Rau에게 말해 보세요…  /skills도 사용할 수 있어요' : 'Talk to Rau…  try /skills'
-              }
-              aria-label="Message Rau"
+              placeholder={t('talk.placeholder')}
+              aria-label={t('talk.messageLabel')}
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={showSlashMenu}
@@ -797,7 +791,7 @@ export default function Conversation() {
                 className="send-btn"
                 disabled={!draft.trim()}
                 onClick={send}
-                aria-label="Send"
+                aria-label={t('talk.send')}
               >
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M3 10h13M11 5l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
@@ -808,19 +802,19 @@ export default function Conversation() {
         </div>
         <p className="compose-hint">
           {showSlashMenu
-            ? '↑↓ to browse · Tab/Enter to pick · Esc to dismiss'
+            ? t('talk.hintSlash')
             : mode === 'talk'
-              ? 'Talk mode — type in, he answers out loud · Shift+Space cycles modes'
+              ? t('talk.hintTalk')
               : mode === 'voice'
-                ? 'Voice mode — speak or type · Shift+Space cycles modes'
-                : 'Enter sends · Shift+Enter for a new line · / for commands · Shift+Space cycles modes'}
+                ? t('talk.hintVoice')
+                : t('talk.hintDefault')}
         </p>
       </footer>
       )}
       </div>
 
       {activityOpen && (
-        <aside className="convo-activity-sidebar" aria-label="All active Rau work">
+        <aside className="convo-activity-sidebar" aria-label={t('talk.sidebarLabel')}>
           <ActivityInspector
             global
             variant="sidebar"

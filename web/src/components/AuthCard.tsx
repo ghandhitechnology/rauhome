@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import { useLocale } from '../i18n'
 import './AuthCard.css'
 
 /**
@@ -61,6 +62,7 @@ export default function AuthCard({
   onToggle,
   children,
 }: AuthCardProps) {
+  const { t } = useLocale()
   const head = (
     <>
       <span className="auth-title">
@@ -72,7 +74,7 @@ export default function AuthCard({
       </span>
       <span className={`pill ${configured ? 'on' : 'off'}`}>
         <i className="pill-dot" />
-        {configured ? masked || 'connected' : 'not connected'}
+        {configured ? masked || t('auth.connected') : t('auth.notConnected')}
       </span>
     </>
   )

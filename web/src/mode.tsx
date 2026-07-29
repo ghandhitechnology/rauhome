@@ -1,5 +1,6 @@
 /* oxlint-disable react/only-export-components -- provider and hook form one small state API */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { tr } from './i18n'
 
 /**
  * How you talk to Rau.
@@ -57,10 +58,10 @@ export function normalizeVoiceLatency(value: unknown): VoiceLatencyProfile {
 }
 
 export function modeLabel(mode: Mode): string {
-  if (mode === 'voice') return 'voice'
-  if (mode === 'talk') return 'talk'
-  if (mode === 'space-talk') return 'space talk'
-  return 'chat'
+  if (mode === 'voice') return tr('mode.voice')
+  if (mode === 'talk') return tr('mode.talk')
+  if (mode === 'space-talk') return tr('mode.spaceTalk')
+  return tr('mode.chat')
 }
 
 // Storage can be unavailable (private windows, blocked third-party contexts),

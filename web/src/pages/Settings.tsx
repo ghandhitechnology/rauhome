@@ -24,7 +24,7 @@ const SLOTS: SlotKey[] = ['face', 'subagent', 'dream']
 type Check = { status: 'idle' | 'checking' | 'ok' | 'bad'; detail?: string }
 
 export default function Settings() {
-  const { locale, setLocale, t } = useLocale()
+  const { locale, setLocale, t, tx } = useLocale()
   const tutorial = useTutorial()
   const [models, setModels] = useState<any>(null)
   const [browseStatus, setBrowseStatus] = useState<BrowseStatus | null>(null)
@@ -45,8 +45,8 @@ export default function Settings() {
     setLoadError('')
     const [m, a, c, v, b] = await Promise.all([
       api.models(),
-      api.auth(),
-      api.catalog(),
+      api.auth(locale),
+      api.catalog(locale),
       api.voiceStatus(),
       api.browseStatus().catch(() => null),
     ])
@@ -73,13 +73,17 @@ export default function Settings() {
     }
   }
 
+  // Re-run on a language change as well as on mount: the provider blurbs and
+  // slot guidance are the hub's copy, so switching language has to go back for
+  // them or half this page stays in the language you just left.
   useEffect(() => {
     reload().catch((e) => {
       const text = e.message || String(e)
       setMsg(text)
       setLoadError(text)
     })
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload is stable enough; locale is the real trigger
+  }, [locale])
 
   function flash(text: string) {
     setMsg(text)
@@ -91,14 +95,15 @@ export default function Settings() {
     return (
       <div className="settings grid-2">
         <section className="panel">
-          <h2>Settings failed to load</h2>
+          <h2>{t('settings.loadFailed')}</h2>
           <p className="muted">{loadError}</p>
           <p className="muted">
-            Usually the hub is on an old process. Restart with{' '}
-            <span className="mono">bash launch.sh --hub</span>, then retry.
+            {tx('settings.loadHint', {
+              command: <span className="mono">bash launch.sh --hub</span>,
+            })}
           </p>
           <button className="btn primary" onClick={() => reload().catch((e) => setLoadError(e.message || String(e)))}>
-            Retry
+            {t('settings.retry')}
           </button>
         </section>
       </div>
@@ -150,7 +155,7 @@ export default function Settings() {
       }
       setVoiceStatus(await api.voiceStatus())
       setDirty(false)
-      flash('Voice and model settings saved — new voice sessions use them immediately.')
+      flash(t('settings.savedModels'))
     } catch (e: any) {
       flash(e.message || String(e))
     } finally {
@@ -162,17 +167,17 @@ export default function Settings() {
     const key = (drafts[id] || '').trim()
     if (!key) return
     setBusy(id)
-    setChecks((c) => ({ ...c, [id]: { status: 'checking', detail: 'Calling the provider…' } }))
+    setChecks((c) => ({ ...c, [id]: { status: 'checking', detail: t('settings.calling') } }))
     try {
       const res = await api.verifyAuth(id, key)
       if (!res.ok) {
-        setChecks((c) => ({ ...c, [id]: { status: 'bad', detail: res.detail || 'Key rejected.' } }))
+        setChecks((c) => ({ ...c, [id]: { status: 'bad', detail: res.detail || t('settings.rejected') } }))
         return
       }
       const saved = await api.setAuth(id, key)
       setAuth(saved.providers || [])
       setDrafts((d) => ({ ...d, [id]: '' }))
-      setChecks((c) => ({ ...c, [id]: { status: 'ok', detail: res.detail || 'Connected.' } }))
+      setChecks((c) => ({ ...c, [id]: { status: 'ok', detail: res.detail || t('settings.connectedOk') } }))
       if (id === models?.tts?.provider) void loadAccountVoices(id)
       if (id === 'elevenlabs' || id === 'cartesia' || id === 'deepgram' || id === 'codex') {
         api.voiceStatus().then(setVoiceStatus).catch(() => {})
@@ -187,12 +192,15 @@ export default function Settings() {
 
   async function recheck(id: string) {
     setBusy(id)
-    setChecks((c) => ({ ...c, [id]: { status: 'checking', detail: 'Re-checking saved key…' } }))
+    setChecks((c) => ({ ...c, [id]: { status: 'checking', detail: t('settings.rechecking') } }))
     try {
       const res = await api.verifyAuth(id)
       setChecks((c) => ({
         ...c,
-        [id]: { status: res.ok ? 'ok' : 'bad', detail: res.detail || (res.ok ? 'Connected.' : 'Rejected.') },
+        [id]: {
+          status: res.ok ? 'ok' : 'bad',
+          detail: res.detail || (res.ok ? t('settings.connectedOk') : t('settings.rejectedShort')),
+        },
       }))
     } catch (e: any) {
       setChecks((c) => ({ ...c, [id]: { status: 'bad', detail: e?.message || String(e) } }))
@@ -212,7 +220,7 @@ export default function Settings() {
         api.voiceStatus().then(setVoiceStatus).catch(() => {})
         api.browseStatus().then(setBrowseStatus).catch(() => {})
       }
-      flash(`${id} disconnected.`)
+      flash(t('settings.disconnected', { provider: id }))
     } catch (e: any) {
       flash(e.message || String(e))
     } finally {
@@ -278,7 +286,7 @@ export default function Settings() {
   async function previewVoice() {
     const tts = models.tts || {}
     if (!tts.voice_id) {
-      flash('Choose a voice or enter a voice ID first.')
+      flash(t('settings.pickVoiceFirst'))
       return
     }
     setBusy('voice-preview')
@@ -295,7 +303,7 @@ export default function Settings() {
       audio.addEventListener('ended', () => URL.revokeObjectURL(url), { once: true })
       audio.addEventListener('error', () => URL.revokeObjectURL(url), { once: true })
       await audio.play()
-      flash('Playing the exact voice Rau will use.')
+      flash(t('settings.playingVoice'))
     } catch (e: any) {
       flash(e?.message || String(e))
     } finally {
@@ -308,12 +316,12 @@ export default function Settings() {
     try {
       const res = await api.composioConnect()
       if (res.needs_key) {
-        flash(res.hint || 'Save a Composio API key first.')
+        flash(res.hint || t('settings.composioNeedsKey'))
         openUrl(res.open_url || res.app_url)
         return
       }
       openUrl(res.open_url || res.connect_url)
-      flash('Opened Composio Connect — finish authorizing apps in the new tab.')
+      flash(t('settings.composioOpened'))
     } catch (e: any) {
       flash(e.message || String(e))
       openUrl('https://connect.composio.dev')
@@ -348,7 +356,7 @@ export default function Settings() {
                   .catch((error) => flash(error?.message || String(error)))
               }
             >
-              {t('common.english')}
+              {t('language.english')}
             </button>
             <button
               type="button"
@@ -361,7 +369,7 @@ export default function Settings() {
                   .catch((error) => flash(error?.message || String(error)))
               }
             >
-              {t('common.korean')}
+              {t('language.korean')}
             </button>
           </div>
         </div>
@@ -379,18 +387,17 @@ export default function Settings() {
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2>Models</h2>
-            <p className="muted panel-sub">
-              Face talks. Subagent does silent deep work. Dream rewrites the soul at night.
-            </p>
+            <h2>{t('settings.models')}</h2>
+            <p className="muted panel-sub">{t('settings.modelsSub')}</p>
           </div>
-          {dirty && <span className="pill bad">unsaved</span>}
+          {dirty && <span className="pill bad">{t('settings.unsaved')}</span>}
         </div>
 
         {usable.length === 0 && (
           <div className="notice bad" style={{ marginBottom: '1rem' }}>
-            No provider keys yet — connect one on the right, or{' '}
-            <Link to="/setup">run setup again</Link>.
+            {tx('settings.noKeys', {
+              link: <Link to="/setup">{t('settings.runSetupAgain')}</Link>,
+            })}
           </div>
         )}
 
@@ -408,44 +415,44 @@ export default function Settings() {
 
               <div className="slot-fields">
                 <div className="field">
-                  <label>Provider</label>
+                  <label>{t('settings.provider')}</label>
                   <select value={cur.provider || ''} onChange={(e) => pickProvider(slot, e.target.value)}>
-                    <option value="">choose…</option>
+                    <option value="">{t('settings.choose')}</option>
                     {Object.keys(catalog.providers).map((p) => (
                       <option key={p} value={p}>
                         {catalog.providers[p].label}
-                        {usable.includes(p) ? '' : ' (no key)'}
+                        {usable.includes(p) ? '' : t('settings.noKey')}
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div className="field">
-                  <label>Model</label>
+                  <label>{t('settings.model')}</label>
                   <select
                     value={isCustom ? '__custom' : cur.model || ''}
                     onChange={(e) =>
                       updateSlot(slot, 'model', e.target.value === '__custom' ? '' : e.target.value)
                     }
                   >
-                    <option value="">choose…</option>
+                    <option value="">{t('settings.choose')}</option>
                     {list.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.label}
-                        {m.note ? ` — ${m.note}` : ''}
+                        {m.note ? `${t('common.optionSep')}${m.note}` : ''}
                       </option>
                     ))}
-                    <option value="__custom">Custom model id…</option>
+                    <option value="__custom">{t('settings.customModel')}</option>
                   </select>
                 </div>
               </div>
 
               {(isCustom || !cur.model) && (
                 <div className="field">
-                  <label>Custom model id</label>
+                  <label>{t('settings.customModelLabel')}</label>
                   <input
                     value={cur.model || ''}
-                    placeholder="exact id as the provider spells it"
+                    placeholder={t('settings.customModelPlaceholder')}
                     onChange={(e) => updateSlot(slot, 'model', e.target.value)}
                   />
                 </div>
@@ -453,7 +460,7 @@ export default function Settings() {
 
               <div className="slot-fields">
                 <div className="field">
-                  <label>Max tokens</label>
+                  <label>{t('settings.maxTokens')}</label>
                   <input
                     type="number"
                     min={16}
@@ -462,7 +469,7 @@ export default function Settings() {
                   />
                 </div>
                 <div className="field">
-                  <label>Temperature</label>
+                  <label>{t('settings.temperature')}</label>
                   <input
                     type="number"
                     step="0.1"
@@ -479,22 +486,23 @@ export default function Settings() {
 
         <div className="slot voice-config">
           <div className="slot-title">
-            <h3>Voice</h3>
-            <span className="slot-note">
-              Choose ElevenLabs or Cartesia Sonic 3.5, then select any voice your key can access.
-            </span>
+            <h3>{t('settings.voice')}</h3>
+            <span className="slot-note">{t('settings.voiceSub')}</span>
           </div>
 
           {!configured.has(models.tts?.provider || 'elevenlabs') && (
             <div className="notice bad voice-connect-note">
-              {catalog.tts_providers?.[models.tts?.provider || 'elevenlabs']?.label || 'Voice provider'} is
-              not connected. Paste a key in Connections to enable previews and spoken replies.
+              {t('settings.voiceNotConnected', {
+                provider:
+                  catalog.tts_providers?.[models.tts?.provider || 'elevenlabs']?.label ||
+                  t('settings.voiceProviderFallback'),
+              })}
             </div>
           )}
 
           <div className="slot-fields">
             <div className="field">
-              <label>Speech provider</label>
+              <label>{t('settings.speechProvider')}</label>
               <select
                 value={models.tts?.provider || 'elevenlabs'}
                 onChange={(e) => chooseTtsProvider(e.target.value)}
@@ -502,7 +510,7 @@ export default function Settings() {
                 {Object.entries(catalog.tts_providers || {}).map(([id, meta]) => (
                   <option key={id} value={id}>
                     {meta.label}
-                    {configured.has(meta.auth) ? '' : ' (no key)'}
+                    {configured.has(meta.auth) ? '' : t('settings.noKey')}
                   </option>
                 ))}
               </select>
@@ -533,8 +541,8 @@ export default function Settings() {
             <div className="field">
               <label>
                 {(models.tts?.provider || 'elevenlabs') === 'cartesia'
-                  ? 'Cartesia voices'
-                  : 'Your ElevenLabs voices'}
+                  ? t('settings.cartesiaVoices')
+                  : t('settings.elevenVoices')}
               </label>
               <select
                 value={
@@ -548,9 +556,9 @@ export default function Settings() {
                 <option value="">
                   {configured.has(models.tts?.provider || 'elevenlabs')
                     ? accountVoices.length
-                      ? 'choose an account voice…'
-                      : 'loading voices…'
-                    : 'connect a key first'}
+                      ? t('settings.chooseAccountVoice')
+                      : t('settings.loadingVoices')
+                    : t('settings.connectFirst')}
                 </option>
                 {accountVoices.map((v) => (
                   <option key={v.id} value={v.id}>
@@ -563,10 +571,12 @@ export default function Settings() {
               {voiceLoadError && <span className="field-hint bad">{voiceLoadError}</span>}
             </div>
             <div className="field">
-              <label>Custom voice ID</label>
+              <label>{t('settings.customVoiceId')}</label>
               <input
                 value={models.tts?.voice_id || ''}
-                placeholder={`paste a ${models.tts?.provider === 'cartesia' ? 'Cartesia' : 'ElevenLabs'} voice ID`}
+                placeholder={t('settings.customVoicePlaceholder', {
+                  provider: models.tts?.provider === 'cartesia' ? 'Cartesia' : 'ElevenLabs',
+                })}
                 spellCheck={false}
                 onChange={(e) => chooseAccountVoice(e.target.value.trim())}
               />
@@ -575,7 +585,7 @@ export default function Settings() {
 
           <div className="slot-fields">
             <div className="field">
-              <label>TTS model</label>
+              <label>{t('settings.ttsModel')}</label>
               <select
                 value={models.tts?.model || ''}
                 onChange={(e) => updateSlot('tts', 'model', e.target.value)}
@@ -583,20 +593,20 @@ export default function Settings() {
                 {(catalog.tts_providers?.[models.tts?.provider || 'elevenlabs']?.models || []).map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}
-                    {m.note ? ` — ${m.note}` : ''}
+                    {m.note ? `${t('common.optionSep')}${m.note}` : ''}
                   </option>
                 ))}
               </select>
             </div>
             <div className="field">
-              <label>Voice effect</label>
+              <label>{t('settings.voiceEffect')}</label>
               <select
                 value={models.tts?.effect || 'none'}
                 onChange={(e) => updateSlot('tts', 'effect', e.target.value)}
               >
                 {(catalog.voice_effects || []).map((effect) => (
                   <option key={effect.id} value={effect.id}>
-                    {effect.label} — {effect.note}
+                    {effect.label}{t('common.optionSep')}{effect.note}
                   </option>
                 ))}
               </select>
@@ -614,14 +624,14 @@ export default function Settings() {
               onClick={previewVoice}
             >
               {busy === 'voice-preview' && <i className="spinner" />}
-              {busy === 'voice-preview' ? 'Generating…' : 'Preview voice'}
+              {busy === 'voice-preview' ? t('settings.generating') : t('settings.previewVoice')}
             </button>
             <button
               className="btn sm ghost"
               disabled={!configured.has(models.tts?.provider || 'elevenlabs')}
               onClick={() => loadAccountVoices(models.tts?.provider || 'elevenlabs')}
             >
-              Refresh account voices
+              {t('settings.refreshVoices')}
             </button>
           </div>
         </div>
@@ -637,30 +647,29 @@ export default function Settings() {
           return (
             <div className="slot">
               <div className="slot-title">
-                <h3>Hearing</h3>
+                <h3>{t('settings.hearing')}</h3>
                 <span className="slot-note">
-                  Speech-to-text for voice mode.{' '}
+                  {t('settings.hearingSub')}
                   {stt.provider === 'auto' && voiceStatus
-                    ? `Currently resolves to ${voiceStatus.stt.label}.`
+                    ? t('settings.hearingResolves', { label: voiceStatus.stt.label })
                     : ''}
                   {stt.provider !== 'auto' && sttMeta?.partials
-                    ? ' This backend streams a live transcript as you speak.'
+                    ? t('settings.hearingPartials')
                     : stt.provider !== 'auto'
-                      ? ' This backend transcribes once you stop speaking — no live transcript.'
+                      ? t('settings.hearingNoPartials')
                       : ''}
                 </span>
               </div>
 
               {!sttUsable && (
                 <div className="notice bad" style={{ marginBottom: '0.8rem' }}>
-                  No key for {sttMeta?.label} — automatic fallback will use the best connected
-                  backend.
+                  {t('settings.hearingNoKey', { label: sttMeta?.label || '' })}
                 </div>
               )}
 
               <div className="slot-fields">
                 <div className="field">
-                  <label>Provider</label>
+                  <label>{t('settings.provider')}</label>
                   <select
                     value={stt.provider || 'auto'}
                     onChange={(e) => {
@@ -676,26 +685,26 @@ export default function Settings() {
                     {Object.entries(catalog.stt_providers || {}).map(([id, meta]) => (
                       <option key={id} value={id}>
                         {meta.label}
-                        {!meta.auth || configured.has(meta.auth) ? '' : ' (no key)'}
+                        {!meta.auth || configured.has(meta.auth) ? '' : t('settings.noKey')}
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div className="field">
-                  <label>Model</label>
+                  <label>{t('settings.model')}</label>
                   <select
                     value={stt.model || ''}
                     disabled={stt.provider === 'auto'}
                     onChange={(e) => updateSlot('stt', 'model', e.target.value)}
                   >
                     <option value="">
-                      {stt.provider === 'auto' ? 'chosen automatically' : 'choose…'}
+                      {stt.provider === 'auto' ? t('settings.autoChosen') : t('settings.choose')}
                     </option>
                     {sttModels.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.label}
-                        {m.note ? ` — ${m.note}` : ''}
+                        {m.note ? `${t('common.optionSep')}${m.note}` : ''}
                       </option>
                     ))}
                   </select>
@@ -703,22 +712,21 @@ export default function Settings() {
               </div>
 
               <div className="field" style={{ marginBottom: 0 }}>
-                <label>Recognition language</label>
+                <label>{t('settings.recognitionLanguage')}</label>
                 <select
                   value={stt.language || ''}
                   onChange={(e) => updateSlot('stt', 'language', e.target.value)}
                 >
-                  <option value="">Provider default / detect when supported</option>
-                  <option value="en">English</option>
-                  <option value="ko">Korean</option>
-                  <option value="ja">Japanese</option>
-                  <option value="zh">Chinese</option>
-                  <option value="es">Spanish</option>
-                  <option value="multi">Multilingual / code-switching</option>
+                  <option value="">{t('settings.languageDefault')}</option>
+                  <option value="en">{t('settings.langEn')}</option>
+                  <option value="ko">{t('settings.langKo')}</option>
+                  <option value="ja">{t('settings.langJa')}</option>
+                  <option value="zh">{t('settings.langZh')}</option>
+                  <option value="es">{t('settings.langEs')}</option>
+                  <option value="multi">{t('settings.langMulti')}</option>
                 </select>
                 <span className="field-hint">
-                  Deepgram Nova-3 supports Korean as <span className="mono">ko</span>; its multilingual
-                  mode covers a smaller set of languages.
+                  {tx('settings.deepgramHint', { code: <span className="mono">ko</span> })}
                 </span>
               </div>
             </div>
@@ -739,12 +747,11 @@ export default function Settings() {
           return (
             <div className="slot">
               <div className="slot-title">
-                <h3>Reading the web</h3>
+                <h3>{t('settings.browse')}</h3>
                 <span className="slot-note">
-                  How Rau opens a page when you ask him to look something up. He
-                  walks over to the computer to do it.
+                  {t('settings.browseSub')}
                   {browseStatus?.ready && chosen === 'auto'
-                    ? ` Currently resolves to ${browseStatus.provider}.`
+                    ? t('settings.browseResolves', { provider: browseStatus.provider })
                     : ''}
                 </span>
               </div>
@@ -752,14 +759,14 @@ export default function Settings() {
               {!usable && (
                 <div className="notice bad" style={{ marginBottom: '0.8rem' }}>
                   {chosen === 'auto'
-                    ? 'No Firecrawl or Browserbase key yet — connect one on the right and he can read the web.'
-                    : `No key for ${browseMeta?.label} — connect one on the right, or pick the other backend.`}
+                    ? t('settings.browseNoKeyAuto')
+                    : t('settings.browseNoKey', { label: browseMeta?.label || '' })}
                 </div>
               )}
 
               <div className="slot-fields">
                 <div className="field">
-                  <label>Backend</label>
+                  <label>{t('settings.backend')}</label>
                   <select
                     value={chosen}
                     onChange={(e) => {
@@ -774,7 +781,7 @@ export default function Settings() {
                       <option key={id} value={id}>
                         {meta.label}
                         {id !== 'auto' && meta.auth && !configured.has(meta.auth)
-                          ? ' (no key)'
+                          ? t('settings.noKey')
                           : ''}
                       </option>
                     ))}
@@ -785,8 +792,7 @@ export default function Settings() {
 
               {browseMeta && !browseMeta.can_search && (
                 <span className="field-hint">
-                  This backend opens a url you give it but cannot search the web.
-                  Firecrawl can do both.
+                  {t('settings.browseNoSearch')}
                 </span>
               )}
             </div>
@@ -796,7 +802,7 @@ export default function Settings() {
         <div className="row end sticky-save">
           <button className="btn primary" disabled={busy === 'models'} onClick={saveModels}>
             {busy === 'models' && <i className="spinner" />}
-            {busy === 'models' ? 'Saving…' : 'Save models'}
+            {busy === 'models' ? t('settings.saving') : t('settings.saveModels')}
           </button>
         </div>
       </section>
@@ -804,10 +810,9 @@ export default function Settings() {
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2>Connections</h2>
+            <h2>{t('settings.connections')}</h2>
             <p className="muted panel-sub">
-              Keys are checked live, then written to <span className="mono">.env</span> on this
-              machine only.
+              {tx('settings.connectionsSub', { file: <span className="mono">.env</span> })}
             </p>
           </div>
         </div>
@@ -832,7 +837,7 @@ export default function Settings() {
                       type="password"
                       autoComplete="off"
                       spellCheck={false}
-                      placeholder={p.configured ? '•••• paste a new key to replace' : 'paste API key'}
+                      placeholder={p.configured ? t('settings.pasteReplace') : t('settings.pasteKey')}
                       value={drafts[p.id] || ''}
                       onChange={(e) => setDrafts((d) => ({ ...d, [p.id]: e.target.value }))}
                       onKeyDown={(e) => {
@@ -850,15 +855,19 @@ export default function Settings() {
                       onClick={() => checkAndSave(p.id)}
                     >
                       {busy === p.id && <i className="spinner" />}
-                      {busy === p.id ? 'Checking…' : p.configured ? 'Replace key' : 'Check & save'}
+                      {busy === p.id
+                        ? t('settings.checking')
+                        : p.configured
+                          ? t('settings.replaceKey')
+                          : t('settings.checkSave')}
                     </button>
                     {p.configured && (
                       <button className="btn sm" disabled={busy === p.id} onClick={() => recheck(p.id)}>
-                        Re-check
+                        {t('settings.recheck')}
                       </button>
                     )}
                     <button className="btn sm ghost" onClick={() => openUrl(p.docs_url)}>
-                      Get key ↗
+                      {t('settings.getKey')}
                     </button>
                     {p.id === 'composio' && (
                       <button
@@ -866,7 +875,7 @@ export default function Settings() {
                         disabled={busy === 'composio-connect'}
                         onClick={openComposio}
                       >
-                        {busy === 'composio-connect' ? 'Opening…' : 'App connect'}
+                        {busy === 'composio-connect' ? t('settings.opening') : t('settings.appConnect')}
                       </button>
                     )}
                     {p.id === 'kimi_code' && p.connect_url && (
@@ -885,7 +894,7 @@ export default function Settings() {
                         disabled={busy === p.id}
                         onClick={() => clearKey(p.id)}
                       >
-                        Disconnect
+                        {t('settings.disconnect')}
                       </button>
                     )}
                   </div>
@@ -894,7 +903,7 @@ export default function Settings() {
           })}
         </div>
 
-        <h3 className="section-title">Maintenance</h3>
+        <h3 className="section-title">{t('settings.maintenance')}</h3>
         <div className="row">
           <button
             className="btn"
@@ -903,16 +912,16 @@ export default function Settings() {
               setBusy('dream')
               api
                 .dream()
-                .then(() => flash('Dream pass complete — soul.md may have changed.'))
+                .then(() => flash(t('settings.dreamDone')))
                 .catch((e) => flash(e.message || String(e)))
                 .finally(() => setBusy(''))
             }}
           >
             {busy === 'dream' && <i className="spinner" />}
-            {busy === 'dream' ? 'Dreaming…' : 'Run dream now'}
+            {busy === 'dream' ? t('settings.dreaming') : t('settings.runDream')}
           </button>
           <Link to="/setup" className="btn">
-            Re-run setup
+            {t('settings.rerunSetup')}
           </Link>
         </div>
 
