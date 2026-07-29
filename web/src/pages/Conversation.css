@@ -10,11 +10,6 @@
   height: 100%;
 }
 
-.convo.has-activity {
-  max-width: 100%;
-  gap: 0;
-}
-
 .convo-main {
   display: flex;
   flex-direction: column;
@@ -24,11 +19,6 @@
   width: 100%;
   max-width: 760px;
   margin: 0 auto;
-}
-
-.convo.has-activity .convo-main {
-  margin: 0;
-  max-width: none;
 }
 
 /* ── hero ──────────────────────────────────────────────────── */
@@ -95,6 +85,65 @@
   animation: pop-in var(--dur-4) var(--spring) 120ms both;
 }
 
+.convo-room-launcher {
+  position: relative;
+  display: block;
+  border-radius: var(--r-lg);
+  color: inherit;
+  text-decoration: none;
+  outline: none;
+}
+
+.convo-room-launcher::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 1.35rem;
+  z-index: 2;
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  background: radial-gradient(
+    circle at 50% 65%,
+    var(--accent-a12),
+    transparent 68%
+  );
+  box-shadow: 0 0 0 0 var(--accent-a12);
+  opacity: 0;
+  transform: scale(0.96);
+  pointer-events: none;
+  transition:
+    opacity var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease),
+    border-color var(--dur-2) var(--ease),
+    box-shadow var(--dur-2) var(--ease);
+}
+
+.convo-room-launcher .clawd-avatar {
+  transition:
+    border-color var(--dur-2) var(--ease),
+    box-shadow var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease);
+}
+
+.convo-room-launcher:hover::before,
+.convo-room-launcher:focus-visible::before {
+  border-color: var(--accent-a25);
+  box-shadow: 0 0 2rem -0.6rem var(--accent-a25);
+  opacity: 1;
+  transform: scale(1);
+}
+
+.convo-room-launcher:hover .clawd-avatar,
+.convo-room-launcher:focus-visible .clawd-avatar {
+  border-color: var(--accent-a40);
+  box-shadow: var(--shadow-2);
+  transform: translateY(-1px);
+}
+
+.convo-room-launcher:active .clawd-avatar {
+  transform: translateY(-1px) scale(1.012);
+  transition-duration: var(--dur-1);
+}
+
 .convo-room-link {
   display: block;
   margin-top: 0.45rem;
@@ -108,8 +157,9 @@
   color: var(--accent);
 }
 
-.convo-activity-chip {
-  margin: 0.45rem 0 0 auto;
+.convo-room-launcher:hover .convo-room-link,
+.convo-room-launcher:focus-visible .convo-room-link {
+  color: var(--accent);
 }
 
 .space-talk-controls {
@@ -131,33 +181,36 @@
 }
 
 .convo-activity-sidebar {
-  flex: 0 0 clamp(17.5rem, 30vw, 22rem);
-  min-width: 0;
-  min-height: 0;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: var(--activity-rail-width);
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg-0) 88%, var(--surface));
   overflow: hidden;
+  transform: translateX(100%);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    transform var(--dur-3) var(--ease),
+    visibility 0s linear var(--dur-3);
+  will-change: transform;
+}
+
+.convo-activity-sidebar.is-open {
+  transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
 }
 
 .convo-activity-sidebar .activity-inspector {
   flex: 1;
   min-height: 0;
-}
-
-@media (max-width: 900px) {
-  .convo.has-activity {
-    flex-direction: column;
-  }
-
-  .convo-activity-sidebar {
-    order: -1;
-    flex: 0 0 auto;
-    max-height: min(38vh, 20rem);
-    border-left: 0;
-    border-bottom: 1px solid var(--line);
-  }
 }
 
 /* ── confirm strip ─────────────────────────────────────────── */

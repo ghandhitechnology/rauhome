@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 import { FULL_RATE, pacingFor, watchActivity } from './activity'
 
 /**
@@ -15,12 +15,15 @@ import { FULL_RATE, pacingFor, watchActivity } from './activity'
 export function useClawdCanvas(
   draw: (ctx: CanvasRenderingContext2D, dt: number, w: number, h: number) => void,
   deps: unknown[] = [],
+  options: { onFirstFrame?: () => void } = {},
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const drawRef = useRef(draw)
+  const onFirstFrameRef = useRef(options.onFirstFrame)
   drawRef.current = draw
+  onFirstFrameRef.current = options.onFirstFrame
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d', { alpha: true })
@@ -31,6 +34,7 @@ export function useClawdCanvas(
     let width = 0
     let height = 0
     let disposed = false
+    let firstFrame = true
 
     const resize = () => {
       const profile = document.documentElement.dataset.resourceProfile || 'balanced'
@@ -70,6 +74,14 @@ export function useClawdCanvas(
       FULL_RATE draws every vsync: the budget is negative, so the skip branch
       can never fire and the display — 60Hz, 120Hz, 144Hz — sets the pace.
     */
+    const paint = (dt: number) => {
+      ctx.clearRect(0, 0, width, height)
+      drawRef.current(ctx, dt, width, height)
+      if (!firstFrame) return
+      firstFrame = false
+      onFirstFrameRef.current?.()
+    }
+
     const frame = (now: number) => {
       raf = 0
       if (disposed) return
@@ -84,10 +96,7 @@ export function useClawdCanvas(
       // restored tab does not fast-forward the simulation.
       const dt = Math.min(0.1, Math.max(0, elapsed / 1000))
       last = now
-      if (!document.hidden) {
-        ctx.clearRect(0, 0, width, height)
-        drawRef.current(ctx, dt, width, height)
-      }
+      if (!document.hidden) paint(dt)
       scheduleFrame()
     }
 
@@ -98,6 +107,11 @@ export function useClawdCanvas(
       raf = requestAnimationFrame(frame)
     }
 
+    // Paint once in the layout phase. Room view transitions can now capture a
+    // complete incoming canvas immediately instead of waiting for the next rAF
+    // (or for the safety timeout when rendering is paused during a snapshot).
+    if (!document.hidden) paint(0)
+    last = performance.now()
     scheduleFrame()
 
     const onVisible = () => {

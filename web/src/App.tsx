@@ -9,6 +9,8 @@ import { live } from './live'
 import { publishTier } from './clawd/quality'
 import PageSkeleton from './components/PageSkeleton'
 import { HyperActivationRipple } from './components/HyperMode'
+import { ActivityChip } from './components/ActivityInspector'
+import { activityStore, useActivity } from './activity'
 import {
   Conversation,
   Dashboard,
@@ -45,6 +47,7 @@ function Shell() {
   const { toggleMode } = useMode()
   const { t } = useLocale()
   const tutorial = useTutorial()
+  const { panelOpen } = useActivity()
   const nav = [
     { to: '/', label: t('nav.talk') },
     { to: '/face', label: t('nav.face') },
@@ -74,6 +77,10 @@ function Shell() {
   useEffect(() => {
     checkIdentity()
   }, [checkIdentity])
+
+  useEffect(() => {
+    if (!isTalk) activityStore.setPanelOpen(false)
+  }, [isTalk])
 
   useEffect(() => {
     // The tier is a startup fact for CSS as much as for the canvas.
@@ -137,7 +144,13 @@ function Shell() {
   }
 
   return (
-    <div className={`app-shell ${isTalk ? 'talk-mode' : ''}`}>
+    <div
+      className={[
+        'app-shell',
+        isTalk ? 'talk-mode' : '',
+        isTalk && panelOpen ? 'activity-open' : '',
+      ].filter(Boolean).join(' ')}
+    >
       {!isTalk && !isSetup && (
         <header className="topbar utility-bar">
           <Link to="/" className="brand">
@@ -171,19 +184,26 @@ function Shell() {
       </main>
 
       {isTalk && ready && (
-        <Link
-          to="/dashboard"
-          className="dash-corner"
-          title={t('app.dashboard')}
-          aria-label={t('app.openDashboard')}
-        >
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
-            <rect x="1.5" y="1.5" width="5" height="5" rx="1.2" />
-            <rect x="9.5" y="1.5" width="5" height="5" rx="1.2" />
-            <rect x="1.5" y="9.5" width="5" height="5" rx="1.2" />
-            <rect x="9.5" y="9.5" width="5" height="5" rx="1.2" />
-          </svg>
-        </Link>
+        <div className={`talk-corners${panelOpen ? ' open' : ''}`}>
+          <ActivityChip
+            open={panelOpen}
+            onToggle={() => activityStore.setPanelOpen(!activityStore.panelOpen())}
+            className="talk-activity-chip"
+          />
+          <Link
+            to="/dashboard"
+            className="dash-corner"
+            title={t('app.dashboard')}
+            aria-label={t('app.openDashboard')}
+          >
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+              <rect x="1.5" y="1.5" width="5" height="5" rx="1.2" />
+              <rect x="9.5" y="1.5" width="5" height="5" rx="1.2" />
+              <rect x="1.5" y="9.5" width="5" height="5" rx="1.2" />
+              <rect x="9.5" y="9.5" width="5" height="5" rx="1.2" />
+            </svg>
+          </Link>
+        </div>
       )}
     </div>
   )
