@@ -36,6 +36,37 @@ export type Camera = {
   zoom: number
 }
 
+/**
+ * Radial table-dim gradients, shared across frames.
+ *
+ * Keyed by pixel radius and 1/24 alpha steps. Built at the origin; callers
+ * translate the context onto the light, so a moving camera never invalidates
+ * the entry. The working set is one radius per window size and a handful of
+ * alpha steps — the cap is a leak guard, not a policy.
+ */
+const dimGradients = new Map<string, CanvasGradient>()
+
+function dimGradient(
+  ctx: CanvasRenderingContext2D,
+  radius: number,
+  alphaStep: number,
+): CanvasGradient {
+  const key = `${radius}|${alphaStep}`
+  const cached = dimGradients.get(key)
+  if (cached) return cached
+  const a = alphaStep / 24
+  const g = ctx.createRadialGradient(0, 0, radius * 0.16, 0, 0, radius)
+  g.addColorStop(0, 'rgba(6, 5, 8, 0)')
+  g.addColorStop(0.55, `rgba(6, 5, 8, ${a * 0.45})`)
+  g.addColorStop(1, `rgba(6, 5, 8, ${a})`)
+  dimGradients.set(key, g)
+  if (dimGradients.size > 32) {
+    const oldest = dimGradients.keys().next().value
+    if (oldest !== undefined) dimGradients.delete(oldest)
+  }
+  return g
+}
+
 export type SceneOptions = {
   /** Follow the character instead of holding a wide shot. */
   follow?: boolean
@@ -62,6 +93,7 @@ export type SceneOptions = {
 export class Scene {
   readonly camera: Camera = { x: 0, y: 0, zoom: 1 }
   private grainSeed = 0
+  private grainTime = 0
   /** classic = original flat room; enhanced = materials/architecture pass. */
   roomVisual: RoomVisual = 'enhanced'
 
@@ -111,7 +143,11 @@ export class Scene {
       this.camera.y = damp(this.camera.y, par.y * 1.4, 2.4, dt)
       this.camera.zoom = damp(this.camera.zoom, opts.follow ? 1.14 : 1, 2, dt)
     }
-    this.grainSeed = (this.grainSeed + dt * 24) % 1000
+    this.grainTime += dt
+    // Grain re-scatters on a film cadence, not a display one: tied to the draw
+    // rate it shimmers at 120Hz on a fast panel, which reads as buzzing
+    // rather than as film.
+    this.grainSeed = Math.floor(this.grainTime * 24) % 1000
   }
 
   /**
@@ -271,14 +307,16 @@ export class Scene {
     // Tight, and most of the falloff spent early: the point is a lamp over a
     // table with a room going quiet around it, not an even wash over the shot.
     const r = Math.max(w, h) * 0.62
-    const g = ctx.createRadialGradient(c.x, c.y, r * 0.16, c.x, c.y, r)
     const a = clamp01(amount)
-    g.addColorStop(0, 'rgba(6, 5, 8, 0)')
-    g.addColorStop(0.55, `rgba(6, 5, 8, ${a * 0.45})`)
-    g.addColorStop(1, `rgba(6, 5, 8, ${a})`)
+    // The gradient is built at the origin and the context translated onto it,
+    // so one cached gradient serves every camera position — the camera moves
+    // on every one of these frames, and rebuilding a radial each time was
+    // pure churn.
+    const g = dimGradient(ctx, Math.round(r), Math.round(a * 24))
     ctx.save()
+    ctx.translate(c.x, c.y)
     ctx.fillStyle = g
-    ctx.fillRect(0, 0, w, h)
+    ctx.fillRect(-c.x, -c.y, w, h)
     ctx.restore()
   }
 
@@ -294,7 +332,10 @@ export class Scene {
     ctx.save()
     ctx.globalAlpha = 0.028
     ctx.fillStyle = '#FFFFFF'
-    const count = Math.min(900, Math.floor((w * h) / 5200))
+    // Deliberately sparse: at this alpha each dot is sub-perceptible, so the
+    // density buys texture, not detail — and every dot is a fillRect on the
+    // hottest path the room has.
+    const count = Math.min(420, Math.floor((w * h) / 11000))
     for (let i = 0; i < count; i++) {
       const n = Math.sin((i + this.grainSeed) * 12.9898) * 43758.5453
       const m = Math.sin((i + this.grainSeed) * 78.233) * 12345.6789
@@ -308,21 +349,37 @@ export class Scene {
 
 export type BubbleRect = { x: number; y: number; w: number; h: number }
 
-/** Pixel-art speech bubble drawn in canvas space. Returns its bounds. */
-export function drawBubble(
+type BubbleLayout = { lines: string[]; w: number; h: number }
+
+/**
+ * Wrapped and measured bubble text, cached by content and box.
+ *
+ * A bubble sits over his head for seconds at a time — and was being wrapped
+ * and measured again on every frame of those seconds, a dozen-plus
+ * `measureText` calls a frame. The text only actually changes when a token
+ * lands, so the layout is computed then and replayed for the frames between.
+ */
+const bubbleLayouts = new Map<string, BubbleLayout>()
+
+function layoutBubble(
   ctx: CanvasRenderingContext2D,
   text: string,
-  anchorX: number,
-  anchorY: number,
   maxWidth: number,
   scale: number,
-): BubbleRect | null {
+): BubbleLayout | null {
+  const key = `${Math.round(maxWidth)}|${Math.round(scale * 100)}|${text}`
+  const hit = bubbleLayouts.get(key)
+  if (hit) {
+    // Refresh recency: the line being read should be the last thing evicted
+    // while a stream keeps typing past it.
+    bubbleLayouts.delete(key)
+    bubbleLayouts.set(key, hit)
+    return hit
+  }
+
   const pad = 10 * scale
   const lineH = 17 * scale
-  const font = `${Math.round(13 * scale)}px "DM Sans", system-ui, sans-serif`
-  ctx.save()
-  ctx.font = font
-  ctx.textBaseline = 'top'
+  ctx.font = `${Math.round(13 * scale)}px "DM Sans", system-ui, sans-serif`
 
   // Word wrap (break only overlong tokens), then keep the newest lines so a
   // word-by-word stream does not freeze on the opening sentence.
@@ -364,16 +421,47 @@ export function drawBubble(
   const clipped = wrapped.length > 4
   const lines = clipped ? wrapped.slice(-4) : wrapped
   if (clipped && lines[0]) lines[0] = `…${lines[0]}`
-  if (lines.length === 0 || (lines.length === 1 && !lines[0])) {
+  if (lines.length === 0 || (lines.length === 1 && !lines[0])) return null
+
+  const layout = {
+    lines,
+    w: Math.min(
+      maxWidth,
+      Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2,
+    ),
+    h: lines.length * lineH + pad * 2,
+  }
+  bubbleLayouts.set(key, layout)
+  // A streaming reply mints a key per token; only the newest few are live.
+  if (bubbleLayouts.size > 16) {
+    const oldest = bubbleLayouts.keys().next().value
+    if (oldest !== undefined) bubbleLayouts.delete(oldest)
+  }
+  return layout
+}
+
+/** Pixel-art speech bubble drawn in canvas space. Returns its bounds. */
+export function drawBubble(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  anchorX: number,
+  anchorY: number,
+  maxWidth: number,
+  scale: number,
+): BubbleRect | null {
+  const pad = 10 * scale
+  const lineH = 17 * scale
+  const font = `${Math.round(13 * scale)}px "DM Sans", system-ui, sans-serif`
+  ctx.save()
+  ctx.font = font
+  ctx.textBaseline = 'top'
+
+  const layout = layoutBubble(ctx, text, maxWidth, scale)
+  if (!layout) {
     ctx.restore()
     return null
   }
-
-  const w = Math.min(
-    maxWidth,
-    Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2,
-  )
-  const h = lines.length * lineH + pad * 2
+  const { lines, w, h } = layout
   // canvas.width is the bitmap size in device pixels, while every coordinate
   // here is CSS pixels — convert before clamping or a hidpi display lets the
   // bubble slide off the right edge of the screen.

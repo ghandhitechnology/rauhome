@@ -13,6 +13,7 @@
  */
 
 import { bodyController, type BodyCue, type BodyPlan } from './clawd/body'
+import { noteActivity } from './clawd/activity'
 import { PROP_SPOTS, propStore, type PropId, type SpotId } from './clawd/props'
 import { panelStore } from './panels'
 
@@ -93,6 +94,8 @@ function deskRelease() {
 
 function markActive(durationMs = 2500) {
   if (typeof document === 'undefined') return
+  // The render loop's five-minute clock: a hub event means the room is in use.
+  noteActivity()
   document.documentElement.dataset.rauActive = 'true'
   if (activityTimer) clearTimeout(activityTimer)
   activityTimer = setTimeout(() => {

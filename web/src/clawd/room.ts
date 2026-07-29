@@ -121,6 +121,32 @@ function slab(
   r(ctx, u, x, y + h - edge, w, edge, shade)
 }
 
+/**
+ * Additive glow gradients, shared across frames.
+ *
+ * Built at the origin with the caller translating the context onto the light,
+ * so one entry serves every position. The sun, the lamp and the monitor each
+ * used to allocate a fresh radial on every frame they shone.
+ */
+const glowGradients = new Map<string, CanvasGradient>()
+
+function glowGradient(ctx: Ctx, radiusPx: number, colour: string): CanvasGradient {
+  const key = `${Math.round(radiusPx)}|${colour}`
+  const hit = glowGradients.get(key)
+  if (hit) return hit
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.round(radiusPx))
+  g.addColorStop(0, colour)
+  g.addColorStop(0.45, colour)
+  g.addColorStop(1, 'rgba(0,0,0,0)')
+  glowGradients.set(key, g)
+  // A radius per light per window size — the cap is a leak guard, not a policy.
+  if (glowGradients.size > 32) {
+    const oldest = glowGradients.keys().next().value
+    if (oldest !== undefined) glowGradients.delete(oldest)
+  }
+  return g
+}
+
 /** Additive glow, for anything that is itself a light source. */
 function glow(
   ctx: Ctx,
@@ -132,15 +158,13 @@ function glow(
   alpha: number,
 ) {
   if (alpha <= 0.004) return
+  const r = radius * u
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.globalAlpha = alpha
-  const g = ctx.createRadialGradient(cx * u, cy * u, 0, cx * u, cy * u, radius * u)
-  g.addColorStop(0, colour)
-  g.addColorStop(0.45, colour)
-  g.addColorStop(1, 'rgba(0,0,0,0)')
-  ctx.fillStyle = g
-  ctx.fillRect((cx - radius) * u, (cy - radius) * u, radius * 2 * u, radius * 2 * u)
+  ctx.translate(cx * u, cy * u)
+  ctx.fillStyle = glowGradient(ctx, r, colour)
+  ctx.fillRect(-r, -r, r * 2, r * 2)
   ctx.restore()
 }
 
@@ -1573,6 +1597,42 @@ function paintFore(ctx: Ctx, u: number) {
   ctx.restore()
 }
 
+/**
+ * The grade's gradients, rebuilt only when the unit changes.
+ *
+ * Every stop and every geometry is fixed — the passes vary through
+ * `globalAlpha`, not through the gradient — so allocating them was a
+ * three-gradients-a-frame tax on the hottest path in the room. Keyed on the
+ * same quarter-unit bucket the texture tiles use: a sub-bucket resize shifts
+ * a full-screen wash by an imperceptible fraction of a unit.
+ */
+let gradeCache: {
+  u: number
+  fall: CanvasGradient
+  bounce: CanvasGradient
+  vig: CanvasGradient
+} | null = null
+
+function gradeGradients(ctx: Ctx, u: number) {
+  const key = Math.round(u * 4) / 4
+  if (gradeCache && gradeCache.u === key) return gradeCache
+  const fall = ctx.createLinearGradient(0, 0, 0, STAGE.h * u)
+  fall.addColorStop(0, '#05070F')
+  fall.addColorStop(0.65, '#080A16')
+  fall.addColorStop(1, '#0A0710')
+  const bounce = ctx.createLinearGradient(0, STAGE.h * u, 0, (FLOOR_Y - 12) * u)
+  bounce.addColorStop(0, ROOM.lampDeep)
+  bounce.addColorStop(1, 'rgba(0,0,0,0)')
+  const vig = ctx.createRadialGradient(
+    (STAGE.w / 2) * u, (STAGE.h / 2) * u, STAGE.h * u * 0.3,
+    (STAGE.w / 2) * u, (STAGE.h / 2) * u, STAGE.w * u * 0.74,
+  )
+  vig.addColorStop(0, 'rgba(0,0,0,0)')
+  vig.addColorStop(1, 'rgba(0,0,0,0.62)')
+  gradeCache = { u: key, fall, bounce, vig }
+  return gradeCache
+}
+
 /** Grade passes applied over everything, including the character. */
 export function drawRoomGrade(ctx: Ctx, u: number, s: RoomState) {
   const sky = skyAt(s.hour)
@@ -1581,6 +1641,7 @@ export function drawRoomGrade(ctx: Ctx, u: number, s: RoomState) {
   const w = ROOM_W * u
   const y = -10 * u
   const h = (STAGE.h + 20) * u
+  const grads = gradeGradients(ctx, u)
 
   // Ambient colour wash — cool by day, warm and dim at night.
   ctx.save()
@@ -1595,11 +1656,7 @@ export function drawRoomGrade(ctx: Ctx, u: number, s: RoomState) {
   if (dark > 0.01) {
     ctx.save()
     ctx.globalAlpha = dark
-    const fall = ctx.createLinearGradient(0, 0, 0, STAGE.h * u)
-    fall.addColorStop(0, '#05070F')
-    fall.addColorStop(0.65, '#080A16')
-    fall.addColorStop(1, '#0A0710')
-    ctx.fillStyle = fall
+    ctx.fillStyle = grads.fall
     ctx.fillRect(x, y, w, h)
     ctx.restore()
   }
@@ -1608,22 +1665,13 @@ export function drawRoomGrade(ctx: Ctx, u: number, s: RoomState) {
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.globalAlpha = 0.05 + s.lamp * 0.05
-  const bounce = ctx.createLinearGradient(0, STAGE.h * u, 0, (FLOOR_Y - 12) * u)
-  bounce.addColorStop(0, ROOM.lampDeep)
-  bounce.addColorStop(1, 'rgba(0,0,0,0)')
-  ctx.fillStyle = bounce
+  ctx.fillStyle = grads.bounce
   ctx.fillRect(x, (FLOOR_Y - 12) * u, w, (STAGE.h - FLOOR_Y + 12) * u)
   ctx.restore()
 
   // Vignette.
   ctx.save()
-  const vig = ctx.createRadialGradient(
-    (STAGE.w / 2) * u, (STAGE.h / 2) * u, STAGE.h * u * 0.3,
-    (STAGE.w / 2) * u, (STAGE.h / 2) * u, STAGE.w * u * 0.74,
-  )
-  vig.addColorStop(0, 'rgba(0,0,0,0)')
-  vig.addColorStop(1, 'rgba(0,0,0,0.62)')
-  ctx.fillStyle = vig
+  ctx.fillStyle = grads.vig
   ctx.fillRect(x, y, w, h)
   ctx.restore()
 }

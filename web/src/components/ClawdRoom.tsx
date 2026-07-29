@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { noteActivity } from '../clawd/activity'
 import { bodyController } from '../clawd/body'
 import { CHESS_GAME } from '../clawd/chessTableLayer'
 import { Director, EMPTY_SIGNALS, type Signals } from '../clawd/director'
@@ -287,6 +288,20 @@ export default function ClawdRoom({
   const canvasRef = useClawdCanvas(
     (ctx, dt, w, h) => {
       const s = signalsRef.current
+      // A live conversation is activity even with nobody touching the desk:
+      // voice levels and streams never fire a window listener, and the room
+      // must not nap mid-answer.
+      if (
+        s.rauSpeaking ||
+        s.userSpeaking ||
+        s.streaming ||
+        s.thinking ||
+        s.working ||
+        s.hardState === 'running' ||
+        s.jobs.length > 0
+      ) {
+        noteActivity()
+      }
       const room = roomState.current
       room.time += dt
 
