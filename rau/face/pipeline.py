@@ -267,6 +267,13 @@ def _handle_control(cmd: dict) -> None:
         speak("Okay — I stopped that deep work.")
     elif action == "speak":
         speak(str(cmd.get("text") or ""))
+    elif action == "presence_speak":
+        from rau.heartbeat.presence import presence_speech_is_current
+
+        if presence_speech_is_current(
+            cmd.get("last_user_ts"), cmd.get("locale")
+        ):
+            speak(str(cmd.get("text") or ""))
     elif action == "weave_result":
         line = brain.weave_result(str(cmd.get("goal") or ""), str(cmd.get("result") or ""))
         speak(line)
