@@ -1,15 +1,22 @@
+<p align="center">
+  <img src="docs/rau-header.png" alt="Rau, an orange pencil-sketch companion, holding a Rau sign" width="720">
+</p>
+
 # Rau
 
 A continuous local companion that lives on a Mac mini: one voice, durable memory,
-daily dreaming, pluggable model providers, Composio MCP, and on-demand computer use.
+daily dreaming, bilingual conversation, pluggable model providers, Composio MCP,
+and on-demand computer use.
 
 Rau is a single being — not a team of agents. Hard work runs as silent inner subagents
-while Rau keeps talking. Dangerous actions ask for confirm (voice or dashboard).
+while Rau keeps talking. Dangerous actions ask for confirmation in the conversation
+or dashboard. You can talk by text or voice, share a room, and play chess or
+Exploding Kittens together.
 
 ## Layout
 
 - `rau/` — Python runtime (hub, face, providers, agent, MCP, CUA, memory, dream, heartbeat)
-- `web/` — Vite + React + TypeScript UI (setup, home, identity, settings)
+- `web/` — Vite + React + TypeScript UI (setup, Talk, Room, operations, settings, games)
 - `identity/` — `identity.md`, `backstory.md`, living `soul.md` (rotating `soul*.bak.md` backups are gitignored)
 - `memories/` — diary, traces, daily dream logs (gitignored)
 - `config/` — models, MCP, settings (non-secrets)
@@ -37,7 +44,9 @@ bash launch.sh --hub           # UI + API only
 bash launch.sh --text          # hub without mic loop
 ```
 
-Open `http://127.0.0.1:8765` — first visit forces Setup (Fresh or Hard startup).
+Open `http://127.0.0.1:8765`. On the first visit, choose English or Korean with
+a live preview, follow the short introduction, then complete Setup with a Fresh
+or Hard startup.
 
 Install optional subsystems explicitly; normal startup never installs or builds:
 
@@ -53,15 +62,15 @@ python -m rau launch-agent install   # one supervisor, never one entry per sched
 ## How it works
 
 ```
-Mic → VAD → Whisper STT → Face model (soul + memory + skills/tools)
-    ↘ start_hard_task → local subagent (MCP / CUA / shell) → weave result
-Eyes/dashboard ← hub (HTTP + WebSocket)
+Mic / keyboard → conversation mode → Face model (soul + memory + skills/tools)
+             ↘ start_hard_task → local subagent (MCP / CUA / shell) → weave result
+Talk / Room / games ← hub (HTTP + WebSocket)
 Heartbeat (adaptive presence) + daily dream (soul rewrite + daily log)
 ```
 
-## Two modes
+## Four ways to talk
 
-**Shift+Space** switches between them anywhere in the UI.
+**Shift+Space** cycles through them anywhere in the UI.
 
 - **Chat** — type and read.
 - **Voice** — live listening, interruptible. Audio runs in the browser tab so
@@ -70,11 +79,15 @@ Heartbeat (adaptive presence) + daily dream (soul rewrite + daily log)
   synthesised sentence by sentence, so he starts speaking before he has
   finished thinking, and interrupting him trims his memory to only what you
   actually heard.
+- **Talk** — type to Rau and hear the answer aloud, with the microphone off.
+- **Space Talk** — hold Space to speak and release it to send.
 
-Voice also offers **Hyper** for delicate, rapid conversational tiki-taka. It
-uses early endpointing, warm streaming connections, a tiny recent-turn window,
-minimal reasoning, short replies, and no tools. Switch back to Normal for
-research, durable memory context, or multi-step work.
+Voice and Space Talk also offer **Hyper** for delicate, rapid conversational
+tiki-taka. It uses early endpointing, warm streaming connections, a tiny
+recent-turn window, minimal reasoning, short replies, and no tools. Its
+activation travels outward from the toggle and leaves a quiet edge ambience;
+reduced-motion preferences skip the effect. Switch back to Normal for research,
+durable memory context, or multi-step work. Talk always stays on Normal.
 
 ```
 Browser mic ─(PCM16 16k)─▶ /ws/voice ─▶ STT ─▶ face model (streaming + tools)
@@ -82,6 +95,11 @@ Browser mic ─(PCM16 16k)─▶ /ws/voice ─▶ STT ─▶ face model (streami
 Browser speakers ◀─(PCM16 24k)─ sentence TTS ◀──────┘
       ▲ local VAD detects you talking → flush + {barge} → cancel everything
 ```
+
+The Talk page is the center of the thread and opens the Room through a
+canvas-aware transition that waits for the first incoming frame. Games begin
+from that same conversation: ask Rau to set up chess or deal Exploding Kittens,
+and the table appears in the Room.
 
 Speech-to-text is a pluggable slot (Deepgram, ElevenLabs Scribe, OpenAI, or
 local whisper). Automatic mode prefers the lowest-latency connected backend.
@@ -114,6 +132,8 @@ whole thing. Which normaliser runs depends on the script:
 labels. The choice is stored on the hub, so Rau also answers in that language,
 and every string a person reads follows it:
 
+- the first-run language gate previews the entire screen in English or Korean
+  before the choice is confirmed;
 - the interface itself, from `web/src/locales/{en,ko}.ts` — one key set, with
   the Korean file typed as a total map over it, so a string added without a
   translation fails the build rather than showing through in English;
@@ -163,6 +183,12 @@ re-observes to verify each mutation.
 Resource profiles tune model limits, worker parallelism, canvas frame rate,
 pixel ratio, and background activity. Pi and local speech models stay unloaded
 until selected.
+
+The presence heartbeat can generate a short, context-aware check-in in the
+active language after 12 quiet minutes. If there is no reply, it waits at least
+another hour before one final check-in, then stays quiet until the user returns.
+The allowance, timing, and recent nudge are persisted so a restart cannot reset
+the social backoff.
 
 To record the required 30-minute before/after idle measurements, start Rau,
 capture its root PID, then run:
