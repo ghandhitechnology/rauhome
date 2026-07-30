@@ -759,7 +759,7 @@ def api_models_catalog(lang: str = ""):
 def api_voice_status():
     """Which STT backend voice mode will actually use, and why."""
     from rau.voice.stt import available_stt, resolve_stt
-    from rau.providers.catalog import STT_PROVIDERS
+    from rau.providers.catalog import STT_PROVIDERS, stt_supports_partials
 
     provider, slot = resolve_stt()
     meta = STT_PROVIDERS.get(provider) or {}
@@ -769,15 +769,16 @@ def api_voice_status():
     tts_env = (
         "CARTESIA_API_KEY" if tts_provider == "cartesia" else "ELEVENLABS_API_KEY"
     )
+    model = str(slot.get("model") or "")
     return {
         "stt": {
             "provider": provider,
             "configured_provider": slot.get("_configured_provider") or provider,
-            "model": slot.get("model") or "",
+            "model": model,
             "language": slot.get("language") or "",
             # True when the configured backend was unusable and we fell back.
             "fallback": bool(slot.get("_fallback")),
-            "partials": bool(meta.get("partials")),
+            "partials": stt_supports_partials(provider, model),
             "label": meta.get("label") or provider,
             "reason": slot.get("_reason") or "",
         },

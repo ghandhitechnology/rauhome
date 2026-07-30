@@ -21,7 +21,14 @@ export type VerifyResult = {
   soft?: boolean
 }
 
-export type CatalogModel = { id: string; label: string; note?: string }
+export type CatalogModel = {
+  id: string
+  label: string
+  note?: string
+  /** When set, overrides the provider-level STT partials flag for this model. */
+  partials?: boolean
+}
+
 
 export type VoiceSettings = {
   stability: number

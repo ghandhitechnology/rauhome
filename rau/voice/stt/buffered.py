@@ -1,12 +1,14 @@
 """
 Base for STT backends that need a complete utterance.
 
-Scribe, OpenAI and local whisper are all request/response: they cannot return
-anything until the speaker stops. These buffer the PCM, then transcribe once
-when the caller closes the stream, and emit a single final Transcript.
+Scribe, buffered OpenAI (whisper / gpt-4o-transcribe / gpt-transcribe), and
+local whisper are all request/response: they cannot return anything until the
+speaker stops. These buffer the PCM, then transcribe once when the caller
+closes the stream, and emit a single final Transcript.
 
 Partials from these backends would be a lie, so `supports_partials` stays False
-and the UI shows a listening indicator instead of live text.
+and the UI shows a listening indicator instead of live text. Live OpenAI
+(`gpt-live-transcribe`) uses the Realtime WebSocket path instead.
 """
 from __future__ import annotations
 

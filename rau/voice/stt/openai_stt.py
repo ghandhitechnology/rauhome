@@ -3,6 +3,9 @@ OpenAI speech-to-text.
 
 Reuses the OPENAI_API_KEY already wired as the 'codex' auth slot, so there is
 nothing new to configure if that provider is set up.
+
+Buffered / file path for whisper-1, gpt-4o-*-transcribe, and gpt-transcribe.
+Live streaming (gpt-live-transcribe) lives in openai_realtime.py.
 """
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ import urllib.request
 from rau.env import get_secret
 from rau.voice.stt.buffered import BufferedStt, pcm_to_wav
 from rau.voice.stt.elevenlabs_scribe import _multipart
+from rau.voice.stt.openai_realtime import USES_LANGUAGES
 
 URL = "https://api.openai.com/v1/audio/transcriptions"
 
@@ -22,19 +26,26 @@ class OpenAiStt(BufferedStt):
 
     def __init__(self, model: str = "gpt-4o-transcribe", language: str = ""):
         self.model = model or "gpt-4o-transcribe"
-        self.language = language or ""
+        self.language = (language or "").strip().lower()
 
     def transcribe(self, pcm: bytes) -> str:
         key = get_secret("OPENAI_API_KEY")
         if not key:
             raise RuntimeError("OPENAI_API_KEY not set")
 
+        fields: dict = {
+            "model": self.model,
+            "response_format": "json",
+        }
+        if self.language and self.language not in ("", "multi", "auto"):
+            if self.model in USES_LANGUAGES:
+                # New models reject singular `language`; send the array form.
+                fields["languages"] = [self.language]
+            else:
+                fields["language"] = self.language
+
         body, content_type = _multipart(
-            {
-                "model": self.model,
-                "language": self.language or None,
-                "response_format": "json",
-            },
+            fields,
             "speech.wav",
             pcm_to_wav(pcm),
         )
