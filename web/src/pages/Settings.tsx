@@ -640,6 +640,11 @@ export default function Settings() {
           const stt = models.stt || {}
           const sttMeta = catalog.stt_providers?.[stt.provider] || null
           const sttModels = sttMeta?.models || []
+          const selectedSttModel = sttModels.find((m) => m.id === stt.model)
+          const sttPartials =
+            typeof selectedSttModel?.partials === 'boolean'
+              ? selectedSttModel.partials
+              : Boolean(sttMeta?.partials)
           // A backend whose key is missing silently degrades to local whisper
           // at request time — say so here rather than letting it surprise them.
           const sttUsable =
@@ -653,7 +658,7 @@ export default function Settings() {
                   {stt.provider === 'auto' && voiceStatus
                     ? t('settings.hearingResolves', { label: voiceStatus.stt.label })
                     : ''}
-                  {stt.provider !== 'auto' && sttMeta?.partials
+                  {stt.provider !== 'auto' && sttPartials
                     ? t('settings.hearingPartials')
                     : stt.provider !== 'auto'
                       ? t('settings.hearingNoPartials')

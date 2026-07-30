@@ -440,9 +440,10 @@ TTS_PROVIDERS: Dict[str, Dict[str, Any]] = {
 }
 
 # ── speech-to-text ────────────────────────────────────────────────────
-# `partials` drives whether the UI promises a live transcript. Only Deepgram
-# streams interim results; the rest cannot return anything until you stop
-# speaking, and pretending otherwise would make the UI feel broken.
+# `partials` drives whether the UI promises a live transcript. Deepgram always
+# streams; OpenAI does when the selected model is gpt-live-transcribe. The rest
+# cannot return anything until you stop speaking, and pretending otherwise
+# would make the UI feel broken.
 #: Ways of reading the web. The two are not interchangeable, so the blurbs say
 #: what each is actually for rather than which is "better".
 BROWSE_PROVIDERS: Dict[str, Dict[str, Any]] = {
@@ -497,12 +498,31 @@ STT_PROVIDERS: Dict[str, Dict[str, Any]] = {
     },
     "openai": {
         "label": "OpenAI",
-        "blurb": "Reuses your OpenAI key. Waits for you to finish speaking.",
+        "blurb": "Reuses your OpenAI key. GPT Live Transcribe streams partials; other models wait until you finish.",
         "auth": "codex",
         "partials": False,
         "models": [
-            {"id": "gpt-4o-transcribe", "label": "gpt-4o-transcribe", "note": "best quality"},
-            {"id": "gpt-4o-mini-transcribe", "label": "gpt-4o-mini-transcribe", "note": "cheaper"},
+            {
+                "id": "gpt-live-transcribe",
+                "label": "GPT Live Transcribe",
+                "note": "realtime streaming, live partials",
+                "partials": True,
+            },
+            {
+                "id": "gpt-transcribe",
+                "label": "GPT Transcribe",
+                "note": "best file quality",
+            },
+            {
+                "id": "gpt-4o-transcribe",
+                "label": "gpt-4o-transcribe",
+                "note": "previous best",
+            },
+            {
+                "id": "gpt-4o-mini-transcribe",
+                "label": "gpt-4o-mini-transcribe",
+                "note": "cheaper",
+            },
             {"id": "whisper-1", "label": "whisper-1", "note": "legacy"},
         ],
     },
@@ -519,6 +539,16 @@ STT_PROVIDERS: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+
+
+def stt_supports_partials(provider: str, model: str = "") -> bool:
+    """Whether the UI should promise live interim transcripts for this pick."""
+    meta = STT_PROVIDERS.get(provider) or {}
+    model_id = (model or "").strip()
+    for entry in meta.get("models") or []:
+        if entry.get("id") == model_id and "partials" in entry:
+            return bool(entry.get("partials"))
+    return bool(meta.get("partials"))
 
 
 # ── reasoning / effort capabilities ───────────────────────────────────

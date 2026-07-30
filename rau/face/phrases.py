@@ -281,17 +281,3 @@ def trace_summary(
             "exposed no reasoning trace."
         )
     return base
-
-
-def voice_checkin(completed: int, action: str) -> str:
-    """What Rau says out loud between tool calls on a long turn."""
-    if _lang() == "ko":
-        # `부터` and `차례` attach to any noun, with or without a final
-        # consonant, so no ending has to be chosen per tool name.
-        if completed <= 0:
-            return f"먼저 {action}부터 할게요."
-        return f"{completed}가지는 끝냈어요. 다음은 {action} 차례예요."
-    action = action[:1].lower() + action[1:]
-    if completed <= 0:
-        return f"I’m starting by {action}."
-    return f"I’ve completed {completed} checks. Next, I’m {action}."

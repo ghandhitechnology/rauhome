@@ -15,7 +15,7 @@ from rau.agent.danger import classify_tool
 from rau.events import BUS
 from rau.activity import ACTIVITY
 from rau.face import choreography, panels, props, web
-from rau.face.phrases import phrase, tool_label, trace_summary, voice_checkin
+from rau.face.phrases import phrase, tool_label, trace_summary
 from rau.games.kittens import session as kittens
 from rau.games.kittens import tools as kittens_tools
 from rau.identity.store import load_soul
@@ -260,13 +260,6 @@ FACE_TOOL_RESULT_LIMIT = 3000
 MAX_FACE_TOOL_CALLS = 20
 #: One final tool-free provider pass turns accumulated evidence into an answer.
 MAX_FACE_MODEL_ROUNDS = MAX_FACE_TOOL_CALLS + 1
-#: During a long spoken run, provide an evidence-based update at this cadence
-#: if the model itself has not said anything useful between tool rounds.
-VOICE_CHECKIN_EVERY_CALLS = 4
-#: These are internal/embodied actions, not work the user needs narrated.
-#: Their activity remains visible in the inspector, but no generated progress
-#: sentence is allowed onto the voice token stream.
-VOICE_SILENT_TOOL_NAMES = frozenset({"body_choreography"})
 #: Voice turns keep a leaner diary excerpt so prefill stays short.
 VOICE_MEMORY_CHARS = 1000
 CHAT_MEMORY_CHARS = 2500
@@ -374,10 +367,9 @@ _DEEP_WORK_MARKERS = (
 VOICE_TOOL_OPENER = (
     "## Voice turn\n"
     "You may use up to 20 foreground tool calls when the request genuinely "
-    "needs them. Before any tool call sequence, briefly say what you are checking. "
-    "During a long run, check in after roughly every four calls with one "
-    "specific fact about what is complete and what you are checking next. "
-    "Keep working after the check-in. Never use empty waiting filler."
+    "needs them. Use tools silently — do not announce, narrate, or check in "
+    "about planning, searching, movement, computer use, or any other action. "
+    "Only speak the real reply to the user. Never use empty waiting filler."
 )
 #: Tools that mean real computer work — the avatar walks to the desk.
 #: Body/room visuals (choreography, props, panels) are excluded; browse_web
@@ -1016,10 +1008,6 @@ class _TurnTrace:
             interrupted=interrupted,
             provider_reasoning=self.provider_reasoning,
         )
-
-
-def _voice_tool_checkin(completed: int, next_tool: str) -> str:
-    return voice_checkin(completed, _tool_activity_label(next_tool))
 
 
 def _history_with_trace(spoken: str, trace: _TurnTrace) -> str:
@@ -1700,7 +1688,6 @@ def chat_streaming(
         tools_ran: List[Tuple[str, str]] = []
         trace = _TurnTrace()
         approach_span_id: Optional[str] = None
-        last_voice_checkin_at = 0
 
         def ensure_approach_span() -> str:
             nonlocal approach_span_id
@@ -1732,7 +1719,6 @@ def chat_streaming(
             )
 
         def note_tool(name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
-            nonlocal last_voice_checkin_at
             ok = bool(result.get("ok", True))
             if ok:
                 summary = str(result.get("summary") or "ok")
@@ -1746,25 +1732,6 @@ def chat_streaming(
                     summary=trace.summary(),
                     details=trace.details(),
                 )
-            # Providers may batch many calls into one assistant turn. Keep a
-            # spoken run alive even inside that batch, where there is no next
-            # model round available to supply its own progress sentence.
-            if (
-                voice
-                and name not in VOICE_SILENT_TOOL_NAMES
-                and trace.tool_count - last_voice_checkin_at
-                >= VOICE_CHECKIN_EVERY_CALLS
-                and not stop()
-            ):
-                completed_action = _tool_activity_label(name).lower()
-                checkin = (
-                    f"I’ve completed {trace.tool_count} checks, including "
-                    f"{completed_action}. I’m continuing. "
-                )
-                heard.append(checkin)
-                emit_prose(checkin)
-                trace.spoken_checkins += 1
-                last_voice_checkin_at = trace.tool_count
             # A tool that was already running may finish after preemption. Keep
             # the fact that it ran for history, but never surface its stale
             # result into the newest foreground turn.
@@ -1873,31 +1840,6 @@ def chat_streaming(
                         assistant_content: Optional[str] = (
                             "".join(chunks) if chunks and not result.content else None
                         )
-                        checkin_call = next(
-                            (
-                                call
-                                for call in result.tool_calls
-                                if call.name not in VOICE_SILENT_TOOL_NAMES
-                            ),
-                            None,
-                        )
-                        round_spoke = bool("".join(chunks).strip())
-                        if round_spoke:
-                            last_voice_checkin_at = trace.tool_count
-                        elif voice and checkin_call is not None and (
-                            trace.tool_count == 0
-                            or trace.tool_count - last_voice_checkin_at
-                            >= VOICE_CHECKIN_EVERY_CALLS
-                        ):
-                            checkin = _voice_tool_checkin(
-                                trace.tool_count,
-                                checkin_call.name,
-                            )
-                            assistant_content = checkin
-                            heard.append(checkin + " ")
-                            emit_prose(checkin + " ")
-                            trace.spoken_checkins += 1
-                            last_voice_checkin_at = trace.tool_count
 
                         remaining = MAX_FACE_TOOL_CALLS - trace.tool_count
                         requested = len(result.tool_calls)

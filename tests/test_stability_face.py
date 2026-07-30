@@ -184,11 +184,11 @@ class BrainTurnTests(unittest.TestCase):
             3,
         )
         progress = "".join(spoken)
-        for count in (4, 8, 12, 16, 20):
-            self.assertIn(f"I’ve completed {count} checks", progress)
+        self.assertNotIn("I’ve completed", progress)
+        self.assertNotIn("I’m starting", progress)
         self.assertTrue(str(reply).endswith("Budgeted work complete."))
 
-    def test_voice_synthesizes_specific_checkins_when_provider_says_nothing(self) -> None:
+    def test_voice_stays_silent_while_tools_run_without_provider_prose(self) -> None:
         provider = ScriptedProvider(
             [tool_round(f"call_{index}", "list_skills", "") for index in range(5)]
             + [{"deltas": ["I’m done."], "content": "I’m done."}]
@@ -203,8 +203,9 @@ class BrainTurnTests(unittest.TestCase):
         )
 
         spoken = "".join(tokens)
-        self.assertIn("I’m starting by checking available skills.", spoken)
-        self.assertIn("I’ve completed 4 checks", spoken)
+        self.assertEqual(spoken, "I’m done.")
+        self.assertNotIn("I’m starting", spoken)
+        self.assertNotIn("I’ve completed", spoken)
         self.assertEqual(str(reply).split()[-2:], ["I’m", "done."])
 
     def test_body_choreography_never_becomes_a_spoken_checkin(self) -> None:

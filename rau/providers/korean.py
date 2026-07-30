@@ -76,6 +76,8 @@ BLURBS: Dict[str, str] = {
         "진짜 스트리밍입니다. 말하는 중에도 중간 결과가 오고, 말이 끝나는 지점도 서버가 잡아 줍니다. 대화에 가장 좋습니다.",
     "Reuses your ElevenLabs TTS key — no extra signup. Waits for you to finish.":
         "쓰던 ElevenLabs 키를 그대로 씁니다. 따로 가입할 필요는 없고, 말이 끝날 때까지 기다립니다.",
+    "Reuses your OpenAI key. GPT Live Transcribe streams partials; other models wait until you finish.":
+        "쓰던 OpenAI 키를 그대로 씁니다. GPT Live Transcribe는 말하는 중에도 중간 결과가 오고, 다른 모델은 말이 끝날 때까지 기다립니다.",
     "Reuses your OpenAI key. Waits for you to finish speaking.":
         "쓰던 OpenAI 키를 그대로 씁니다. 말이 끝날 때까지 기다립니다.",
     "No key, no network, nothing leaves the machine. Slower, no live transcript.":
@@ -143,6 +145,9 @@ NOTES: Dict[str, str] = {
     "legacy fallback": "구형 대체용",
     "legacy": "구형",
     "best quality": "가장 좋은 품질",
+    "best file quality": "파일 전사에 가장 좋음",
+    "previous best": "이전 최고 품질",
+    "realtime streaming, live partials": "실시간 스트리밍, 중간 결과",
     "fastest, least accurate": "가장 빠르고 가장 부정확",
     "slow on CPU": "CPU에서는 느림",
     # voices and effects

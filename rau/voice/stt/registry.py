@@ -19,7 +19,7 @@ STT_AUTH: Dict[str, str] = {
 STT_DEFAULT_MODELS: Dict[str, str] = {
     "deepgram": "nova-3",
     "elevenlabs": "scribe_v2",
-    "openai": "gpt-4o-transcribe",
+    "openai": "gpt-live-transcribe",
     "local": "small",
 }
 
@@ -41,8 +41,11 @@ def _build(provider: str, model: str, language: str) -> SttProvider:
 
         return ScribeStt(model=model, language=language)
     if provider == "openai":
+        from rau.voice.stt.openai_realtime import LIVE_MODELS, OpenAiRealtimeStt
         from rau.voice.stt.openai_stt import OpenAiStt
 
+        if model in LIVE_MODELS:
+            return OpenAiRealtimeStt(model=model, language=language)
         return OpenAiStt(model=model, language=language)
     from rau.voice.stt.local_whisper import LocalWhisperStt
 

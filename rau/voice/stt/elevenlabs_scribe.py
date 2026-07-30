@@ -26,9 +26,15 @@ def _multipart(fields: dict, filename: str, payload: bytes) -> tuple[bytes, str]
     for key, value in fields.items():
         if value is None:
             continue
-        out += f"--{boundary}\r\n".encode()
-        out += f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
-        out += f"{value}\r\n".encode()
+        # OpenAI's `languages` array (and similar) arrive as a list; repeat the
+        # field name once per entry, which is how multipart form arrays encode.
+        values = value if isinstance(value, (list, tuple)) else (value,)
+        for item in values:
+            if item is None:
+                continue
+            out += f"--{boundary}\r\n".encode()
+            out += f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+            out += f"{item}\r\n".encode()
     ctype = mimetypes.guess_type(filename)[0] or "audio/wav"
     out += f"--{boundary}\r\n".encode()
     out += (
