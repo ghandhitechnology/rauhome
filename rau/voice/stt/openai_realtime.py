@@ -35,17 +35,20 @@ def upsample_pcm16_16k_to_24k(pcm: bytes, carry: bytes = b"") -> tuple[bytes, by
     """
     Linear upsample PCM16 mono from 16 kHz to 24 kHz (3/2 ratio).
 
-    Returns (upsampled_bytes, leftover_input_bytes). Leftover is at most one
-    sample so a later frame can finish the pair — streaming frames are not
-    guaranteed to land on even sample counts.
+    Returns (upsampled_bytes, leftover_input_bytes). Leftover holds any
+    incomplete sample byte plus at most one pending sample so a later frame
+    can finish the pair — streaming frames are not guaranteed to land on even
+    sample counts.
     """
     raw = carry + pcm
     if len(raw) < 2:
         return b"", raw
+    odd_byte = b""
     if len(raw) % 2:
+        odd_byte = raw[-1:]
         raw = raw[:-1]
     if not raw:
-        return b"", b""
+        return b"", odd_byte
 
     samples = array("h")
     samples.frombytes(raw)
@@ -54,7 +57,7 @@ def upsample_pcm16_16k_to_24k(pcm: bytes, carry: bytes = b"") -> tuple[bytes, by
     # interpolate from it.
     use = n if n % 2 == 0 else n - 1
     if use <= 0:
-        return b"", raw
+        return b"", raw + odd_byte
 
     out = array("h")
     # 2 input samples → 3 output: s0, (s0+s1)/2, s1
@@ -62,10 +65,10 @@ def upsample_pcm16_16k_to_24k(pcm: bytes, carry: bytes = b"") -> tuple[bytes, by
         s0 = samples[i]
         s1 = samples[i + 1]
         out.append(s0)
-        out.append(int((s0 + s1) / 2))
+        out.append((s0 + s1) // 2)
         out.append(s1)
 
-    leftover = raw[use * 2 :]
+    leftover = raw[use * 2 :] + odd_byte
     return out.tobytes(), leftover
 
 

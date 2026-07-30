@@ -140,6 +140,22 @@ class OpenAiSttModelTests(unittest.TestCase):
         self.assertEqual(carry, b"")
         self.assertEqual(len(out), len(samples) * 3)  # 2 bytes × 3/2 samples
 
+    def test_upsample_preserves_odd_trailing_byte_across_frames(self) -> None:
+        from array import array
+
+        from rau.voice.stt.openai_realtime import upsample_pcm16_16k_to_24k
+
+        # First frame ends mid-sample; the orphaned byte must survive in carry.
+        first = b"\x01\x00\x02\x00\x03"
+        out1, carry1 = upsample_pcm16_16k_to_24k(first)
+        self.assertEqual(out1, array("h", [1, 1, 2]).tobytes())
+        self.assertEqual(carry1, b"\x03")
+
+        # Completing the sample with the next frame recovers it.
+        out2, carry2 = upsample_pcm16_16k_to_24k(b"\x00\x04\x00", carry1)
+        self.assertEqual(carry2, b"")
+        self.assertEqual(out2, array("h", [3, 3, 4]).tobytes())
+
     def test_session_update_uses_languages_for_live_model(self) -> None:
         from rau.voice.stt.openai_realtime import OpenAiRealtimeStt
 
