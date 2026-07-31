@@ -87,7 +87,12 @@ export class ClawdRig {
   private voiceSlow = 0
   private clawSpringL = new Spring(0, 190, 0.55)
   private clawSpringR = new Spring(0, 190, 0.55)
-  private leanInertia = new Inertia(38, 0.75)
+  /**
+   * Acceleration lean. Softer and less damped than it was, so getting going and
+   * coming to rest both show as weight rather than as a twitch — this is what
+   * carries the whole continuum of speeds the wind-up clip cannot cover.
+   */
+  private leanInertia = new Inertia(26, 0.62)
   private seed = Math.random() * 1000
 
   constructor() {
@@ -218,9 +223,11 @@ export class ClawdRig {
     setParam(p, 'clawL', this.clawSpringL.update(p.clawL, dt))
     setParam(p, 'clawR', this.clawSpringR.update(p.clawR, dt))
 
-    // Acceleration tips the body; the spring washes it back out.
+    // Acceleration tips the body; the spring washes it back out. Deliberately
+    // undamped enough to overshoot: settling back upright a beat after he stops
+    // is the difference between arriving somewhere and being switched off.
     const lean = this.leanInertia.update(this.worldX, dt, 0.5)
-    setParam(p, 'angle', p.angle + clamp(lean, -4, 4) * this.facing)
+    setParam(p, 'angle', p.angle + clamp(lean, -7, 7) * this.facing)
 
     p.facing = this.facing
   }

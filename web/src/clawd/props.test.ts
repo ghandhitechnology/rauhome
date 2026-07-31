@@ -154,10 +154,24 @@ describe('the occupational motion library', () => {
     }
   })
 
+  /**
+   * The director's own punctuation on a walk. Listing these as one-shots would
+   * set `rig.busy`, which the director reads to decide whether it may travel —
+   * so he would wind up to set off and then be told he was too busy to.
+   */
+  const DIRECTOR_OWNED = ['turnHop', 'windUp']
+
   it('lets the one-shots finish before anything else is chosen', () => {
     for (const [name, clip] of Object.entries(LIFE_MOTIONS)) {
-      if (clip.loop) continue
+      if (clip.loop || DIRECTOR_OWNED.includes(name)) continue
       expect(ONE_SHOTS, `${name} is a one-shot but may be cut off`).toContain(name)
+    }
+  })
+
+  it('keeps the director-owned beats out of the one-shot list', () => {
+    for (const name of DIRECTOR_OWNED) {
+      expect(LIFE_MOTIONS[name as keyof typeof LIFE_MOTIONS].loop).toBeFalsy()
+      expect(ONE_SHOTS, `${name} would block the travel it punctuates`).not.toContain(name)
     }
   })
 

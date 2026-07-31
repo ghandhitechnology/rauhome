@@ -575,6 +575,91 @@ export const water = defineMotion({
 
 // ── moving about ──────────────────────────────────────────────────────
 
+/**
+ * Turning around.
+ *
+ * Clawd is a flat sprite: facing left is the same drawing mirrored, so a turn
+ * has nowhere to happen except in the single frame the mirror flips. Left bare
+ * that is a teleport — he is simply backwards now. This buries the flip inside
+ * a hop, at the frame where he is squashed flattest and moving fastest, which
+ * is the oldest trick in 2D animation for turning a cut into a movement.
+ *
+ * The director owns the flip itself, timed to the squash at t=0.5. Everything
+ * here is the motion that hides it: anticipation down, snap up and over,
+ * follow-through on the landing.
+ */
+export const turnHop = defineMotion({
+  id: 'turnHop',
+  duration: 0.26,
+  priority: 7,
+  fadeIn: 0.06,
+  fadeOut: 0.12,
+  tracks: [
+    {
+      param: 'posY',
+      keys: [
+        { t: 0, v: 0 },
+        { t: 0.3, v: 1.4, ease: 'in' }, // gather
+        { t: 0.5, v: -1.1, ease: 'out' }, // off the floor — the flip lands here
+        { t: 0.78, v: 0.5, ease: 'in' }, // down again
+        { t: 1, v: 0, ease: 'outBack' }, // knees give, then straighten
+      ],
+    },
+    {
+      param: 'scaleX',
+      keys: [
+        { t: 0, v: 1 },
+        { t: 0.3, v: 1.09, ease: 'in' },
+        // Flattest exactly where the mirror flips: least sprite on screen at
+        // the moment there is most to hide.
+        { t: 0.5, v: 0.72, ease: 'out' },
+        { t: 0.78, v: 1.07, ease: 'in' },
+        { t: 1, v: 1, ease: 'outBack' },
+      ],
+    },
+    {
+      param: 'scaleY',
+      keys: [
+        { t: 0, v: 1 },
+        { t: 0.3, v: 0.88, ease: 'in' },
+        { t: 0.5, v: 1.16, ease: 'out' },
+        { t: 0.78, v: 0.93, ease: 'in' },
+        { t: 1, v: 1, ease: 'outBack' },
+      ],
+    },
+    // The claws trail the body round and swing back past centre on the landing.
+    { param: 'clawL', keys: [{ t: 0, v: 0 }, { t: 0.3, v: -16, ease: 'in' }, { t: 0.55, v: 30, ease: 'outBack' }, { t: 1, v: 0, ease: 'inOut' }] },
+    { param: 'clawR', keys: [{ t: 0, v: 0 }, { t: 0.3, v: -14, ease: 'in' }, { t: 0.55, v: 26, ease: 'outBack' }, { t: 1, v: 0, ease: 'inOut' }] },
+    { param: 'angle', keys: [{ t: 0, v: 0 }, { t: 0.3, v: 5, ease: 'in' }, { t: 0.5, v: -6, ease: 'out' }, { t: 1, v: 0, ease: 'inOut' }] },
+    // Legs tuck for the hop rather than staying mid-stride through it.
+    { param: 'legSwing', keys: [{ t: 0, v: 0 }] },
+  ],
+})
+
+/**
+ * The weight shift before setting off.
+ *
+ * Nothing with mass starts moving on the frame it decides to. He leans back
+ * away from where he is going, then pushes off it — a fifth of a second that
+ * turns being teleported into a walk into having chosen to walk.
+ */
+export const windUp = defineMotion({
+  id: 'windUp',
+  duration: 0.16,
+  priority: 7,
+  fadeIn: 0.05,
+  fadeOut: 0.1,
+  tracks: [
+    { param: 'posX', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -1.1, ease: 'out' }, { t: 1, v: 0.3, ease: 'in' }] },
+    { param: 'angle', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -4.5, ease: 'out' }, { t: 1, v: 2.5, ease: 'in' }] },
+    { param: 'scaleY', keys: [{ t: 0, v: 1 }, { t: 0.55, v: 0.95, ease: 'out' }, { t: 1, v: 1.02, ease: 'in' }] },
+    { param: 'scaleX', keys: [{ t: 0, v: 1 }, { t: 0.55, v: 1.04, ease: 'out' }, { t: 1, v: 0.99, ease: 'in' }] },
+    { param: 'clawL', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -12, ease: 'out' }, { t: 1, v: 14, ease: 'in' }] },
+    { param: 'clawR', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -10, ease: 'out' }, { t: 1, v: 12, ease: 'in' }] },
+    { param: 'legSwing', keys: [{ t: 0, v: 0 }] },
+  ],
+})
+
 const TIPTOE_SWING = 16
 const TIPTOE_SPEED = WALK_SPEED * 0.62
 
@@ -856,6 +941,8 @@ export const LIFE_MOTIONS = {
   sit,
   sip,
   water,
+  turnHop,
+  windUp,
   tiptoe,
   pace,
   peek,
@@ -869,7 +956,14 @@ export const LIFE_MOTIONS = {
   ponder,
 }
 
-/** The ones that must be allowed to finish before anything else is chosen. */
+/**
+ * The ones that must be allowed to finish before anything else is chosen.
+ *
+ * `turnHop` and `windUp` are deliberately absent. They are one-shots, but they
+ * are the director's own punctuation on a walk, and listing them here would set
+ * `rig.busy` — which the director reads to decide whether it may travel at all,
+ * so he would wind up to set off and then be told he was too busy to.
+ */
 export const LIFE_ONE_SHOTS = [
   'present',
   'point',

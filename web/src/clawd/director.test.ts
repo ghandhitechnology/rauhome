@@ -56,11 +56,17 @@ describe('Director cues', () => {
     rig.worldX = station('centre').x
     director.applyCue(cue({ anchor: 'reply_start', motion: 'type', station: 'desk' }))
 
-    // Still travelling: the walk clip owns the body, not the gesture.
+    // He looks at where he is going and shifts his weight before setting off,
+    // so the first frame is not the walk yet — but it is certainly not the
+    // gesture, which is what this is guarding.
     director.update(FRAME, EMPTY_SIGNALS)
+    expect(rig.currentMotion).not.toBe('type')
+
+    // Under way well inside half a second.
+    run(director, rig, 0.5)
     expect(rig.currentMotion).toBe('walk')
 
-    run(director, rig, 8)
+    run(director, rig, 9)
     expectStandingAt(rig, 'desk')
     expect(rig.currentMotion).toBe('type')
   })
@@ -125,7 +131,7 @@ describe('Director cues', () => {
   it('is not walked back to the centre by a reply arriving mid-cue', () => {
     director.manual = false
     director.applyCue(cue({ anchor: 'reply_start', station: 'shelf' }))
-    run(director, rig, 8)
+    run(director, rig, 9)
     expectStandingAt(rig, 'shelf')
 
     run(director, rig, 0.5, {
@@ -196,20 +202,22 @@ describe('Director thinking vs desk work', () => {
 
   it('hurries a desk cue across the room', () => {
     director.manual = false
-    director.applyCue(
-      cue({ anchor: 'now', station: 'desk', motion: 'type', hurry: true }),
-    )
-    // One frame of travel — hurried gait covers more ground than a stroll.
-    const before = rig.worldX
-    director.update(FRAME, EMPTY_SIGNALS)
-    const hurried = Math.abs(rig.worldX - before)
 
-    rig.worldX = before
-    director.releaseCue()
-    director.applyCue(cue({ anchor: 'now', station: 'desk', motion: 'type' }))
-    director.update(FRAME, EMPTY_SIGNALS)
-    const normal = Math.abs(rig.worldX - before)
-    expect(hurried).toBeGreaterThan(normal)
+    /** Ground covered in one second, lead-in included. */
+    const groundCovered = (hurry: boolean) => {
+      rig = new ClawdRig()
+      director = new Director(rig, 'room')
+      director.manual = false
+      const before = rig.worldX
+      director.applyCue(cue({ anchor: 'now', station: 'desk', motion: 'type', hurry }))
+      run(director, rig, 1)
+      return Math.abs(rig.worldX - before)
+    }
+
+    // Measured over a second rather than a single frame: he looks at where he
+    // is going and shifts his weight first, so frame one is the same either way
+    // — the hurry is in the strides, not in skipping the preparation.
+    expect(groundCovered(true)).toBeGreaterThan(groundCovered(false))
   })
 
   it('grows the speech bubble across chat deltas without a new reply stamp', () => {
