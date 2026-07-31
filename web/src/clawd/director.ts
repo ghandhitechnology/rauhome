@@ -110,8 +110,11 @@ const TAG_BEATS: Record<string, MotionName> = {
 
 type GazeIntent = 'camera' | 'away' | 'lock'
 
-/** What the eyes are currently obeying. `cue` is a model-authored aim. */
-type GazeSource = GazeIntent | 'cue'
+/**
+ * What the eyes are currently obeying. `cue` is a model-authored aim, `travel`
+ * is wherever he has decided to walk.
+ */
+type GazeSource = GazeIntent | 'cue' | 'travel'
 
 const GAZES: Record<GazeIntent, GazeAim> = {
   camera: { x: 0, y: 0.08, speed: 7, wander: 0.35 },
@@ -127,6 +130,46 @@ const GAZES: Record<GazeIntent, GazeAim> = {
  */
 const REACTION_GAP = 1.9
 const NOD_GAP = 1.5
+
+/**
+ * Where he is in the business of getting somewhere.
+ *
+ * Walking is not one state. Deciding to go, looking at where, shifting weight,
+ * turning round, striding, and coming to rest are six different things, and
+ * collapsing them into "moving / not moving" is what made him read as being
+ * dragged across the floor rather than walking across it.
+ */
+type LocoPhase = 'still' | 'aim' | 'windUp' | 'turn' | 'move' | 'settle'
+
+/** How long the eyes get to the destination before the body commits. */
+const AIM_LEAD = 0.18
+/** The weight shift before setting off. Matches the `windUp` clip. */
+const WIND_UP = 0.16
+/** The hop-turn. Matches the `turnHop` clip. */
+const TURN_TIME = 0.26
+/** Fraction through the hop where the mirror flips — the flattest frame. */
+const TURN_FLIP_AT = 0.5
+
+/**
+ * How far past him a target has to be before turning round is worth it, and how
+ * long it has to stay there.
+ *
+ * Without both, a target sitting near his own position makes him hop back and
+ * forth around it forever. The desktop pet's walk range is 44 units wide, so
+ * this is the difference between a character and a metronome.
+ */
+const REVERSE_BAND = 4
+const REVERSE_HOLD = 0.2
+
+/** Speed ramps, roughly 1/seconds. Getting going is slower than stopping. */
+const ACCEL = 6.5
+const DECEL = 9
+
+/** Below this he is standing still, in stage units per second. */
+const STOPPED = 0.05
+
+/** Close enough to a destination to call it arrived, in stage units. */
+const ARRIVE_EPS = 1.2
 
 /** How long after the last conversational signal he keeps holding station. */
 const CONVERSATION_HOLD = 18
@@ -177,6 +220,23 @@ export class Director {
   private walkBlend = 0
   /** The clip currently carrying him across the room. */
   private gait: MotionName = 'walk'
+
+  /** Locomotion state. See `LocoPhase`. */
+  private loco: LocoPhase = 'still'
+  /** Clock time the current locomotion phase began. */
+  private locoAt = 0
+  /** Whether `travelTo` ran last frame, so a stale phase can be dropped. */
+  private travelled = false
+  /** Current ground speed in stage units/sec, ramped rather than assigned. */
+  private speed = 0
+  /** Which way the in-flight hop-turn is taking him. */
+  private pendingFacing: 1 | -1 | null = null
+  /** Whether the current hop has already flipped the mirror. */
+  private turnFlipped = false
+  /** How long a reversal has wanted to happen, for the hysteresis band. */
+  private reverseSince = 0
+  /** Where the eyes go while he heads somewhere, or null. */
+  private travelAim: GazeAim | null = null
 
   /** Free-roam target in stage units, used when there are no stations. */
   private roamX: number | null = null
@@ -390,6 +450,14 @@ export class Director {
     this.clock += dt
     const rig = this.rig
 
+    // The motion tester plays gaits with nobody walking him anywhere, so they
+    // have to run on the clock or the legs sit frozen on the button press.
+    rig.treadmill = this.manual
+
+    // Before anything decides where he should be: finish any turn already in
+    // the air, and forget a journey nobody is asking for any more.
+    this.tickLoco()
+
     // Live `/ws` text wins over thinking dots and desk-work bubble clears —
     // otherwise tool calls mid-reply wipe the stream the user is reading.
     if (s.streaming && s.speech) {
@@ -457,7 +525,7 @@ export class Director {
     // or voice session leaves "Send him to" stuck on centre forever.
     if (this.directed && !this.arrived) {
       const spot = station(this.target)
-      if (this.travelTo(this.clampX(spot.x), dt, 'walk', this.directedHurry)) return
+      if (this.travelTo(this.clampX(spot.x), dt, 'walk', this.directedHurry, spot.facing)) return
       this.markStationArrival(spot.facing)
       this.directedHurry = false
     }
@@ -488,11 +556,11 @@ export class Director {
     }
 
     // ── walk there ───────────────────────────────────────────────────
-    const targetX =
-      this.mode === 'roam'
-        ? (this.roamX ?? rig.worldX)
-        : this.clampX(station(this.target).x)
-    if (this.travelTo(targetX, dt)) return
+    const roaming = this.mode === 'roam'
+    const targetX = roaming ? (this.roamX ?? rig.worldX) : this.clampX(station(this.target).x)
+    // Roaming has nowhere in particular to face on arrival; a station does.
+    const arriveFacing = roaming ? undefined : station(this.target).facing
+    if (this.travelTo(targetX, dt, 'walk', false, arriveFacing)) return
 
     if (!this.arrived) {
       this.markStationArrival(this.mode === 'room' ? station(this.target).facing : this.rig.facing)
@@ -555,7 +623,7 @@ export class Director {
 
     if (cue.station) {
       const spot = station(cue.station)
-      if (this.travelTo(this.clampX(spot.x), dt, gait, !!cue.hurry)) return
+      if (this.travelTo(this.clampX(spot.x), dt, gait, !!cue.hurry, spot.facing)) return
       if (!this.arrived) this.markStationArrival(spot.facing)
       this.signalCueArrival()
       if (!this.cuePlayed) {
@@ -592,7 +660,6 @@ export class Director {
    * keeps him where he was sent so movement is not undone mid-conversation.
    */
   private converse(dt: number, s: Signals) {
-    const rig = this.rig
     // Tool work breaks the usual centre latch — he should be at the computer.
     const home: StationId = s.working ? 'desk' : 'centre'
     const spot = station(this.directed ? this.target : home)
@@ -600,10 +667,10 @@ export class Director {
       this.target = home
       this.arrived = false
     }
-    if (this.travelTo(spot.x, dt, 'walk', s.working)) return
+    if (this.travelTo(spot.x, dt, 'walk', s.working, spot.facing)) return
 
     if (!this.arrived) this.markStationArrival(spot.facing)
-    else rig.facing = spot.facing
+    else this.requestFacing(spot.facing)
     this.settleWalk(dt, 0)
 
     const pose = this.conversationPose(s)
@@ -618,7 +685,9 @@ export class Director {
 
   private markStationArrival(facing: 1 | -1) {
     this.arrived = true
-    this.rig.facing = facing
+    // Normally already the right way round — `travelTo` turns before it reports
+    // arrival. This covers the paths that land him somewhere without walking.
+    this.requestFacing(facing)
     if (this.directed) this.directedUntil = this.clock + DIRECTED_HOLD
   }
 
@@ -694,6 +763,16 @@ export class Director {
     this.cueGazeName = null
 
     const intent = this.gazeFor(s)
+    // Where he is going only wins when nothing in the conversation wants the
+    // eyes — being spoken to outranks noticing the plant across the room.
+    if (this.travelAim && !intent) {
+      if (this.gazeIntent !== 'travel') {
+        this.gazeIntent = 'travel'
+        this.rig.setGaze(this.travelAim)
+      }
+      return
+    }
+
     if (intent !== this.gazeIntent) {
       this.gazeIntent = intent
       this.rig.setGaze(intent ? GAZES[intent] : null)
@@ -801,44 +880,229 @@ export class Director {
   }
 
   /**
-   * Walk toward a stage-unit x. True while still travelling.
+   * Walk toward a stage-unit x. True while he is still busy getting there.
+   *
+   * "Busy" covers the whole errand, not just the strides in the middle: looking
+   * at where he is going, shifting his weight, turning round if it is behind
+   * him, and coming to rest at the end. Callers treat a `true` as "leave him
+   * alone", which is what stops the ambient layer starting a clip over the top
+   * of a wind-up.
    *
    * `gait` names the clip that carries him. Anything with a `locomotion` speed
    * qualifies — carrying something is slower and heavier than a free walk,
    * tiptoeing is quicker and lighter — and the clip's own speed is what he
    * actually travels at, so the legs never slide against the floor.
+   *
+   * `arriveFacing` is the way the destination wants to be faced. He turns to it
+   * before reporting arrival, so the turn is part of getting there rather than
+   * something that happens to him once he has.
    */
   private travelTo(
     targetX: number,
     dt: number,
     gait: MotionName = 'walk',
     hurry = false,
+    arriveFacing?: 1 | -1,
   ): boolean {
     const rig = this.rig
+    this.travelled = true
+
     const goal = this.clampX(targetX)
     const dx = goal - rig.worldX
     const dist = Math.abs(dx)
-    if (dist <= 1.2) return false
+    const cruise = MOTIONS[gait].locomotion || WALK_SPEED
 
-    const clip = MOTIONS[gait]
-    const cruise = clip.locomotion || WALK_SPEED
-    // Tool dashes to the desk should feel purposeful, not a stroll.
-    const boost = hurry ? 1.7 : 1
+    // A hop owns him until it lands. It is ticked from `update`, so it finishes
+    // even if whatever started it has stopped asking to travel.
+    if (this.loco === 'turn') {
+      this.brake(dt, cruise, gait, Infinity)
+      return true
+    }
+
+    // ── coming to rest ───────────────────────────────────────────────
+    if (this.loco === 'settle' || dist <= ARRIVE_EPS) {
+      // Deliberately not re-checking `dist` once settling has begun: a glide of
+      // a few tenths past the mark would otherwise read as a fresh journey and
+      // send him hunting back and forth across his own destination.
+      if (this.loco !== 'settle') this.enterLoco('settle')
+      if (this.brake(dt, cruise, gait, dist)) return true
+      if (arriveFacing && rig.facing !== arriveFacing) {
+        this.beginTurn(arriveFacing)
+        return true
+      }
+      this.enterLoco('still')
+      this.travelAim = null
+      this.settleWalk(dt, 0)
+      return false
+    }
 
     this.arrived = false
-    rig.facing = dx > 0 ? 1 : -1
+    const heading: 1 | -1 = dx > 0 ? 1 : -1
+
+    // ── facing the wrong way ─────────────────────────────────────────
+    if (heading !== rig.facing) {
+      // Not far enough behind him to be worth turning round for. He stops where
+      // he is; if the destination cares which way he faces, the settle above
+      // will turn him on arrival.
+      if (dist < REVERSE_BAND) {
+        this.reverseSince = 0
+        this.enterLoco('settle')
+        this.brake(dt, cruise, gait, dist)
+        return true
+      }
+      this.reverseSince += dt
+      if (this.reverseSince >= REVERSE_HOLD) {
+        // Stop first. Pivoting at a run would be a skid, and he has no skid.
+        if (this.brake(dt, cruise, gait, Infinity)) return true
+        this.beginTurn(heading)
+        return true
+      }
+    } else {
+      this.reverseSince = 0
+    }
+
+    // ── setting off ──────────────────────────────────────────────────
+    // `settle` cannot reach here: the branch above owns it and always returns.
+    if (this.loco === 'still') {
+      this.beginAim(heading)
+      return true
+    }
+    if (this.loco === 'aim') {
+      if (this.clock - this.locoAt < AIM_LEAD) return true
+      this.enterLoco('windUp')
+      this.rig.play('windUp', { force: true, restart: true })
+      return true
+    }
+    if (this.loco === 'windUp') {
+      if (this.clock - this.locoAt < WIND_UP) return true
+      this.enterLoco('move')
+    }
+
+    // ── striding ─────────────────────────────────────────────────────
+    // Tool dashes to the desk should feel purposeful, not a stroll.
+    const boost = hurry ? 1.7 : 1
     // Ease the last stretch so he does not stop dead.
-    const speed = cruise * boost * clamp(dist / 6, 0.35, 1)
-    const step = Math.min(dist, speed * dt)
-    rig.worldX += step * rig.facing
-    rig.worldX = this.clampX(rig.worldX)
-    // Advance the cycle by distance covered against this clip's own stride, so
-    // a slow heavy gait takes slow heavy steps rather than sprinting in place.
-    rig.advanceLegs((step / cruise) * (1 / clip.duration) * 1.6)
+    const want = cruise * boost * clamp(dist / 6, 0.35, 1)
+    this.speed = damp(this.speed, want, this.speed < want ? ACCEL : DECEL, dt)
+
+    const step = Math.min(dist, this.speed * dt)
+    rig.worldX = this.clampX(rig.worldX + step * heading)
+    // The clip is spent in ground covered, not in seconds, so the legs, the
+    // bob and the claw swing can only ever agree with each other. How much of
+    // its stride he is taking comes from how fast he is actually going.
     this.gait = gait
     this.setLoop(gait)
+    rig.advanceGait(step, this.speed / cruise)
     this.settleWalk(dt, 1)
     return true
+  }
+
+  /**
+   * Ramp the speed down, still covering ground while there is any left.
+   *
+   * True while he is still moving. `maxStep` caps how far he may glide, so an
+   * arrival cannot coast past the spot it was aiming for while a reversal — on
+   * its way somewhere else anyway — is free to.
+   */
+  private brake(dt: number, cruise: number, gait: MotionName, maxStep: number): boolean {
+    this.speed = damp(this.speed, 0, DECEL, dt)
+    if (this.speed <= STOPPED) {
+      this.speed = 0
+      this.settleWalk(dt, 0)
+      return false
+    }
+    const step = Math.min(this.speed * dt, maxStep)
+    this.rig.worldX = this.clampX(this.rig.worldX + step * this.rig.facing)
+    this.setLoop(gait)
+    this.rig.advanceGait(step, this.speed / cruise)
+    this.settleWalk(dt, 1)
+    return true
+  }
+
+  private enterLoco(phase: LocoPhase) {
+    if (this.loco === phase) return
+    this.loco = phase
+    this.locoAt = this.clock
+  }
+
+  /**
+   * Look at where he is about to go, a beat before going.
+   *
+   * The eyes arriving first is most of what separates deciding to cross a room
+   * from being moved across one. If the destination is behind him he looks back
+   * over his shoulder for it, because he has not turned round yet.
+   */
+  private beginAim(heading: 1 | -1) {
+    this.enterLoco('aim')
+    this.speed = 0
+    this.travelAim = {
+      x: heading === this.rig.facing ? 0.55 : -0.6,
+      y: -0.05,
+      speed: 8,
+      wander: 0.25,
+    }
+  }
+
+  /** Start the hop that hides the mirror flip. */
+  private beginTurn(facing: 1 | -1) {
+    this.pendingFacing = facing
+    this.turnFlipped = false
+    this.reverseSince = 0
+    this.speed = 0
+    this.enterLoco('turn')
+    this.rig.play('turnHop', { force: true, restart: true })
+  }
+
+  /**
+   * Advance an in-flight hop-turn.
+   *
+   * Run from `update` rather than from `travelTo` so a turn always lands, even
+   * if whatever asked for it stopped asking half way through — a half-finished
+   * turn leaves him facing a direction nobody chose.
+   */
+  private tickLoco() {
+    const travelled = this.travelled
+    this.travelled = false
+
+    if (this.loco === 'turn') {
+      const t = TURN_TIME > 0 ? (this.clock - this.locoAt) / TURN_TIME : 1
+      if (!this.turnFlipped && t >= TURN_FLIP_AT) {
+        this.turnFlipped = true
+        if (this.pendingFacing) this.rig.facing = this.pendingFacing
+      }
+      if (t >= 1) {
+        this.pendingFacing = null
+        this.turnFlipped = false
+        this.enterLoco('still')
+        // He was looking back over his shoulder for it; now it is in front.
+        if (this.travelAim) {
+          this.travelAim = { ...this.travelAim, x: Math.abs(this.travelAim.x) }
+          this.gazeIntent = null
+        }
+      }
+      return
+    }
+
+    // Nobody asked him to go anywhere last frame. Drop back to standing, so the
+    // next journey gets its own look and wind-up instead of inheriting the
+    // middle of the last one.
+    if (!travelled) {
+      this.enterLoco('still')
+      this.speed = 0
+      this.travelAim = null
+      this.reverseSince = 0
+    }
+  }
+
+  /**
+   * Turn to face a direction, deliberately.
+   *
+   * Assigning `facing` directly is the thing this exists to replace: a sprite
+   * that is simply backwards on the next frame.
+   */
+  private requestFacing(facing: 1 | -1) {
+    if (this.rig.facing === facing || this.loco === 'turn') return
+    this.beginTurn(facing)
   }
 
   /** Whether a clip is one that carries him across the room. */

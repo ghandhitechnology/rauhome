@@ -8,15 +8,30 @@
  */
 
 import { ease, type Ease } from './easing'
+import { WALK_SPEED } from './gait'
 import { clampParam, type ParamId, type ParamSet } from './params'
 
 export type Key = { t: number; v: number; ease?: Ease }
 
 export type Track = { param: ParamId; keys: Key[] }
 
+/**
+ * What advances a clip's timeline.
+ *
+ * Everything Clawd does in place runs on `'time'`. Anything that carries him
+ * across the room runs on `'distance'`, so the clip is a consequence of having
+ * moved rather than a thing playing next to him while he slides.
+ */
+export type PhaseSource = 'time' | 'distance'
+
 export type Motion = {
   id: string
-  /** Seconds for one pass of the clip. */
+  /**
+   * Seconds for one pass of the clip — or, for a distance-driven clip, the
+   * seconds one pass would take at exactly `locomotion`. Either way it is the
+   * denominator that turns elapsed clip time into normalized time, so a gait
+   * moving at half speed simply reaches the end of it half as often.
+   */
   duration: number
   loop: boolean
   /** Crossfade in/out durations, seconds. */
@@ -30,6 +45,8 @@ export type Motion = {
    * The director multiplies it by facing to move Clawd through the world.
    */
   locomotion?: number
+  /** Defaults to `'time'`; gaits declare `'distance'`. */
+  phaseSource?: PhaseSource
 }
 
 export function defineMotion(m: Partial<Motion> & Pick<Motion, 'id' | 'duration' | 'tracks'>): Motion {
@@ -158,13 +175,46 @@ export class MotionPlayer {
     this.owned.clear()
   }
 
-  update(dt: number, out: ParamSet) {
+  /** True when the active clip's timeline is driven by travel, not the clock. */
+  get isDistanceDriven(): boolean {
+    return this.current?.motion.phaseSource === 'distance'
+  }
+
+  /** The active clip's own cruising speed, in sprite units per second. */
+  get cruise(): number {
+    return this.current?.motion.locomotion || WALK_SPEED
+  }
+
+  /**
+   * How far a clip's own timeline advances, in seconds.
+   *
+   * A distance-driven clip only moves when Clawd does. `strideScale` is how
+   * much of its authored stride he is actually taking — creeping up to a stop
+   * covers less ground per cycle, so the same distance has to buy proportionally
+   * more phase, which is what turns a slow approach into short quick steps
+   * rather than the same walk in slow motion.
+   */
+  private advance(inst: Instance, dt: number, travel: number, strideScale: number): number {
+    const m = inst.motion
+    if (m.phaseSource !== 'distance') return dt
+    const cruise = (m.locomotion || WALK_SPEED) * (strideScale > 0.01 ? strideScale : 0.01)
+    return travel / cruise
+  }
+
+  /**
+   * `travel` is the ground covered since the last frame, in sprite units, and
+   * `strideScale` the fraction of the clip's authored stride being taken.
+   * Both are ignored by clips that run on the clock.
+   */
+  update(dt: number, out: ParamSet, travel = 0, strideScale = 1) {
     const cur = this.current
     const prev = this.previous
 
     if (prev) {
-      prev.time += dt
+      prev.time += this.advance(prev, dt, travel, strideScale)
       const fade = prev.motion.fadeOut
+      // The fade itself is always wall-clock: a gait blending out while he
+      // stands still would otherwise never finish blending.
       prev.weight = fade > 0 ? Math.max(0, prev.weight - dt / fade) : 0
       if (prev.weight <= 0) this.previous = null
     }
@@ -179,7 +229,7 @@ export class MotionPlayer {
       return
     }
 
-    cur.time += dt
+    cur.time += this.advance(cur, dt, travel, strideScale)
     const fadeIn = cur.motion.fadeIn
     cur.weight = fadeIn > 0 ? Math.min(1, cur.weight + dt / fadeIn) : 1
 

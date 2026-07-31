@@ -14,7 +14,7 @@
 
 import { bodyController, type BodyCue, type BodyPlan } from './clawd/body'
 import { noteActivity } from './clawd/activity'
-import { PROP_SPOTS, propStore, type PropId, type SpotId } from './clawd/props'
+import { grip, PROP_SPOTS, propStore, type PropId, type SpotId } from './clawd/props'
 import { panelStore } from './panels'
 
 export type LiveEvent = { kind: string; [key: string]: unknown }
@@ -125,20 +125,27 @@ function setConnected(next: boolean) {
  * visual state follows these steps rather than jumping to the answer, which is
  * the whole difference between a room he lives in and a database of positions.
  */
-function errandPlan(errandId: string, from: SpotId, to: SpotId): BodyCue[] {
+function errandPlan(errandId: string, prop: PropId, from: SpotId, to: SpotId): BodyCue[] {
   const origin = PROP_SPOTS[from]
   const target = PROP_SPOTS[to]
   const step = (cue: Omit<BodyCue, 'anchor'>): BodyCue => ({ anchor: 'now', ...cue })
+  // How he handles this particular thing: which gait carries it, how long he
+  // takes over the ends, and whether he keeps an eye on it on the way.
+  const { gait, care, watch } = grip(prop)
+  const beat = (ms: number) => Math.round(ms * care)
   return [
-    step({ station: origin.station, gaze: 'floor', hold_ms: 400, errand: { id: errandId, phase: 'travel' } }),
-    step({ motion: 'lift', hold_ms: 1100, errand: { id: errandId, phase: 'lift' } }),
+    step({ station: origin.station, gaze: 'floor', hold_ms: beat(400), errand: { id: errandId, phase: 'travel' } }),
+    step({ motion: 'lift', hold_ms: beat(1100), errand: { id: errandId, phase: 'lift' } }),
     step({
-      motion: 'carry',
+      motion: gait,
       station: target.station,
-      hold_ms: 500,
+      // Watching it while he walks is most of what makes a plant read as
+      // spillable and a box as merely heavy.
+      gaze: watch ? 'floor' : undefined,
+      hold_ms: beat(500),
       errand: { id: errandId, phase: 'carry' },
     }),
-    step({ motion: 'place', gaze: 'floor', hold_ms: 1150, errand: { id: errandId, phase: 'place' } }),
+    step({ motion: 'place', gaze: 'floor', hold_ms: beat(1150), errand: { id: errandId, phase: 'place' } }),
   ]
 }
 
@@ -226,7 +233,7 @@ function driveBody(event: LiveEvent) {
       bodyController.applyPlan({
         turn_id: turnId || errandId,
         plan_id: errandId,
-        cues: errandPlan(errandId, from, to),
+        cues: errandPlan(errandId, prop, from, to),
       })
       break
     }

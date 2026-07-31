@@ -43,11 +43,26 @@ describe('PropStore errands', () => {
     store.begin({ id: 'e1', prop: 'mug', from: 'desk', to: 'shelf' })
     store.advance('e1', 'carry')
 
-    const at = store.placement('mug', { x: 90, y: 68 })
-    expect(at.carried).toBe(true)
-    // At his shoulder, not on the floor at his feet.
-    expect(at.y).toBeLessThan(68)
-    expect(Math.abs(at.x - 90)).toBeLessThan(propWidth('mug'))
+    // The second argument is where his claws are, not where he is standing.
+    const claws = { x: 90, y: 62, facing: 1 }
+    const at = store.placement('mug', claws)
+    expect(at.grip).toBe(1)
+
+    // Placed against his claws rather than left on the desk it came from.
+    const desk = PROP_SPOTS.desk
+    expect(Math.abs(at.x - desk.x)).toBeGreaterThan(propWidth('mug'))
+    expect(Math.abs(at.x - claws.x)).toBeLessThan(propWidth('mug') * 2)
+    expect(Math.abs(at.y - claws.y)).toBeLessThan(4)
+  })
+
+  it('follows his claws rather than a fixed point in the room', () => {
+    store.begin({ id: 'e1', prop: 'mug', from: 'desk', to: 'shelf' })
+    store.advance('e1', 'carry')
+
+    const low = store.placement('mug', { x: 90, y: 62, facing: 1 })
+    const high = store.placement('mug', { x: 94, y: 60, facing: 1 })
+    expect(high.x - low.x).toBeCloseTo(4, 6)
+    expect(high.y - low.y).toBeCloseTo(-2, 6)
   })
 
   it('only lands it once he has set it down', () => {
@@ -59,7 +74,7 @@ describe('PropStore errands', () => {
     store.advance('e1', 'done')
     expect(store.spotOf('mug')).toBe('shelf')
     expect(store.activeErrand).toBeNull()
-    expect(store.placement('mug', { x: 90, y: 68 }).carried).toBe(false)
+    expect(store.placement('mug', { x: 90, y: 68 }).grip).toBe(0)
   })
 
   it('leaves everything else exactly where it was', () => {
@@ -67,7 +82,7 @@ describe('PropStore errands', () => {
     store.advance('e1', 'carry')
     for (const id of PROP_IDS) {
       if (id === 'mug') continue
-      expect(store.placement(id, { x: 90, y: 68 }).carried, id).toBe(false)
+      expect(store.placement(id, { x: 90, y: 68 }).grip, id).toBe(0)
     }
   })
 
@@ -154,10 +169,24 @@ describe('the occupational motion library', () => {
     }
   })
 
+  /**
+   * The director's own punctuation on a walk. Listing these as one-shots would
+   * set `rig.busy`, which the director reads to decide whether it may travel —
+   * so he would wind up to set off and then be told he was too busy to.
+   */
+  const DIRECTOR_OWNED = ['turnHop', 'windUp']
+
   it('lets the one-shots finish before anything else is chosen', () => {
     for (const [name, clip] of Object.entries(LIFE_MOTIONS)) {
-      if (clip.loop) continue
+      if (clip.loop || DIRECTOR_OWNED.includes(name)) continue
       expect(ONE_SHOTS, `${name} is a one-shot but may be cut off`).toContain(name)
+    }
+  })
+
+  it('keeps the director-owned beats out of the one-shot list', () => {
+    for (const name of DIRECTOR_OWNED) {
+      expect(LIFE_MOTIONS[name as keyof typeof LIFE_MOTIONS].loop).toBeFalsy()
+      expect(ONE_SHOTS, `${name} would block the travel it punctuates`).not.toContain(name)
     }
   })
 
@@ -165,7 +194,7 @@ describe('the occupational motion library', () => {
     const travelling = Object.entries(LIFE_MOTIONS)
       .filter(([, clip]) => clip.locomotion)
       .map(([name]) => name)
-    expect(travelling.sort()).toEqual(['carry', 'pace', 'push', 'tiptoe'])
+    expect(travelling.sort()).toEqual(['carry', 'carryBox', 'pace', 'push', 'tiptoe'])
     for (const name of travelling) {
       const clip = LIFE_MOTIONS[name as keyof typeof LIFE_MOTIONS]
       expect(clip.loop, `${name} travels, so it has to loop`).toBe(true)

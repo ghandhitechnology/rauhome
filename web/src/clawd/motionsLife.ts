@@ -15,7 +15,7 @@
  *   - a loop must be seamless at t=0/t=1 on every track it owns
  */
 
-import { WALK_SPEED } from './gait'
+import { gaitDuration, WALK_SPEED } from './gait'
 import { defineMotion } from './motion'
 
 // ── at the desk ───────────────────────────────────────────────────────
@@ -317,26 +317,31 @@ export const place = defineMotion({
   ],
 })
 
+const CARRY_SWING = 26
+const CARRY_SPEED = WALK_SPEED * 0.78
+
 /** Walking with both claws locked out in front, body leaning back a little. */
 export const carry = defineMotion({
   id: 'carry',
-  duration: 0.72,
+  duration: gaitDuration(CARRY_SWING, CARRY_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.2,
   fadeOut: 0.22,
-  locomotion: WALK_SPEED * 0.78,
+  locomotion: CARRY_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 26 }] },
-    // Heavier gait: lower bob, slower cadence than the free walk.
+    { param: 'legSwing', keys: [{ t: 0, v: CARRY_SWING }] },
+    // Heavier gait: the body drops harder onto each footfall (0.25 / 0.75) and
+    // recovers less, because there is something in his claws resisting it.
     {
       param: 'posY',
       keys: [
-        { t: 0, v: 0 },
-        { t: 0.25, v: -0.5, ease: 'inOut' },
-        { t: 0.5, v: 0, ease: 'inOut' },
-        { t: 0.75, v: -0.5, ease: 'inOut' },
-        { t: 1, v: 0, ease: 'inOut' },
+        { t: 0, v: -0.35 },
+        { t: 0.25, v: 0.2, ease: 'in' },
+        { t: 0.5, v: -0.35, ease: 'out' },
+        { t: 0.75, v: 0.2, ease: 'in' },
+        { t: 1, v: -0.35, ease: 'out' },
       ],
     },
     { param: 'clawL', keys: [{ t: 0, v: 30 }, { t: 0.5, v: 26, ease: 'inOut' }, { t: 1, v: 30, ease: 'inOut' }] },
@@ -346,22 +351,88 @@ export const carry = defineMotion({
   ],
 })
 
-/** Shoulder into it: low claws, hard lean, legs driving, barely moving. */
+const BOX_SWING = 22
+const BOX_SPEED = WALK_SPEED * 0.62
+
+/**
+ * Carrying something too wide to hold out in front.
+ *
+ * Not an offset of `carry` — a chest carry and a low hug are different shapes.
+ * The claws come down and in rather than out, the body leans *back* against the
+ * weight instead of forward over it, and he walks slower with shorter steps.
+ * The box itself sits low against him, which is what the grip table arranges.
+ */
+export const carryBox = defineMotion({
+  id: 'carryBox',
+  duration: gaitDuration(BOX_SWING, BOX_SPEED),
+  loop: true,
+  priority: 2,
+  fadeIn: 0.22,
+  fadeOut: 0.24,
+  locomotion: BOX_SPEED,
+  phaseSource: 'distance',
+  tracks: [
+    { param: 'legSwing', keys: [{ t: 0, v: BOX_SWING }] },
+    // Braced under the load: he drops onto each footfall and barely recovers.
+    {
+      param: 'posY',
+      keys: [
+        { t: 0, v: -0.15 },
+        { t: 0.25, v: 0.45, ease: 'in' },
+        { t: 0.5, v: -0.15, ease: 'out' },
+        { t: 0.75, v: 0.45, ease: 'in' },
+        { t: 1, v: -0.15, ease: 'out' },
+      ],
+    },
+    { param: 'scaleY', keys: [{ t: 0, v: 0.99 }, { t: 0.25, v: 0.94, ease: 'in' }, { t: 0.5, v: 0.99, ease: 'out' }, { t: 0.75, v: 0.94, ease: 'in' }, { t: 1, v: 0.99, ease: 'out' }] },
+    { param: 'scaleX', keys: [{ t: 0, v: 1.01 }, { t: 0.25, v: 1.05, ease: 'in' }, { t: 0.5, v: 1.01, ease: 'out' }, { t: 0.75, v: 1.05, ease: 'in' }, { t: 1, v: 1.01, ease: 'out' }] },
+    // Claws low and turned in, hugging it against him rather than presenting it.
+    { param: 'clawL', keys: [{ t: 0, v: -30 }, { t: 0.5, v: -27, ease: 'inOut' }, { t: 1, v: -30, ease: 'inOut' }] },
+    { param: 'clawR', keys: [{ t: 0, v: -28 }, { t: 0.5, v: -31, ease: 'inOut' }, { t: 1, v: -28, ease: 'inOut' }] },
+    // Leaning back against the load, not forward into the walk.
+    { param: 'angle', keys: [{ t: 0, v: -9 }, { t: 0.5, v: -7, ease: 'inOut' }, { t: 1, v: -9, ease: 'inOut' }] },
+    // He cannot see much past it.
+    { param: 'eyeY', keys: [{ t: 0, v: -0.15 }, { t: 1, v: -0.15 }] },
+  ],
+})
+
+/**
+ * Shoulder into it: low claws, hard lean, legs driving, barely moving.
+ *
+ * The swing came down from 32 with the stride maths: at a third of walking
+ * speed a 32-degree reach means one enormous slow-motion step every two
+ * seconds. Short braced steps are both what the geometry allows and what
+ * shoving something heavy actually looks like.
+ */
+const PUSH_SWING = 20
+const PUSH_SPEED = WALK_SPEED * 0.34
+
 export const push = defineMotion({
   id: 'push',
-  duration: 0.9,
+  duration: gaitDuration(PUSH_SWING, PUSH_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.2,
   fadeOut: 0.24,
-  locomotion: WALK_SPEED * 0.34,
+  locomotion: PUSH_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 32 }] },
+    { param: 'legSwing', keys: [{ t: 0, v: PUSH_SWING }] },
     { param: 'angle', keys: [{ t: 0, v: 15 }, { t: 0.5, v: 18, ease: 'inOut' }, { t: 1, v: 15, ease: 'inOut' }] },
     { param: 'clawL', keys: [{ t: 0, v: 14 }, { t: 1, v: 14 }] },
     { param: 'clawR', keys: [{ t: 0, v: 12 }, { t: 1, v: 12 }] },
-    { param: 'posY', keys: [{ t: 0, v: 0.5 }, { t: 0.5, v: 0.1, ease: 'inOut' }, { t: 1, v: 0.5, ease: 'inOut' }] },
-    { param: 'scaleX', keys: [{ t: 0, v: 1.03 }, { t: 0.5, v: 1.0, ease: 'inOut' }, { t: 1, v: 1.03, ease: 'inOut' }] },
+    // Braced low the whole way, dipping onto each footfall rather than bobbing.
+    {
+      param: 'posY',
+      keys: [
+        { t: 0, v: 0.2 },
+        { t: 0.25, v: 0.6, ease: 'in' },
+        { t: 0.5, v: 0.2, ease: 'out' },
+        { t: 0.75, v: 0.6, ease: 'in' },
+        { t: 1, v: 0.2, ease: 'out' },
+      ],
+    },
+    { param: 'scaleX', keys: [{ t: 0, v: 1.0 }, { t: 0.25, v: 1.04, ease: 'in' }, { t: 0.5, v: 1.0, ease: 'out' }, { t: 0.75, v: 1.04, ease: 'in' }, { t: 1, v: 1.0, ease: 'out' }] },
     { param: 'eyeY', keys: [{ t: 0, v: 0.25 }, { t: 1, v: 0.25 }] },
   ],
 })
@@ -549,18 +620,109 @@ export const water = defineMotion({
 
 // ── moving about ──────────────────────────────────────────────────────
 
+/**
+ * Turning around.
+ *
+ * Clawd is a flat sprite: facing left is the same drawing mirrored, so a turn
+ * has nowhere to happen except in the single frame the mirror flips. Left bare
+ * that is a teleport — he is simply backwards now. This buries the flip inside
+ * a hop, at the frame where he is squashed flattest and moving fastest, which
+ * is the oldest trick in 2D animation for turning a cut into a movement.
+ *
+ * The director owns the flip itself, timed to the squash at t=0.5. Everything
+ * here is the motion that hides it: anticipation down, snap up and over,
+ * follow-through on the landing.
+ */
+export const turnHop = defineMotion({
+  id: 'turnHop',
+  duration: 0.26,
+  priority: 7,
+  fadeIn: 0.06,
+  fadeOut: 0.12,
+  tracks: [
+    {
+      param: 'posY',
+      keys: [
+        { t: 0, v: 0 },
+        { t: 0.3, v: 1.4, ease: 'in' }, // gather
+        { t: 0.5, v: -1.1, ease: 'out' }, // off the floor — the flip lands here
+        { t: 0.78, v: 0.5, ease: 'in' }, // down again
+        { t: 1, v: 0, ease: 'outBack' }, // knees give, then straighten
+      ],
+    },
+    {
+      param: 'scaleX',
+      keys: [
+        { t: 0, v: 1 },
+        { t: 0.3, v: 1.09, ease: 'in' },
+        // Flattest exactly where the mirror flips: least sprite on screen at
+        // the moment there is most to hide.
+        { t: 0.5, v: 0.72, ease: 'out' },
+        { t: 0.78, v: 1.07, ease: 'in' },
+        { t: 1, v: 1, ease: 'outBack' },
+      ],
+    },
+    {
+      param: 'scaleY',
+      keys: [
+        { t: 0, v: 1 },
+        { t: 0.3, v: 0.88, ease: 'in' },
+        { t: 0.5, v: 1.16, ease: 'out' },
+        { t: 0.78, v: 0.93, ease: 'in' },
+        { t: 1, v: 1, ease: 'outBack' },
+      ],
+    },
+    // The claws trail the body round and swing back past centre on the landing.
+    { param: 'clawL', keys: [{ t: 0, v: 0 }, { t: 0.3, v: -16, ease: 'in' }, { t: 0.55, v: 30, ease: 'outBack' }, { t: 1, v: 0, ease: 'inOut' }] },
+    { param: 'clawR', keys: [{ t: 0, v: 0 }, { t: 0.3, v: -14, ease: 'in' }, { t: 0.55, v: 26, ease: 'outBack' }, { t: 1, v: 0, ease: 'inOut' }] },
+    { param: 'angle', keys: [{ t: 0, v: 0 }, { t: 0.3, v: 5, ease: 'in' }, { t: 0.5, v: -6, ease: 'out' }, { t: 1, v: 0, ease: 'inOut' }] },
+    // Legs tuck for the hop rather than staying mid-stride through it.
+    { param: 'legSwing', keys: [{ t: 0, v: 0 }] },
+  ],
+})
+
+/**
+ * The weight shift before setting off.
+ *
+ * Nothing with mass starts moving on the frame it decides to. He leans back
+ * away from where he is going, then pushes off it — a fifth of a second that
+ * turns being teleported into a walk into having chosen to walk.
+ */
+export const windUp = defineMotion({
+  id: 'windUp',
+  duration: 0.16,
+  priority: 7,
+  fadeIn: 0.05,
+  fadeOut: 0.1,
+  tracks: [
+    { param: 'posX', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -1.1, ease: 'out' }, { t: 1, v: 0.3, ease: 'in' }] },
+    { param: 'angle', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -4.5, ease: 'out' }, { t: 1, v: 2.5, ease: 'in' }] },
+    { param: 'scaleY', keys: [{ t: 0, v: 1 }, { t: 0.55, v: 0.95, ease: 'out' }, { t: 1, v: 1.02, ease: 'in' }] },
+    { param: 'scaleX', keys: [{ t: 0, v: 1 }, { t: 0.55, v: 1.04, ease: 'out' }, { t: 1, v: 0.99, ease: 'in' }] },
+    { param: 'clawL', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -12, ease: 'out' }, { t: 1, v: 14, ease: 'in' }] },
+    { param: 'clawR', keys: [{ t: 0, v: 0 }, { t: 0.55, v: -10, ease: 'out' }, { t: 1, v: 12, ease: 'in' }] },
+    { param: 'legSwing', keys: [{ t: 0, v: 0 }] },
+  ],
+})
+
+const TIPTOE_SWING = 16
+const TIPTOE_SPEED = WALK_SPEED * 0.62
+
 /** Quick light steps, body held high, claws tucked in. */
 export const tiptoe = defineMotion({
   id: 'tiptoe',
-  duration: 0.42,
+  duration: gaitDuration(TIPTOE_SWING, TIPTOE_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.16,
   fadeOut: 0.2,
-  locomotion: WALK_SPEED * 0.62,
+  locomotion: TIPTOE_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 16 }] },
-    { param: 'posY', keys: [{ t: 0, v: -1.2 }, { t: 0.25, v: -1.9, ease: 'inOut' }, { t: 0.5, v: -1.2, ease: 'inOut' }, { t: 0.75, v: -1.9, ease: 'inOut' }, { t: 1, v: -1.2, ease: 'inOut' }] },
+    { param: 'legSwing', keys: [{ t: 0, v: TIPTOE_SWING }] },
+    // Held high throughout, with only the faintest touch down on each footfall
+    // — the point of a tiptoe is that his weight never really lands.
+    { param: 'posY', keys: [{ t: 0, v: -1.9 }, { t: 0.25, v: -1.5, ease: 'in' }, { t: 0.5, v: -1.9, ease: 'out' }, { t: 0.75, v: -1.5, ease: 'in' }, { t: 1, v: -1.9, ease: 'out' }] },
     { param: 'scaleY', keys: [{ t: 0, v: 1.04 }, { t: 1, v: 1.04 }] },
     { param: 'clawL', keys: [{ t: 0, v: -38 }, { t: 0.5, v: -34, ease: 'inOut' }, { t: 1, v: -38, ease: 'inOut' }] },
     { param: 'clawR', keys: [{ t: 0, v: -36 }, { t: 0.5, v: -40, ease: 'inOut' }, { t: 1, v: -36, ease: 'inOut' }] },
@@ -568,18 +730,22 @@ export const tiptoe = defineMotion({
   ],
 })
 
+const PACE_SWING = 30
+const PACE_SPEED = WALK_SPEED * 1.18
+
 /** Head-down back-and-forth. Faster than a walk, going nowhere in particular. */
 export const pace = defineMotion({
   id: 'pace',
-  duration: 0.5,
+  duration: gaitDuration(PACE_SWING, PACE_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.18,
   fadeOut: 0.2,
-  locomotion: WALK_SPEED * 1.18,
+  locomotion: PACE_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 36 }] },
-    { param: 'posY', keys: [{ t: 0, v: 0 }, { t: 0.25, v: -0.8, ease: 'inOut' }, { t: 0.5, v: 0, ease: 'inOut' }, { t: 0.75, v: -0.8, ease: 'inOut' }, { t: 1, v: 0, ease: 'inOut' }] },
+    { param: 'legSwing', keys: [{ t: 0, v: PACE_SWING }] },
+    { param: 'posY', keys: [{ t: 0, v: -0.8 }, { t: 0.25, v: 0.1, ease: 'in' }, { t: 0.5, v: -0.8, ease: 'out' }, { t: 0.75, v: 0.1, ease: 'in' }, { t: 1, v: -0.8, ease: 'out' }] },
     { param: 'angle', keys: [{ t: 0, v: 9 }, { t: 0.5, v: 11, ease: 'inOut' }, { t: 1, v: 9, ease: 'inOut' }] },
     { param: 'eyeY', keys: [{ t: 0, v: 0.42 }, { t: 1, v: 0.42 }] },
     { param: 'clawL', keys: [{ t: 0, v: -26 }, { t: 0.5, v: -20, ease: 'inOut' }, { t: 1, v: -26, ease: 'inOut' }] },
@@ -813,6 +979,7 @@ export const LIFE_MOTIONS = {
   lift,
   place,
   carry,
+  carryBox,
   push,
   doze,
   yawn,
@@ -820,6 +987,8 @@ export const LIFE_MOTIONS = {
   sit,
   sip,
   water,
+  turnHop,
+  windUp,
   tiptoe,
   pace,
   peek,
@@ -833,7 +1002,14 @@ export const LIFE_MOTIONS = {
   ponder,
 }
 
-/** The ones that must be allowed to finish before anything else is chosen. */
+/**
+ * The ones that must be allowed to finish before anything else is chosen.
+ *
+ * `turnHop` and `windUp` are deliberately absent. They are one-shots, but they
+ * are the director's own punctuation on a walk, and listing them here would set
+ * `rig.busy` — which the director reads to decide whether it may travel at all,
+ * so he would wind up to set off and then be told he was too busy to.
+ */
 export const LIFE_ONE_SHOTS = [
   'present',
   'point',
@@ -851,4 +1027,4 @@ export const LIFE_ONE_SHOTS = [
 ] as const
 
 /** The ones that carry Clawd across the room rather than playing in place. */
-export const LIFE_GAITS = ['carry', 'push', 'tiptoe', 'pace'] as const
+export const LIFE_GAITS = ['carry', 'carryBox', 'push', 'tiptoe', 'pace'] as const

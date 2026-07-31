@@ -7,7 +7,7 @@
  * keep running through a walk cycle but a sleep clip can pin the eyes shut.
  */
 
-import { WALK_SPEED } from './gait'
+import { gaitDuration, WALK_SPEED } from './gait'
 import { defineMotion, type Motion } from './motion'
 import { LIFE_MOTIONS, LIFE_ONE_SHOTS } from './motionsLife'
 import { GAME_MOTIONS, GAME_ONE_SHOTS } from './motionsGame'
@@ -51,50 +51,62 @@ export const idle = defineMotion({
   ],
 })
 
+/**
+ * Past ~26 the two legs in each pair swing far enough to cross over each other
+ * and the gait turns into a single scissoring blob.
+ */
+const WALK_SWING = 24
+
 export const walk = defineMotion({
   id: 'walk',
-  duration: 0.62,
+  // Derived, not authored: the cycle has to cover exactly the ground the legs
+  // reach, or the feet skate however carefully the keys are placed.
+  duration: gaitDuration(WALK_SWING, WALK_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.18,
   fadeOut: 0.2,
   locomotion: WALK_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    // Body bobs twice per stride — once per leg pair contact.
+    // Legs are furthest forward at phase 0.25 and 0.75 — those are the two
+    // footfalls, and everything below is keyed against them.
+    //
+    // The body is *lowest* at contact, taking the weight, and highest at mid
+    // stance as it passes over the planted legs. Keyed the other way round —
+    // which is how this read before — a walk looks like a hover.
     {
       param: 'posY',
       keys: [
-        { t: 0, v: 0 },
-        { t: 0.25, v: -0.5, ease: 'out' },
-        { t: 0.5, v: 0, ease: 'in' },
-        { t: 0.75, v: -0.5, ease: 'out' },
-        { t: 1, v: 0, ease: 'in' },
+        { t: 0, v: -0.5 },
+        { t: 0.25, v: 0.12, ease: 'in' }, // contact: drops onto it
+        { t: 0.5, v: -0.5, ease: 'out' }, // mid stance: rises over the leg
+        { t: 0.75, v: 0.12, ease: 'in' },
+        { t: 1, v: -0.5, ease: 'out' },
       ],
     },
     // Squash on each footfall keeps the weight readable.
     {
       param: 'scaleY',
       keys: [
-        { t: 0, v: 0.95 },
-        { t: 0.25, v: 1.04, ease: 'out' },
-        { t: 0.5, v: 0.95, ease: 'in' },
-        { t: 0.75, v: 1.04, ease: 'out' },
-        { t: 1, v: 0.95, ease: 'in' },
+        { t: 0, v: 1.03 },
+        { t: 0.25, v: 0.95, ease: 'in' },
+        { t: 0.5, v: 1.03, ease: 'out' },
+        { t: 0.75, v: 0.95, ease: 'in' },
+        { t: 1, v: 1.03, ease: 'out' },
       ],
     },
     {
       param: 'scaleX',
       keys: [
-        { t: 0, v: 1.05 },
-        { t: 0.25, v: 0.97, ease: 'out' },
-        { t: 0.5, v: 1.05, ease: 'in' },
-        { t: 0.75, v: 0.97, ease: 'out' },
-        { t: 1, v: 1.05, ease: 'in' },
+        { t: 0, v: 0.98 },
+        { t: 0.25, v: 1.05, ease: 'in' },
+        { t: 0.5, v: 0.98, ease: 'out' },
+        { t: 0.75, v: 1.05, ease: 'in' },
+        { t: 1, v: 0.98, ease: 'out' },
       ],
     },
-    // Past ~26 the two legs in each pair swing far enough to cross over each
-    // other and the gait turns into a single scissoring blob.
-    { param: 'legSwing', keys: [{ t: 0, v: 24 }] },
+    { param: 'legSwing', keys: [{ t: 0, v: WALK_SWING }] },
     // Claws counter-swing against the legs.
     {
       param: 'clawL',

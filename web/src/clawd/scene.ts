@@ -191,10 +191,9 @@ export class Scene {
     // 1.25 puts him at ~12 stage units tall — small enough to read as a desk
     // creature, tall enough to clear the desk top and the rug.
     const charUnit = u * 1.25 * (opts.charScale ?? 1)
+    const spriteAt = { unit: charUnit, x: worldX * u, y: FLOOR_Y * u }
     drawClawd(ctx, params, {
-      unit: charUnit,
-      x: worldX * u,
-      y: FLOOR_Y * u,
+      ...spriteAt,
       light: light?.tint,
       lightAmount: light?.tintAmount,
       rim: light?.rim,
@@ -202,8 +201,10 @@ export class Scene {
     })
 
     // Whatever he is holding rides in front of him, so it reads as carried
-    // rather than as something moving alongside him.
-    if (showRoom) drawCarriedProp(ctx, u, room.time, { x: worldX, y: FLOOR_Y })
+    // rather than as something moving alongside him. It is placed off the same
+    // transform the sprite was just drawn with, so it sits in the claws that
+    // are actually on screen rather than near where they usually are.
+    if (showRoom) drawCarriedProp(ctx, u, room.time, { params, ...spriteAt })
 
     // The card table comes after him: he sits behind it, and the top edge
     // taking his lap is what puts him *at* the table rather than next to it.
