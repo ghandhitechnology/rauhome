@@ -351,6 +351,51 @@ export const carry = defineMotion({
   ],
 })
 
+const BOX_SWING = 22
+const BOX_SPEED = WALK_SPEED * 0.62
+
+/**
+ * Carrying something too wide to hold out in front.
+ *
+ * Not an offset of `carry` — a chest carry and a low hug are different shapes.
+ * The claws come down and in rather than out, the body leans *back* against the
+ * weight instead of forward over it, and he walks slower with shorter steps.
+ * The box itself sits low against him, which is what the grip table arranges.
+ */
+export const carryBox = defineMotion({
+  id: 'carryBox',
+  duration: gaitDuration(BOX_SWING, BOX_SPEED),
+  loop: true,
+  priority: 2,
+  fadeIn: 0.22,
+  fadeOut: 0.24,
+  locomotion: BOX_SPEED,
+  phaseSource: 'distance',
+  tracks: [
+    { param: 'legSwing', keys: [{ t: 0, v: BOX_SWING }] },
+    // Braced under the load: he drops onto each footfall and barely recovers.
+    {
+      param: 'posY',
+      keys: [
+        { t: 0, v: -0.15 },
+        { t: 0.25, v: 0.45, ease: 'in' },
+        { t: 0.5, v: -0.15, ease: 'out' },
+        { t: 0.75, v: 0.45, ease: 'in' },
+        { t: 1, v: -0.15, ease: 'out' },
+      ],
+    },
+    { param: 'scaleY', keys: [{ t: 0, v: 0.99 }, { t: 0.25, v: 0.94, ease: 'in' }, { t: 0.5, v: 0.99, ease: 'out' }, { t: 0.75, v: 0.94, ease: 'in' }, { t: 1, v: 0.99, ease: 'out' }] },
+    { param: 'scaleX', keys: [{ t: 0, v: 1.01 }, { t: 0.25, v: 1.05, ease: 'in' }, { t: 0.5, v: 1.01, ease: 'out' }, { t: 0.75, v: 1.05, ease: 'in' }, { t: 1, v: 1.01, ease: 'out' }] },
+    // Claws low and turned in, hugging it against him rather than presenting it.
+    { param: 'clawL', keys: [{ t: 0, v: -30 }, { t: 0.5, v: -27, ease: 'inOut' }, { t: 1, v: -30, ease: 'inOut' }] },
+    { param: 'clawR', keys: [{ t: 0, v: -28 }, { t: 0.5, v: -31, ease: 'inOut' }, { t: 1, v: -28, ease: 'inOut' }] },
+    // Leaning back against the load, not forward into the walk.
+    { param: 'angle', keys: [{ t: 0, v: -9 }, { t: 0.5, v: -7, ease: 'inOut' }, { t: 1, v: -9, ease: 'inOut' }] },
+    // He cannot see much past it.
+    { param: 'eyeY', keys: [{ t: 0, v: -0.15 }, { t: 1, v: -0.15 }] },
+  ],
+})
+
 /**
  * Shoulder into it: low claws, hard lean, legs driving, barely moving.
  *
@@ -934,6 +979,7 @@ export const LIFE_MOTIONS = {
   lift,
   place,
   carry,
+  carryBox,
   push,
   doze,
   yawn,
@@ -981,4 +1027,4 @@ export const LIFE_ONE_SHOTS = [
 ] as const
 
 /** The ones that carry Clawd across the room rather than playing in place. */
-export const LIFE_GAITS = ['carry', 'push', 'tiptoe', 'pace'] as const
+export const LIFE_GAITS = ['carry', 'carryBox', 'push', 'tiptoe', 'pace'] as const

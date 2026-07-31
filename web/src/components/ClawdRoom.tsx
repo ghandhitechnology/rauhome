@@ -6,6 +6,7 @@ import { Director, EMPTY_SIGNALS, type Signals } from '../clawd/director'
 import { GameChoreographer } from '../clawd/gameChoreographer'
 import { KITTENS_GAME } from '../clawd/gameTableLayer'
 import { gameBridge, type GameResult, type TableChoreo } from '../clawd/gameBridge'
+import { propStore } from '../clawd/props'
 import { ClawdRig } from '../clawd/rig'
 import { drawBubble, Scene } from '../clawd/scene'
 import { STAGE, WALK_RANGE, type RoomState, type StationId } from '../clawd/room'
@@ -329,6 +330,9 @@ export default function ClawdRoom({
       }
 
       director.update(dt, s)
+      // An object crossing into and out of his claws is a movement, not a
+      // phase change, so it needs a clock of its own.
+      propStore.tick(dt)
       rig.update(dt, {
         // He looks at the pointer only when it is nearby, otherwise he
         // attends to whatever he is doing — or, at the table, to the card you
