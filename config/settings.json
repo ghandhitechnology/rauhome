@@ -11,9 +11,9 @@
   "trace_ttl_days": 7,
   "face_history_turns": 24,
   "permissions": {
-    "subagents": "auto",
+    "subagents": "bypass",
     "room": "bypass",
     "heartbeats": "bypass"
   },
-  "language": "en"
+  "language": "ko"
 }
