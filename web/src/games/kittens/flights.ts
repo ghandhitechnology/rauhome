@@ -3,8 +3,8 @@
  *
  * Split in two on purpose. `diffFlights` is a pure reading of what moved
  * between two table states and can be tested on its own; `runFlight` is the
- * browser half, and is deliberately dumb — it takes two points and animates a
- * card back between them.
+ * browser half, and is deliberately dumb — it takes two points and an element
+ * to clone, and animates the clone between them.
  *
  * Flights are screen-space rather than room-space. They only ever run while
  * the camera is settled — the deal starts after the push-in finishes, and
@@ -25,6 +25,12 @@ export type FlightRequest = {
   to: FlightSpot
   /** Which card in the hand this is, so the deal can land them in order. */
   slot?: number
+  /**
+   * The card itself, when the diff could possibly know it: what landed on the
+   * pile, what arrived in your hand. His draws and his cards stay anonymous,
+   * and fly face-down.
+   */
+  card?: CardId
 }
 
 /**
@@ -58,6 +64,14 @@ export function arrivedSlots(before: CardId[], after: CardId[]): number[] {
 export const FLIGHT_MS = 380
 /** Gap between cards in a dealt run. */
 export const DEAL_STAGGER_MS = 72
+/** Gap between cards crossing the table together, outside the deal. */
+export const FLIGHT_STAGGER_MS = 80
+/**
+ * How long the pile waits before turning a new top card over. The flip
+ * itself is 280ms, so starting it this late has the face come around just as
+ * the flight carrying that card lands. Set inline as `--ek-flip-delay`.
+ */
+export const FLIP_DELAY_MS = FLIGHT_MS - 120
 
 function seatSpot(seat: Seat): FlightSpot {
   return seat === 'rau' ? 'rauHand' : 'playerHand'
@@ -67,8 +81,9 @@ function seatSpot(seat: Seat): FlightSpot {
  * What moved, as cards to fly.
  *
  * Only the movements worth watching: a card off the deck into somebody's
- * hand, a card out of a hand onto the pile, a card handed over on a Favor.
- * Shuffles and peeks move nothing you can see.
+ * hand, a card out of a hand onto the pile, a card handed over on a Favor, a
+ * defused kitten going back into the deck. Shuffles and peeks move nothing
+ * you can see.
  */
 export function diffFlights(prev: TableState | null, next: TableState): FlightRequest[] {
   const out: FlightRequest[] = []
@@ -81,8 +96,10 @@ export function diffFlights(prev: TableState | null, next: TableState): FlightRe
     for (let i = 0; i < Math.min(drawn, Math.max(0, rauGain)); i++) {
       out.push({ from: 'deck', to: 'rauHand' })
     }
+    // Which cards arrived is only known on your side of the table.
+    const arrived = arrivedSlots(prev.hand, next.hand).map((slot) => next.hand[slot])
     for (let i = 0; i < Math.min(drawn, Math.max(0, youGain)); i++) {
-      out.push({ from: 'deck', to: 'playerHand' })
+      out.push({ from: 'deck', to: 'playerHand', card: arrived[i] })
     }
   }
 
@@ -94,7 +111,22 @@ export function diffFlights(prev: TableState | null, next: TableState): FlightRe
     if (prev.pending && next.pending && next.pending.nopes > prev.pending.nopes) {
       from = seatSpot(prev.pending.waiting_on)
     }
-    for (let i = 0; i < played; i++) out.push({ from, to: 'discard' })
+    const thrown = next.discard.slice(prev.discard.length)
+    for (let i = 0; i < played; i++) {
+      // A kitten is never played from a hand: it comes off the deck already
+      // face-up, and only the Defuse that answers it flies out of a fan.
+      const card = thrown[i]
+      out.push({ from: card === 'exploding_kitten' ? 'deck' : from, to: 'discard', card })
+    }
+  }
+
+  // A defused kitten going home: it leaves the pile and the deck grows.
+  if (
+    next.deck_count > prev.deck_count &&
+    prev.discard.includes('exploding_kitten') &&
+    !next.discard.includes('exploding_kitten')
+  ) {
+    out.push({ from: 'discard', to: 'deck', card: 'exploding_kitten' })
   }
 
   // A Favor: one hand shrank, the other grew, and nothing hit the pile.
@@ -135,10 +167,11 @@ export type FlightOptions = {
 }
 
 /**
- * Fly one card back from `from` to `to`, both in screen pixels.
+ * Fly one card from `from` to `to`, both in screen pixels.
  *
- * Cloned from a template the table renders once, so the card in flight is the
- * same drawing as the card that lands rather than an approximation of it.
+ * Cloned from an element the table hands it — the hidden back template for
+ * his cards, the real face for anything of yours — so the card in flight is
+ * the same drawing as the card that lands rather than an approximation of it.
  * Resolves when the card has arrived and been cleaned up.
  */
 export function runFlight(
@@ -190,36 +223,74 @@ export function runFlight(
     ? { x: to.x + (to.x - from.x) * 0.03, y: to.y + (to.y - from.y) * 0.03 }
     : to
 
-  const anim = el.animate(
-    [
-      {
-        transform: place(from, -spin / 2, s0 * 0.94),
-        opacity: 0,
-        offset: 0,
-        easing: 'cubic-bezier(0.4, 0, 0.6, 1)',
-      },
-      {
-        transform: place(from, -spin / 2, s0),
-        opacity: 1,
-        offset: 0.1,
-        // Fast out: most of the ground is covered in the first half.
-        easing: 'cubic-bezier(0.16, 0.78, 0.28, 1)',
-      },
-      {
-        transform: place(past, (spin / 2) * 1.05, s1 * (settles ? 1.015 : 1)),
-        opacity: 1,
-        offset: 0.8,
-        // Soft landing: it comes back to the mark rather than onto it.
-        easing: 'cubic-bezier(0.33, 0, 0.2, 1)',
-      },
-      { transform: place(to, spin / 2, s1), opacity: 1, offset: 1 },
-    ],
+  /*
+    The arc.
+
+    A thrown card does not travel the straight line between two points: it
+    comes off one place and drops onto the other. The lift is perpendicular
+    to that line, always on the up side of the screen, and grows with the
+    distance — across the table is a bigger throw than across the fan. The
+    low tier skips it for the same reason it skips the settle: one fewer
+    keyframe to composite.
+  */
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const dist = Math.hypot(dx, dy)
+  let apex: Pt | null = null
+  if (settles && dist > 1) {
+    const lift = Math.min(dist * 0.12, 90)
+    let px = -dy / dist
+    let py = dx / dist
+    if (py > 0) {
+      px = -px
+      py = -py
+    }
+    apex = {
+      x: from.x + (past.x - from.x) * 0.42 + px * lift,
+      y: from.y + (past.y - from.y) * 0.42 + py * lift,
+    }
+  }
+
+  const frames: Keyframe[] = [
     {
-      duration: opts.duration ?? FLIGHT_MS,
-      delay: opts.delay ?? 0,
-      fill: 'both',
+      transform: place(from, -spin / 2, s0 * 0.94),
+      opacity: 0,
+      offset: 0,
+      easing: 'cubic-bezier(0.4, 0, 0.6, 1)',
     },
+    {
+      transform: place(from, -spin / 2, s0),
+      opacity: 1,
+      offset: 0.1,
+      // Fast out: most of the ground is covered in the first half.
+      easing: 'cubic-bezier(0.16, 0.78, 0.28, 1)',
+    },
+  ]
+  if (apex) {
+    frames.push({
+      transform: place(apex, 0, (s0 + s1) / 2),
+      opacity: 1,
+      offset: 0.45,
+      // Over the top; everything from here is descent.
+      easing: 'cubic-bezier(0.33, 0, 0.2, 1)',
+    })
+  }
+  frames.push(
+    {
+      transform: place(past, (spin / 2) * 1.05, s1 * (settles ? 1.015 : 1)),
+      opacity: 1,
+      offset: 0.8,
+      // Soft landing: it comes back to the mark rather than onto it.
+      easing: 'cubic-bezier(0.33, 0, 0.2, 1)',
+    },
+    { transform: place(to, spin / 2, s1), opacity: 1, offset: 1 },
   )
+
+  const anim = el.animate(frames, {
+    duration: opts.duration ?? FLIGHT_MS,
+    delay: opts.delay ?? 0,
+    fill: 'both',
+  })
 
   return new Promise<void>((resolve) => {
     const done = () => {

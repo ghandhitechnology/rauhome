@@ -27,6 +27,10 @@ from rau.games.kittens.engine import (
 _lock = threading.RLock()
 _game: Optional[Game] = None
 _last_broadcast: str = ""
+#: The newest engine note already copied into the journal. The entry object
+#: itself, not a count: the engine caps its log at forty entries, so a length
+#: watermark reads "nothing new" for the whole back half of a long game.
+_mirrored: Optional[Any] = None
 
 
 def active() -> bool:
@@ -177,6 +181,36 @@ def tally() -> Dict[str, Any]:
 # ------------------------------------------------------------------- moves
 
 
+def _mirror_log(game: Optional[Game] = None) -> None:
+    """
+    Carry new engine notes into the shared journal, tagged by seat.
+
+    The one path between `game.log` and the journal. `apply_move` calls it for
+    both seats and the pump calls it where Nope windows resolve, so outcomes
+    like "was Noped" or "Stole a card at random" reach the transcript both
+    halves of Rau read. Moves Rau takes through `player.take_turn` also get
+    his own bespoke line there — a different record of the same moment, not a
+    duplicate of this one.
+    """
+    global _mirrored
+    with _lock:
+        game = game or _game
+        if game is None:
+            return
+        with game._lock:  # noqa: SLF001 — the snapshot must not straddle a move
+            entries = list(game.log)
+        start = 0
+        if _mirrored is not None:
+            for index in range(len(entries) - 1, -1, -1):
+                if entries[index] is _mirrored:
+                    start = index + 1
+                    break
+        for entry in entries[start:]:
+            journal.record(entry.seat, "move", entry.text)
+        if entries:
+            _mirrored = entries[-1]
+
+
 def _clear_the_other_table() -> None:
     """
     Take the board away before the cards come down. There is only one table.
@@ -207,11 +241,14 @@ def _clear_the_other_table() -> None:
 
 def start(*, seed: Optional[int] = None) -> Dict[str, Any]:
     """Deal a new game, replacing any game already on the table."""
-    global _game, _last_broadcast
+    global _game, _last_broadcast, _mirrored
     _clear_the_other_table()
     with _lock:
         _last_broadcast = ""
         _game = Game(seed=seed)
+        # The deal note stays an event ("Dealt. They go first." below), not a
+        # mirrored move — start mirroring from the first move after it.
+        _mirrored = _game.log[-1] if _game.log else None
         view = view_mod.browser_view(_game)
     journal.clear()
     journal.record("table", "event", "Dealt. They go first.")
@@ -224,10 +261,11 @@ def start(*, seed: Optional[int] = None) -> Dict[str, Any]:
 
 def end(reason: str = "cleared") -> Dict[str, Any]:
     """Take the table away."""
-    global _game
+    global _game, _mirrored
     with _lock:
         game = _game
         _game = None
+        _mirrored = None
     pump.stop()
     journal.clear()
     if game:
@@ -251,7 +289,6 @@ def apply_move(seat: str, move: Dict[str, Any]) -> Dict[str, Any]:
             return {"ok": False, "error": "there is no game on the table", "code": "no_game"}
 
     kind = str(move.get("move") or "")
-    log_before = len(game.log)
     try:
         if kind == "play":
             game.play(seat, str(move.get("card") or ""))
@@ -287,12 +324,12 @@ def apply_move(seat: str, move: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": str(exc), "code": "malformed"}
 
     # Engine notes land in game.log; mirror the newest ones into the journal so
-    # the talker and player both see what just happened. Player moves are also
-    # recorded by player.take_turn — skip duplicating those here when seat is RAU
-    # and the caller already journals; for USER we always journal.
+    # the talker and the player half both see what just happened — for either
+    # seat, including whatever a Nope window resolved into. Only the human's
+    # move wakes the pump: a table that changed underneath him is worth a fresh
+    # Nope decision and a dropped error backoff.
+    _mirror_log(game)
     if seat == USER:
-        for entry in game.log[log_before:]:
-            journal.record("user", "move", entry.text)
         pump.wake()
 
     _broadcast()

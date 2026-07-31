@@ -194,6 +194,51 @@ class TakeTurn(unittest.TestCase):
         self.assertIn(ATTACK, game.discard)
         self.assertNotIn(SKIP, game.hands[RAU])
 
+    def test_a_promised_draw_is_not_overridden(self):
+        self._player._ask_model = lambda prompt: (
+            '{"move": {"move": "draw"}, "say": "drawing, then it is you."}'
+        )
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [ATTACK]
+        game.hands[USER] = [SKIP]
+        game.draw = [SKIP, SKIP]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        # He just told them the draw was coming — overriding it makes him a liar.
+        journal.record("rau", "rau_chat", "I will draw, then it is you.")
+
+        self._real_take(game)
+
+        self.assertIn(SKIP, game.hands[RAU], "the promised draw was overridden")
+        self.assertIn(ATTACK, game.hands[RAU], "the override fired anyway")
+
+    def test_stale_chat_does_not_protect_a_draw(self):
+        self._player._ask_model = lambda prompt: (
+            '{"move": {"move": "draw"}, "say": "I guess I draw."}'
+        )
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [ATTACK]
+        game.hands[USER] = [SKIP]
+        game.draw = [SKIP, SKIP]
+        game.current = RAU
+        game.phase = PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        # The conversation is older than his last move — the override stands.
+        journal.record("user", "user_chat", "your funeral either way")
+        journal.record("rau", "move", "drew")
+
+        self._real_take(game)
+
+        self.assertIn(ATTACK, game.discard)
+        self.assertNotIn(SKIP, game.hands[RAU])
+
     def test_after_an_action_the_model_may_draw(self):
         self._player._ask_model = lambda prompt: (
             '{"move": {"move": "draw"}, "say": "now I draw."}'
@@ -446,6 +491,52 @@ class NopeReflex(unittest.TestCase):
                     decided = player.decide_nope(game)
         # Worker fails → empty answer → reflex on Attack → True
         self.assertTrue(decided)
+
+
+class NopePromptContext(unittest.TestCase):
+    """The 1.2s Nope decision still sees what was just said at the table."""
+
+    def setUp(self) -> None:
+        journal.clear()
+
+    def tearDown(self) -> None:
+        journal.clear()
+
+    def _nope_game(self) -> Game:
+        game = Game(seed=1)
+        game.hands[RAU] = ["nope", SKIP]
+        game.hands[USER] = [ATTACK]
+        game.current = USER
+        game.phase = PHASE_PLAYING
+        game.play(USER, ATTACK)
+        return game
+
+    def test_the_journal_tail_reaches_the_prompt(self):
+        journal.record("user", "user_chat", "let this one slide and i owe you")
+        prompt = player._nope_prompt(self._nope_game())
+        self.assertIn("let this one slide and i owe you", prompt)
+
+    def test_the_one_word_contract_survives_the_context(self):
+        prompt = player._nope_prompt(self._nope_game())
+        self.assertIn("NOPE or PASS", prompt)
+
+
+class AnnounceNope(unittest.TestCase):
+    """The pump applies his Nope; this is the record and the line that go with it."""
+
+    def setUp(self) -> None:
+        journal.clear()
+
+    def tearDown(self) -> None:
+        journal.clear()
+
+    def test_the_nope_is_recorded_and_spoken(self):
+        said: List[str] = []
+        with patch.object(player, "table_talk", said.append):
+            player.announce_nope()
+        self.assertIn("noped", journal.tail())
+        self.assertEqual(len(said), 1)
+        self.assertIn(said[0], player.TABLE_LINES["nope"] + player.TABLE_LINES_KO["nope"])
 
 
 if __name__ == "__main__":

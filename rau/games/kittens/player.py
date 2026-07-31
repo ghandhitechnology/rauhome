@@ -16,6 +16,7 @@ bubble and desktop TTS keep working without sharing the face tool loop.
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 import threading
@@ -36,6 +37,8 @@ from rau.games.kittens.deck import (
     SKIP,
 )
 from rau.games.kittens.engine import RAU, USER, Game
+
+log = logging.getLogger("rau.games.kittens.player")
 
 #: Wall-clock budget for a Nope decision. Inside the Nope window, with room to
 #: broadcast before it closes.
@@ -104,6 +107,9 @@ _speech_lock = threading.RLock()
 #: never lands on top of the line that came with his move.
 _spoke_at: float = 0.0
 
+#: Whether the missing browser-voice speak path has been logged for this hand.
+_browser_silence_noted: bool = False
+
 
 def table_line(kind: str) -> str:
     """One canned line for a move kind. Never empty."""
@@ -123,9 +129,35 @@ def last_spoke() -> float:
 
 def reset_speech() -> None:
     """Fresh hand: he has not said anything yet."""
-    global _spoke_at
+    global _spoke_at, _browser_silence_noted
     with _speech_lock:
         _spoke_at = 0.0
+        _browser_silence_noted = False
+
+
+def _note_browser_silence(runtime_state: Any) -> None:
+    """
+    A browser voice session hears his conversational turns, not his table talk.
+
+    The only speak path from here is the desktop control queue, and a browser
+    voice session registers no public TTS hook this module could call instead
+    (the session object lives inside the hub's websocket handler). Say so in
+    the log once per hand rather than staying quietly desktop-only.
+    """
+    global _browser_silence_noted
+    with _speech_lock:
+        if _browser_silence_noted:
+            return
+        # No public accessor exists; read the counter defensively so a rename
+        # there costs a log line here, never a table line.
+        active = bool(getattr(runtime_state, "_browser_voice_sessions", 0))
+        if not active:
+            return
+        _browser_silence_noted = True
+    log.info(
+        "browser voice session active: table talk goes to the desktop speak "
+        "queue only — the browser voice socket has no out-of-turn TTS hook"
+    )
 
 
 def table_talk(text: str) -> None:
@@ -143,8 +175,22 @@ def table_talk(text: str) -> None:
     BUS.emit("chat_started", turn_id=turn_id, text="")
     BUS.emit("chat_done", turn_id=turn_id, text=line)
     runtime_state.push_control({"action": "speak", "text": line})
+    _note_browser_silence(runtime_state)
     with _speech_lock:
         _spoke_at = time.monotonic()
+
+
+def announce_nope() -> None:
+    """
+    His Nope, on the record and out loud.
+
+    The pump applies the Nope itself — it owns the window clock — so the move
+    record and the table line that `take_turn` would have paired with any
+    other move happen here instead. `table_line` already knows how a Nope
+    sounds; the bug was that nobody ever asked.
+    """
+    journal.record("rau", "move", _describe_move({"move": "nope"}))
+    table_talk(table_line("nope"))
 
 
 # -------------------------------------------------------------------- nope
@@ -161,15 +207,27 @@ def _nope_prompt(game: Game) -> str:
         if pending.nopes
         else ""
     )
-    return (
+    # The decision clock is just over a second, but a promise made across the
+    # table moments ago should still count — the journal tail is the only
+    # place that promise is written down.
+    history = journal.tail(8).strip()
+    parts = [
         "You are playing Exploding Kittens. "
         f"{'You' if mine else 'Your opponent'} played {played}.{stacked}\n"
         f"Your hand: {', '.join(deck_mod.label(c) for c in game.hands[RAU])}.\n"
         f"They hold {len(game.hands[USER])} cards. "
-        f"{len(game.draw)} cards left in the deck, one of them the kitten.\n\n"
-        "Do you play a Nope to cancel it? Answer with exactly one word: "
-        "NOPE or PASS. Nothing else."
+        f"{len(game.draw)} cards left in the deck, one of them the kitten.",
+    ]
+    if history:
+        parts.extend(["", history])
+    parts.extend(
+        [
+            "",
+            "Do you play a Nope to cancel it? Answer with exactly one word: "
+            "NOPE or PASS. Nothing else.",
+        ]
     )
+    return "\n".join(parts)
 
 
 def _reflex(game: Game) -> bool:
@@ -247,7 +305,8 @@ def _turn_prompt(game: Game, *, correction: str = "") -> str:
     parts = [
         "You are Rau's player half in Exploding Kittens. Pick exactly one legal "
         "move and say one short line across the table. Play to win. Do not default "
-        "to drawing: use a useful action before drawing when one is available.",
+        "to drawing: use a useful action before drawing when one is available. "
+        "If you just told them what you would do, do that.",
         response_language_instruction(),
         "",
         table.strip(),
@@ -454,6 +513,23 @@ def _describe_move(move: Dict[str, Any]) -> str:
     return kind or "moved"
 
 
+def _fresh_conversation() -> bool:
+    """
+    Has either side said anything since his last move?
+
+    A draw the model picks right after he told them "I'll draw, then it's you"
+    is a promise, and the proactive override below would make a liar of him.
+    Table talk and move records do not count — those are him playing, not the
+    two of them talking.
+    """
+    for entry in reversed(journal.snapshot()):
+        if entry["kind"] in ("user_chat", "rau_chat"):
+            return True
+        if entry["who"] == "rau" and entry["kind"] == "move":
+            return False
+    return False
+
+
 def take_turn(game: Game) -> None:
     """
     Make exactly one legal move for Rau, and optionally say a line.
@@ -483,11 +559,13 @@ def take_turn(game: Game) -> None:
                 '{"move": {…}, "say": "…"}.'
             )
             continue
-        if parsed.get("move") == "draw":
+        if parsed.get("move") == "draw" and not _fresh_conversation():
             # The old prompt and fallback both anchored on Draw, so even a
             # healthy model routinely ignored a hand full of action cards.
             # Make the first useful action of a turn proactive; a later draw
-            # remains legal and under model control.
+            # remains legal and under model control. The exception is fresh
+            # conversation: a draw he just announced to them is his word, and
+            # keeping it matters more than the better card.
             parsed = (
                 _preferred_proactive_move(game, allow_interactive=True) or parsed
             )

@@ -81,6 +81,11 @@ UNPLAYABLE: frozenset = frozenset({EXPLODING_KITTEN, DEFUSE})
 #: How many cards each player starts holding, *before* their guaranteed Defuse.
 STARTING_HAND = 7
 
+#: Leftover Defuses shuffled back into the draw pile in a two-player game. The
+#: rulebook's two-player variant puts only two of the four back; the other two
+#: stay in the box, so the single kitten stays dangerous.
+EXTRA_DEFUSES = 2
+
 #: Cards you may look at with See the Future.
 FUTURE_DEPTH = 3
 
@@ -104,10 +109,13 @@ def deal_two_player(rng: random.Random) -> Tuple[List[str], List[str], List[str]
     1. Take the Exploding Kittens and Defuses out of the deck.
     2. Deal seven cards to each player from what is left.
     3. Give each player one Defuse, so nobody dies on turn one.
-    4. Put the remaining Defuses back.
+    4. Put two of the remaining Defuses back — the two-player variant. The
+       other two stay in the box, along with the three unused kittens.
     5. Put in one Exploding Kitten — always one fewer than there are players, so
        exactly one person is left standing.
     6. Shuffle.
+
+    That leaves a 35-card draw pile and 51 cards in play.
 
     Returns ``(draw_pile, hand_a, hand_b)``. The draw pile is ordered top-first:
     index 0 is the next card drawn, which is what makes insert positions and
@@ -123,7 +131,7 @@ def deal_two_player(rng: random.Random) -> Tuple[List[str], List[str], List[str]
     hand_b.append(DEFUSE)
 
     draw = pool
-    draw.extend([DEFUSE] * (COUNTS[DEFUSE] - 2))
+    draw.extend([DEFUSE] * EXTRA_DEFUSES)
     draw.append(EXPLODING_KITTEN)
     rng.shuffle(draw)
 

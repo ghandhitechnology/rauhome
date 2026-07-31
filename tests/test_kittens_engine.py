@@ -83,9 +83,18 @@ class DeckComposition(unittest.TestCase):
             self.assertNotIn(EXPLODING_KITTEN, hand_a)
             self.assertNotIn(EXPLODING_KITTEN, hand_b)
             self.assertEqual(draw.count(EXPLODING_KITTEN), 1, "players minus one")
-            self.assertEqual(draw.count(DEFUSE), 4, "the six, less the two dealt")
-            # Three kittens and nothing else stay in the box.
-            self.assertEqual(len(draw) + len(hand_a) + len(hand_b), 53)
+            self.assertEqual(draw.count(DEFUSE), 2, "only two extras go back in")
+            self.assertEqual(len(draw), 35)
+            self.assertEqual(len(draw) + len(hand_a) + len(hand_b), 51)
+
+    def test_five_cards_stay_in_the_box(self):
+        # The two-player variant: three kittens and two Defuses are never dealt.
+        for seed in range(25):
+            draw, hand_a, hand_b = deck_mod.deal_two_player(random.Random(seed))
+            in_play = draw + hand_a + hand_b
+            self.assertEqual(56 - len(in_play), 5)
+            self.assertEqual(in_play.count(EXPLODING_KITTEN), 1, "three kittens stay boxed")
+            self.assertEqual(in_play.count(DEFUSE), 4, "two defuses stay boxed")
 
     def test_deal_is_reproducible_from_its_seed(self):
         self.assertEqual(
@@ -499,7 +508,7 @@ class FullGames(unittest.TestCase):
             rng = random.Random(seed)
             game = Game(seed=seed)
             total = len(game.draw) + sum(len(h) for h in game.hands.values())
-            self.assertEqual(total, 53)
+            self.assertEqual(total, 51)
             for _ in range(400):
                 if game.phase == PHASE_OVER:
                     break
@@ -531,7 +540,7 @@ class FullGames(unittest.TestCase):
                     + sum(len(h) for h in game.hands.values())
                     + len(game.discard)
                 )
-                self.assertEqual(counted, 53, f"seed {seed}: cards went missing")
+                self.assertEqual(counted, 51, f"seed {seed}: cards went missing")
 
 
 if __name__ == "__main__":

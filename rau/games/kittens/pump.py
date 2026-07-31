@@ -151,6 +151,9 @@ def _tick_once(stop_flag: threading.Event) -> None:
         return
 
     if game.tick():
+        # A Nope window just resolved — the outcome ("was Noped", "Stole a
+        # card at random") only exists as an engine note until it is mirrored.
+        session._mirror_log(game)  # noqa: SLF001
         session._broadcast()  # noqa: SLF001
 
     if game.phase == PHASE_OVER:
@@ -177,6 +180,12 @@ def _tick_once(stop_flag: threading.Event) -> None:
                 game.nope(RAU)
             except IllegalMove:
                 pass
+            else:
+                # The engine's "Nope." note first, then his own record and the
+                # line out loud — the same order take_turn keeps. His Nopes
+                # used to be invisible: no record, nothing said.
+                session._mirror_log(game)  # noqa: SLF001
+                player.announce_nope()
             session._broadcast()  # noqa: SLF001
         return
 

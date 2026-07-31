@@ -35,17 +35,24 @@ from rau.games.kittens.engine import PHASE_PLAYING, RAU, USER, Game
 
 #: Floor on the gap between two proactive lines. Long, on purpose: this is
 #: seasoning on a game, and the move lines are already talking.
-MIN_GAP_SEC = 12.0
+MIN_GAP_SEC = 7.0
 
-#: After the model says there is nothing worth saying, wait this long before
-#: asking it again. Keeps a quiet stretch from costing a call every tick.
+#: After the model says there is nothing worth saying — or a line was dropped
+#: unheard — wait this long before asking it again. Keeps a quiet stretch
+#: from costing a call every tick.
 SKIP_GAP_SEC = 6.0
+
+#: Floor under the quiet after one of his own move lines, before a proactive
+#: line may follow it. Much shorter than MIN_GAP_SEC: the move line is one
+#: sentence, and hushing the table for the full gap after it ate most of a
+#: user turn.
+LAST_SPOKE_GAP_SEC = 4.0
 
 #: A turn the user has been sitting on this long is worth prodding.
 IDLE_PROD_SEC = 32.0
 
 #: Hard budget for one line. Past this the moment it was about is gone.
-REACT_TIMEOUT_SEC = 6.0
+REACT_TIMEOUT_SEC = 9.0
 
 #: Ceiling on the line itself. Table talk, not a paragraph.
 MAX_TOKENS = 60
@@ -164,6 +171,7 @@ def _clean(text: str) -> str:
 def _run(game: Game, reason: str) -> None:
     global _next_ok_at
     said = ""
+    deliver = False
     try:
         answer: list = []
 
@@ -177,27 +185,38 @@ def _run(game: Game, reason: str) -> None:
         worker.start()
         worker.join(REACT_TIMEOUT_SEC)
         said = _clean(answer[0]) if answer else ""
+        deliver = bool(said) and said.upper() != "SKIP"
+
+        if deliver:
+            from rau.games.kittens import session
+
+            # The table can have moved on entirely while the model was
+            # thinking — the hand ended, or he took his turn and said his own
+            # line. Either way this one is stale, and a stale line is worse
+            # than no line.
+            live = session.current()
+            if (
+                live is None
+                or live.game_id != game.game_id
+                or live.phase != PHASE_PLAYING
+            ):
+                deliver = False
+            elif live.current == RAU or live.awaiting_seat == RAU:
+                deliver = False
+            elif _face_is_talking():
+                # A conversation started while the model was thinking and it
+                # owns the voice now. Talking over it is worse than no line.
+                deliver = False
     finally:
-        now = time.monotonic()
-        spoke = bool(said) and said.upper() != "SKIP"
         with _lock:
-            # A dropped or declined line still costs a wait, so a dead provider
-            # or a quiet table cannot turn this into a call every tick.
-            _next_ok_at = now + (MIN_GAP_SEC if spoke else SKIP_GAP_SEC)
+            # A declined or dropped line still costs a wait, so a dead
+            # provider or a quiet table cannot turn this into a call every
+            # tick — but a line nobody heard costs the short wait, not the
+            # full one.
+            _next_ok_at = time.monotonic() + (MIN_GAP_SEC if deliver else SKIP_GAP_SEC)
         _busy.clear()
 
-    if not spoke:
-        return
-
-    from rau.games.kittens import session
-
-    # The table can have moved on entirely while the model was thinking — the
-    # hand ended, or he took his turn and said his own line. Either way this
-    # one is stale, and a stale line is worse than no line.
-    live = session.current()
-    if live is None or live.game_id != game.game_id or live.phase != PHASE_PLAYING:
-        return
-    if live.current == RAU or live.awaiting_seat == RAU:
+    if not deliver:
         return
 
     from rau.games.kittens import player
@@ -231,12 +250,13 @@ def consider(game: Game, *, thinking: bool = False) -> None:
             _turn_since = now
         first_look = not _seen_mark
         new_moves = mark != _seen_mark
-        if new_moves:
-            _seen_mark = mark
-            _turn_since = now
         # Arriving mid-hand — a reload, or the pump restarting — is not a move
-        # anyone just made, so there is nothing to react to yet.
+        # anyone just made, so there is nothing to react to yet. It still
+        # fingerprints the table, or the first real move would look brand new.
         if first_look:
+            if new_moves:
+                _seen_mark = mark
+                _turn_since = now
             return
 
         if _busy.is_set() or now < _next_ok_at:
@@ -249,8 +269,17 @@ def consider(game: Game, *, thinking: bool = False) -> None:
         # instant that move lands — so the seat check above stops guarding the
         # moment it matters most. Without this, a proactive line can go out
         # while his move line is still being spoken.
-        if now - player_mod.last_spoke() < MIN_GAP_SEC:
+        if now - player_mod.last_spoke() < LAST_SPOKE_GAP_SEC:
             return
+        if _face_is_talking():
+            return
+
+        # Fingerprint only once every gate has passed: a move that lands
+        # behind a closed gate is still unseen here, so it earns its reaction
+        # when the gates clear instead of being silently forgotten.
+        if new_moves:
+            _seen_mark = mark
+            _turn_since = now
 
         if new_moves and _last_move_was(game, USER):
             reason = "moved"
@@ -262,8 +291,6 @@ def consider(game: Game, *, thinking: bool = False) -> None:
         else:
             return
 
-        if _face_is_talking():
-            return
         _busy.set()
 
     threading.Thread(

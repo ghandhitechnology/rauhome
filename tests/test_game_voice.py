@@ -250,6 +250,60 @@ class BanterWaitsForHisMoveLine(unittest.TestCase):
         self.assertEqual(kittens_player.last_spoke(), 0.0)
 
 
+class TableTalkBrowserRouting(unittest.TestCase):
+    """
+    A browser voice session has no out-of-turn TTS hook for table talk.
+
+    The desktop speak queue always gets the line; while a browser voice socket
+    is attached, the gap is logged — once per hand, not once per line.
+    """
+
+    def setUp(self) -> None:
+        kittens_player.reset_speech()
+
+    def tearDown(self) -> None:
+        from rau.games.kittens import journal
+
+        kittens_player.reset_speech()
+        journal.clear()
+
+    def _talk(self):
+        with patch("rau.face.choreography.new_turn_id", return_value="t1"), patch(
+            "rau.state.add_log"
+        ), patch("rau.events.BUS.emit"):
+            kittens_player.table_talk("your funeral.")
+
+    def test_desktop_speak_always_gets_the_line(self):
+        with patch("rau.state._browser_voice_sessions", 0), patch(
+            "rau.state.push_control"
+        ) as push:
+            with self.assertNoLogs("rau.games.kittens.player", level="INFO"):
+                self._talk()
+        push.assert_called_once_with({"action": "speak", "text": "your funeral."})
+
+    def test_an_active_browser_session_is_noted_once_per_hand(self):
+        with patch("rau.state._browser_voice_sessions", 1), patch(
+            "rau.state.push_control"
+        ) as push:
+            with self.assertLogs("rau.games.kittens.player", level="INFO") as logs:
+                self._talk()
+                self._talk()
+        # The desktop queue is not displaced — it is the only path there is.
+        self.assertEqual(push.call_count, 2)
+        self.assertEqual(len(logs.records), 1, "one note per hand, not one per line")
+        self.assertIn("no out-of-turn TTS hook", logs.records[0].getMessage())
+
+    def test_a_fresh_hand_notes_the_gap_again(self):
+        with patch("rau.state._browser_voice_sessions", 1), patch(
+            "rau.state.push_control"
+        ):
+            with self.assertLogs("rau.games.kittens.player", level="INFO"):
+                self._talk()
+            kittens_player.reset_speech()  # what a new deal does
+            with self.assertLogs("rau.games.kittens.player", level="INFO"):
+                self._talk()
+
+
 class VibeDefaultsToPlayful(unittest.TestCase):
     """A broken memory read must not quietly turn him polite forever."""
 
