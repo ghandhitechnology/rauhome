@@ -72,7 +72,13 @@ export default function ClawdAvatar({
   className = '',
 }: Props) {
   const rigRef = useRef<ClawdRig | null>(null)
-  if (!rigRef.current) rigRef.current = new ClawdRig()
+  if (!rigRef.current) {
+    rigRef.current = new ClawdRig()
+    // This avatar is a panel, not a room: a cue's travel is a walk on the spot
+    // for a fixed number of milliseconds. Gaits run off ground covered, and
+    // there is no ground here, so they have to be told to run on the clock.
+    rigRef.current.treadmill = true
+  }
   const rig = rigRef.current
 
   const pointer = useRef<{ x: number; y: number } | null>(null)

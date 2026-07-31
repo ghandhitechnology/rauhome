@@ -15,7 +15,7 @@
  *   - a loop must be seamless at t=0/t=1 on every track it owns
  */
 
-import { WALK_SPEED } from './gait'
+import { gaitDuration, WALK_SPEED } from './gait'
 import { defineMotion } from './motion'
 
 // ── at the desk ───────────────────────────────────────────────────────
@@ -317,26 +317,31 @@ export const place = defineMotion({
   ],
 })
 
+const CARRY_SWING = 26
+const CARRY_SPEED = WALK_SPEED * 0.78
+
 /** Walking with both claws locked out in front, body leaning back a little. */
 export const carry = defineMotion({
   id: 'carry',
-  duration: 0.72,
+  duration: gaitDuration(CARRY_SWING, CARRY_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.2,
   fadeOut: 0.22,
-  locomotion: WALK_SPEED * 0.78,
+  locomotion: CARRY_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 26 }] },
-    // Heavier gait: lower bob, slower cadence than the free walk.
+    { param: 'legSwing', keys: [{ t: 0, v: CARRY_SWING }] },
+    // Heavier gait: the body drops harder onto each footfall (0.25 / 0.75) and
+    // recovers less, because there is something in his claws resisting it.
     {
       param: 'posY',
       keys: [
-        { t: 0, v: 0 },
-        { t: 0.25, v: -0.5, ease: 'inOut' },
-        { t: 0.5, v: 0, ease: 'inOut' },
-        { t: 0.75, v: -0.5, ease: 'inOut' },
-        { t: 1, v: 0, ease: 'inOut' },
+        { t: 0, v: -0.35 },
+        { t: 0.25, v: 0.2, ease: 'in' },
+        { t: 0.5, v: -0.35, ease: 'out' },
+        { t: 0.75, v: 0.2, ease: 'in' },
+        { t: 1, v: -0.35, ease: 'out' },
       ],
     },
     { param: 'clawL', keys: [{ t: 0, v: 30 }, { t: 0.5, v: 26, ease: 'inOut' }, { t: 1, v: 30, ease: 'inOut' }] },
@@ -346,22 +351,43 @@ export const carry = defineMotion({
   ],
 })
 
-/** Shoulder into it: low claws, hard lean, legs driving, barely moving. */
+/**
+ * Shoulder into it: low claws, hard lean, legs driving, barely moving.
+ *
+ * The swing came down from 32 with the stride maths: at a third of walking
+ * speed a 32-degree reach means one enormous slow-motion step every two
+ * seconds. Short braced steps are both what the geometry allows and what
+ * shoving something heavy actually looks like.
+ */
+const PUSH_SWING = 20
+const PUSH_SPEED = WALK_SPEED * 0.34
+
 export const push = defineMotion({
   id: 'push',
-  duration: 0.9,
+  duration: gaitDuration(PUSH_SWING, PUSH_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.2,
   fadeOut: 0.24,
-  locomotion: WALK_SPEED * 0.34,
+  locomotion: PUSH_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 32 }] },
+    { param: 'legSwing', keys: [{ t: 0, v: PUSH_SWING }] },
     { param: 'angle', keys: [{ t: 0, v: 15 }, { t: 0.5, v: 18, ease: 'inOut' }, { t: 1, v: 15, ease: 'inOut' }] },
     { param: 'clawL', keys: [{ t: 0, v: 14 }, { t: 1, v: 14 }] },
     { param: 'clawR', keys: [{ t: 0, v: 12 }, { t: 1, v: 12 }] },
-    { param: 'posY', keys: [{ t: 0, v: 0.5 }, { t: 0.5, v: 0.1, ease: 'inOut' }, { t: 1, v: 0.5, ease: 'inOut' }] },
-    { param: 'scaleX', keys: [{ t: 0, v: 1.03 }, { t: 0.5, v: 1.0, ease: 'inOut' }, { t: 1, v: 1.03, ease: 'inOut' }] },
+    // Braced low the whole way, dipping onto each footfall rather than bobbing.
+    {
+      param: 'posY',
+      keys: [
+        { t: 0, v: 0.2 },
+        { t: 0.25, v: 0.6, ease: 'in' },
+        { t: 0.5, v: 0.2, ease: 'out' },
+        { t: 0.75, v: 0.6, ease: 'in' },
+        { t: 1, v: 0.2, ease: 'out' },
+      ],
+    },
+    { param: 'scaleX', keys: [{ t: 0, v: 1.0 }, { t: 0.25, v: 1.04, ease: 'in' }, { t: 0.5, v: 1.0, ease: 'out' }, { t: 0.75, v: 1.04, ease: 'in' }, { t: 1, v: 1.0, ease: 'out' }] },
     { param: 'eyeY', keys: [{ t: 0, v: 0.25 }, { t: 1, v: 0.25 }] },
   ],
 })
@@ -549,18 +575,24 @@ export const water = defineMotion({
 
 // ── moving about ──────────────────────────────────────────────────────
 
+const TIPTOE_SWING = 16
+const TIPTOE_SPEED = WALK_SPEED * 0.62
+
 /** Quick light steps, body held high, claws tucked in. */
 export const tiptoe = defineMotion({
   id: 'tiptoe',
-  duration: 0.42,
+  duration: gaitDuration(TIPTOE_SWING, TIPTOE_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.16,
   fadeOut: 0.2,
-  locomotion: WALK_SPEED * 0.62,
+  locomotion: TIPTOE_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 16 }] },
-    { param: 'posY', keys: [{ t: 0, v: -1.2 }, { t: 0.25, v: -1.9, ease: 'inOut' }, { t: 0.5, v: -1.2, ease: 'inOut' }, { t: 0.75, v: -1.9, ease: 'inOut' }, { t: 1, v: -1.2, ease: 'inOut' }] },
+    { param: 'legSwing', keys: [{ t: 0, v: TIPTOE_SWING }] },
+    // Held high throughout, with only the faintest touch down on each footfall
+    // — the point of a tiptoe is that his weight never really lands.
+    { param: 'posY', keys: [{ t: 0, v: -1.9 }, { t: 0.25, v: -1.5, ease: 'in' }, { t: 0.5, v: -1.9, ease: 'out' }, { t: 0.75, v: -1.5, ease: 'in' }, { t: 1, v: -1.9, ease: 'out' }] },
     { param: 'scaleY', keys: [{ t: 0, v: 1.04 }, { t: 1, v: 1.04 }] },
     { param: 'clawL', keys: [{ t: 0, v: -38 }, { t: 0.5, v: -34, ease: 'inOut' }, { t: 1, v: -38, ease: 'inOut' }] },
     { param: 'clawR', keys: [{ t: 0, v: -36 }, { t: 0.5, v: -40, ease: 'inOut' }, { t: 1, v: -36, ease: 'inOut' }] },
@@ -568,18 +600,22 @@ export const tiptoe = defineMotion({
   ],
 })
 
+const PACE_SWING = 30
+const PACE_SPEED = WALK_SPEED * 1.18
+
 /** Head-down back-and-forth. Faster than a walk, going nowhere in particular. */
 export const pace = defineMotion({
   id: 'pace',
-  duration: 0.5,
+  duration: gaitDuration(PACE_SWING, PACE_SPEED),
   loop: true,
   priority: 2,
   fadeIn: 0.18,
   fadeOut: 0.2,
-  locomotion: WALK_SPEED * 1.18,
+  locomotion: PACE_SPEED,
+  phaseSource: 'distance',
   tracks: [
-    { param: 'legSwing', keys: [{ t: 0, v: 36 }] },
-    { param: 'posY', keys: [{ t: 0, v: 0 }, { t: 0.25, v: -0.8, ease: 'inOut' }, { t: 0.5, v: 0, ease: 'inOut' }, { t: 0.75, v: -0.8, ease: 'inOut' }, { t: 1, v: 0, ease: 'inOut' }] },
+    { param: 'legSwing', keys: [{ t: 0, v: PACE_SWING }] },
+    { param: 'posY', keys: [{ t: 0, v: -0.8 }, { t: 0.25, v: 0.1, ease: 'in' }, { t: 0.5, v: -0.8, ease: 'out' }, { t: 0.75, v: 0.1, ease: 'in' }, { t: 1, v: -0.8, ease: 'out' }] },
     { param: 'angle', keys: [{ t: 0, v: 9 }, { t: 0.5, v: 11, ease: 'inOut' }, { t: 1, v: 9, ease: 'inOut' }] },
     { param: 'eyeY', keys: [{ t: 0, v: 0.42 }, { t: 1, v: 0.42 }] },
     { param: 'clawL', keys: [{ t: 0, v: -26 }, { t: 0.5, v: -20, ease: 'inOut' }, { t: 1, v: -26, ease: 'inOut' }] },

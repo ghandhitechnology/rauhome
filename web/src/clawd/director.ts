@@ -390,6 +390,10 @@ export class Director {
     this.clock += dt
     const rig = this.rig
 
+    // The motion tester plays gaits with nobody walking him anywhere, so they
+    // have to run on the clock or the legs sit frozen on the button press.
+    rig.treadmill = this.manual
+
     // Live `/ws` text wins over thinking dots and desk-work bubble clears —
     // otherwise tool calls mid-reply wipe the stream the user is reading.
     if (s.streaming && s.speech) {
@@ -832,11 +836,12 @@ export class Director {
     const step = Math.min(dist, speed * dt)
     rig.worldX += step * rig.facing
     rig.worldX = this.clampX(rig.worldX)
-    // Advance the cycle by distance covered against this clip's own stride, so
-    // a slow heavy gait takes slow heavy steps rather than sprinting in place.
-    rig.advanceLegs((step / cruise) * (1 / clip.duration) * 1.6)
+    // The clip is spent in ground covered, not in seconds, so the legs, the
+    // bob and the claw swing can only ever agree with each other. How much of
+    // its stride he is taking comes from how fast he is actually going.
     this.gait = gait
     this.setLoop(gait)
+    rig.advanceGait(step, speed / cruise)
     this.settleWalk(dt, 1)
     return true
   }

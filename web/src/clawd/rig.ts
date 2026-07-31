@@ -11,7 +11,8 @@
  * through a sleep clip: the sleep clip owns eyeOpen*, so the blinker skips it.
  */
 
-import { clamp, clamp01, damp } from './easing'
+import { clamp, clamp01, damp, lerp } from './easing'
+import { strideAngle } from './gait'
 import { MotionPlayer, type Motion } from './motion'
 import { MOTIONS, ONE_SHOTS, type MotionName } from './motions'
 import { defaultParams, PARAM_IDS, setParam, type ParamSet } from './params'
@@ -52,14 +53,29 @@ export class ClawdRig {
   worldX = 0
   facing: 1 | -1 = 1
 
+  /**
+   * Run gaits on the clock when nothing is feeding them travel.
+   *
+   * A gait is spent in ground covered, so with no world to cross it would
+   * simply freeze. The avatar panel and the motion tester both walk on the
+   * spot deliberately, and this is them saying so — it stays off in the room,
+   * where a walk with no travel behind it is exactly the sliding being fixed.
+   */
+  treadmill = false
+
   /** Speech loudness, 0..1. Also settable per frame through RigOptions. */
   talkLevel = 0
   /** Multiplier on the breathing rate — raised when he is working or keyed up. */
   breathRate = 1
 
   private clock = 0
-  /** Walk-cycle phase accumulator, advanced by travel rather than wall time. */
-  private legClock = 0
+  /** Ground covered since the last update, in sprite units. Gaits run off it. */
+  private travel = 0
+  /**
+   * Fraction of the active gait's authored stride he is actually taking.
+   * The director sets it from real speed; 1 is the clip exactly as authored.
+   */
+  private strideScale = 1
   private breathPhase = 0
   private blinkAt = 2.5
   private blinkPhase = -1
@@ -124,12 +140,6 @@ export class ClawdRig {
       p.breath = (Math.sin(this.breathPhase + this.seed) * 0.5 + 0.5) * 0.75
     }
 
-    // Walk cycle phase advances with locomotion, not wall time, so the legs
-    // stay in step with actual travel.
-    if (!owned.has('legPhase')) {
-      p.legPhase = (this.legClock % 1 + 1) % 1
-    }
-
     // Eye tracking. Without a target he drifts on smooth noise instead of
     // sitting perfectly still, which reads as alive rather than frozen.
     let targetLX: number
@@ -164,7 +174,21 @@ export class ClawdRig {
     }
 
     // ── 3. motions ───────────────────────────────────────────────────
-    this.player.update(dt, p)
+    // A gait's timeline is spent travel, not elapsed time, so the legs, the
+    // bob and the claw swing all come off one phase and cannot drift apart.
+    let travel = this.travel
+    if (travel <= 0 && this.treadmill && this.player.isDistanceDriven) {
+      travel = this.player.cruise * dt
+    }
+    this.player.update(dt, p, travel, this.strideScale)
+    this.travel = 0
+
+    // The walk cycle *is* the clip's phase — there is no second leg clock to
+    // keep in sync with it, which is the whole point.
+    if (this.player.isDistanceDriven) {
+      p.legPhase = this.player.progress
+      this.applyStride(p)
+    }
 
     // ── 4. voice ─────────────────────────────────────────────────────
     // Added on top of the clip rather than layered underneath it: the talk
@@ -201,9 +225,38 @@ export class ClawdRig {
     p.facing = this.facing
   }
 
-  /** Advanced by the scene when Clawd is actually travelling. */
-  advanceLegs(amount: number) {
-    this.legClock += amount
+  /**
+   * Feed the gait the ground he has just covered, in sprite units.
+   *
+   * `strideScale` is how much of the clip's authored stride he is taking —
+   * below 1 for the creep into a stop, above 1 for a hurry. It shortens the
+   * steps and quickens the cadence together, the way slowing down actually
+   * looks, instead of playing the same walk at a lower rate.
+   */
+  advanceGait(distance: number, strideScale = 1) {
+    this.travel += Math.abs(distance)
+    this.strideScale = clamp(strideScale, 0.35, 1.4)
+  }
+
+  /**
+   * Scale the cyclic part of a gait to the stride actually being taken.
+   *
+   * Only the legs and the bob: a clip's postural offsets (the backward lean of
+   * a carry, the tucked claws of a tiptoe) are what he is *doing*, not how big
+   * a step he is taking, and straightening him up as he slowed would undo the
+   * pose the clip exists to hold.
+   */
+  private applyStride(p: ParamSet) {
+    const s = this.strideScale
+    if (Math.abs(s - 1) < 0.01) return
+    setParam(p, 'legSwing', strideAngle(p.legSwing, s))
+    // The body settles less on a short step, but never goes flat — a walk with
+    // no vertical at all reads as gliding. A long reaching stride gets a little
+    // more of it, which is what makes a hurry look like one.
+    const bob = s < 1 ? lerp(0.6, 1, s) : Math.min(1.15, s)
+    setParam(p, 'posY', p.posY * bob)
+    setParam(p, 'scaleY', 1 + (p.scaleY - 1) * bob)
+    setParam(p, 'scaleX', 1 + (p.scaleX - 1) * bob)
   }
 
   /**
