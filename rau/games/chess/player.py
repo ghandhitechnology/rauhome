@@ -350,8 +350,15 @@ def _ask(prompt: str) -> str:
         max_tokens=MAX_TOKENS,
         # Warm. The same six lines every game is worse than no lines at all.
         temperature=0.95,
+        # Omitting this is not "no thinking": it means the catalog default,
+        # which is "high" for DeepSeek, and a thinking block does not fit in a
+        # 48 token budget. The reply came back empty every time.
+        effort="minimal",
     )
-    return str(getattr(result, "text", "") or "")
+    # `ChatResult` carries `content`; there is no `text` attribute, so the old
+    # getattr defaulted to "" on every single call — this line never spoke even
+    # when the request above was well formed.
+    return str(result.content or "")
 
 
 def clean_line(text: str) -> str:

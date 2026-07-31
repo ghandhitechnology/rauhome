@@ -42,13 +42,20 @@ _next_turn_at: float = 0.0
 
 def reset_for_deal() -> None:
     """Fresh hand — forget Nope decisions, error backoff, and table talk."""
-    from rau.games.kittens import banter
+    from rau.games.kittens import banter, player, vibe
 
     global _next_turn_at
     with _lock:
         _decided.clear()
         _next_turn_at = 0.0
     banter.reset()
+    player.reset_speech()
+    # How hard he can tease depends on how the two of them have been getting
+    # on lately, which the table cannot show him. Start that read now, off this
+    # thread: the first turn may well land before it returns, and it is meant
+    # to — `vibe.read()` answers with a sane default until it does.
+    vibe.reset()
+    vibe.prime()
 
 
 def wake() -> None:

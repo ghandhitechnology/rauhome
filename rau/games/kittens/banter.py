@@ -88,10 +88,15 @@ def _face_is_talking() -> bool:
 
 
 def _prompt(game: Game, reason: str) -> str:
+    from rau.games.kittens import journal
     from rau.games.kittens import view as view_mod
+    from rau.games.kittens import vibe as vibe_mod
     from rau.language import response_language_instruction
 
     table = view_mod.talker_fragment(game, RAU).strip()
+    # The board alone cannot tell him what has already been said, which is how
+    # a proactive line ends up repeating the one that came with his last move.
+    history = journal.tail().strip()
     nudge = {
         "moved": "They just moved. React to it if it is worth reacting to.",
         "idle": (
@@ -99,22 +104,30 @@ def _prompt(game: Game, reason: str) -> str:
             "Needle them about it, gently."
         ),
     }.get(reason, "")
-    return "\n".join(
+    parts = [
+        "You are Rau, playing Exploding Kittens against them, out loud.",
+        response_language_instruction(),
+        "",
+        table,
+    ]
+    if history:
+        parts.extend(["", history])
+    parts.extend(
         [
-            "You are Rau, playing Exploding Kittens against them, out loud.",
-            response_language_instruction(),
             "",
-            table,
-            "",
+            f"Your read on them: {vibe_mod.read()}",
             nudge,
             "",
             "Say ONE short line across the table — under fifteen words, spoken, "
             "in your own voice. No narration, no quotes, no emoji, no card "
             "instructions.",
+            "A taunt or a joke is welcome when the mood carries it. When it "
+            "would not land, say nothing rather than forcing one.",
             "If there is nothing worth saying right now — nothing has changed, "
             "or you have already said it — reply with exactly: SKIP",
         ]
     )
+    return "\n".join(parts)
 
 
 def _ask(prompt: str) -> str:
@@ -129,6 +142,11 @@ def _ask(prompt: str) -> str:
         # Higher than a move call: this one is only worth making if it is not
         # the same line every hand.
         temperature=0.95,
+        # Sixty tokens cannot fit a thinking block and a line, and leaving
+        # `effort` off does not mean "no thinking" — it means the catalog
+        # default, which is "high" for DeepSeek. That is why this module has
+        # almost certainly never once managed to speak.
+        effort="minimal",
     )
     return str(result.content or "")
 
@@ -200,6 +218,8 @@ def consider(game: Game, *, thinking: bool = False) -> None:
     if game is None or game.phase != PHASE_PLAYING:
         return
 
+    from rau.games.kittens import player as player_mod
+
     now = time.monotonic()
     newest = game.log[-1] if game.log else None
     mark = (len(game.log), newest.at, newest.text) if newest else ()
@@ -224,6 +244,12 @@ def consider(game: Game, *, thinking: bool = False) -> None:
         # His own turn is coming: the line that arrives with the move is the
         # better version of anything that could be said here.
         if thinking or game.current == RAU or game.awaiting_seat is not None:
+            return
+        # He now says a line with every move, and the turn flips to them the
+        # instant that move lands — so the seat check above stops guarding the
+        # moment it matters most. Without this, a proactive line can go out
+        # while his move line is still being spoken.
+        if now - player_mod.last_spoke() < MIN_GAP_SEC:
             return
 
         if new_moves and _last_move_was(game, USER):
