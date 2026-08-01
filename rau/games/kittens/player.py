@@ -16,8 +16,11 @@ bubble and desktop TTS keep working without sharing the face tool loop.
 from __future__ import annotations
 
 import json
+import logging
+import random
 import re
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from rau.events import BUS
@@ -35,6 +38,8 @@ from rau.games.kittens.deck import (
 )
 from rau.games.kittens.engine import RAU, USER, Game
 
+log = logging.getLogger("rau.games.kittens.player")
+
 #: Wall-clock budget for a Nope decision. Inside the Nope window, with room to
 #: broadcast before it closes.
 DECIDE_TIMEOUT_SEC = 1.2
@@ -42,15 +47,122 @@ DECIDE_TIMEOUT_SEC = 1.2
 #: Cards worth burning a Nope on when the model does not answer in time.
 REFLEX_NOPE = frozenset({ATTACK, FAVOR})
 
+#: Default sampling temperature for a turn, when the slot does not name one.
+#:
+#: One call produces both the move and the line he says, so this number is a
+#: compromise between two jobs. It used to be 0.6, tuned purely for the move.
+#: Now that he speaks on every single move, twenty turns at 0.6 is twenty
+#: rewordings of the same sentence, so it sits nearer the 0.95 `banter` uses
+#: for exactly that reason. Move quality is protected by validation rather than
+#: by temperature: an illegal answer is rejected, corrected, retried, and
+#: finally replaced by a guaranteed legal fallback.
+TEMPERATURE = 0.8
+
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 _JSON_OBJECT = re.compile(r"\{[^{}]*\"move\"[^{}]*\}", re.DOTALL)
 
 
 # ------------------------------------------------------------------- speech
 
+#: What he says when the model gave him a move but no line, or gave him nothing
+#: at all and the fallback move fired. He speaks on every move now, so silence
+#: here would be the same bug in a smaller window.
+#:
+#: These are deliberately flat rather than funny. This is the path that runs
+#: when something is already broken, which means it can run many turns in a
+#: row, and a canned punchline delivered five times is worse than no punchline
+#: at all. The jokes are the model's job; this is just him not going mute.
+TABLE_LINES: Dict[str, Tuple[str, ...]] = {
+    "draw": ("drawing.", "let's see.", "one off the top.", "my turn — drawing."),
+    "play": ("there.", "that one.", "playing this.", "here we go."),
+    "combo": ("taking one of yours.", "that's a set.", "i'll have one of those."),
+    "nope": ("no.", "nope.", "not that one."),
+    "pass_nope": ("go on then.", "that one stands.", "fine, let it happen."),
+    "give_favor": ("here, take it.", "all yours.", "if you insist."),
+    "take_from_discard": ("i'll take that back.", "that's useful again."),
+    "insert_kitten": ("back it goes.", "somewhere in there.", "good luck with that."),
+    "concede": ("alright, you have it.", "that's me done."),
+}
+
+TABLE_LINES_KO: Dict[str, Tuple[str, ...]] = {
+    "draw": ("한 장 뽑을게.", "어디 보자.", "맨 위로 한 장.", "내 차례 — 뽑는다."),
+    "play": ("자.", "이걸로.", "이거 낼게.", "간다."),
+    "combo": ("네 카드 하나 가져간다.", "세트야.", "하나 받아갈게."),
+    "nope": ("아니.", "노프.", "그건 안 돼."),
+    "pass_nope": ("그래, 해봐.", "그건 그냥 두자.", "좋아, 통과."),
+    "give_favor": ("자, 가져가.", "네 거야.", "정 그렇다면."),
+    "take_from_discard": ("이건 다시 가져갈게.", "또 쓸 만하네."),
+    "insert_kitten": ("도로 넣는다.", "이 근처 어딘가에.", "잘 해봐."),
+    "concede": ("좋아, 네가 이겼어.", "난 여기까지."),
+}
+
+#: A line for a move kind we have not named. Never leaves him silent.
+_GENERIC_LINES: Tuple[str, ...] = ("your turn.", "over to you.", "go on.")
+_GENERIC_LINES_KO: Tuple[str, ...] = ("네 차례.", "이제 너야.", "해봐.")
+
+_rng = random.Random()
+_speech_lock = threading.RLock()
+
+#: When he last said anything out loud. `banter` reads this so a proactive line
+#: never lands on top of the line that came with his move.
+_spoke_at: float = 0.0
+
+#: Whether the missing browser-voice speak path has been logged for this hand.
+_browser_silence_noted: bool = False
+
+
+def table_line(kind: str) -> str:
+    """One canned line for a move kind. Never empty."""
+    from rau.language import get_locale
+
+    korean = get_locale() == "ko"
+    source = TABLE_LINES_KO if korean else TABLE_LINES
+    lines = source.get(kind) or (_GENERIC_LINES_KO if korean else _GENERIC_LINES)
+    return _rng.choice(lines)
+
+
+def last_spoke() -> float:
+    """Monotonic stamp of his last spoken line. 0.0 before he has said anything."""
+    with _speech_lock:
+        return _spoke_at
+
+
+def reset_speech() -> None:
+    """Fresh hand: he has not said anything yet."""
+    global _spoke_at, _browser_silence_noted
+    with _speech_lock:
+        _spoke_at = 0.0
+        _browser_silence_noted = False
+
+
+def _note_browser_silence(runtime_state: Any) -> None:
+    """
+    A browser voice session hears his conversational turns, not his table talk.
+
+    The only speak path from here is the desktop control queue, and a browser
+    voice session registers no public TTS hook this module could call instead
+    (the session object lives inside the hub's websocket handler). Say so in
+    the log once per hand rather than staying quietly desktop-only.
+    """
+    global _browser_silence_noted
+    with _speech_lock:
+        if _browser_silence_noted:
+            return
+        # No public accessor exists; read the counter defensively so a rename
+        # there costs a log line here, never a table line.
+        active = bool(getattr(runtime_state, "_browser_voice_sessions", 0))
+        if not active:
+            return
+        _browser_silence_noted = True
+    log.info(
+        "browser voice session active: table talk goes to the desktop speak "
+        "queue only — the browser voice socket has no out-of-turn TTS hook"
+    )
+
 
 def table_talk(text: str) -> None:
     """One short line across the table — bubble, log, and desktop speak."""
+    global _spoke_at
     line = str(text or "").strip()
     if not line:
         return
@@ -63,6 +175,22 @@ def table_talk(text: str) -> None:
     BUS.emit("chat_started", turn_id=turn_id, text="")
     BUS.emit("chat_done", turn_id=turn_id, text=line)
     runtime_state.push_control({"action": "speak", "text": line})
+    _note_browser_silence(runtime_state)
+    with _speech_lock:
+        _spoke_at = time.monotonic()
+
+
+def announce_nope() -> None:
+    """
+    His Nope, on the record and out loud.
+
+    The pump applies the Nope itself — it owns the window clock — so the move
+    record and the table line that `take_turn` would have paired with any
+    other move happen here instead. `table_line` already knows how a Nope
+    sounds; the bug was that nobody ever asked.
+    """
+    journal.record("rau", "move", _describe_move({"move": "nope"}))
+    table_talk(table_line("nope"))
 
 
 # -------------------------------------------------------------------- nope
@@ -79,15 +207,27 @@ def _nope_prompt(game: Game) -> str:
         if pending.nopes
         else ""
     )
-    return (
+    # The decision clock is just over a second, but a promise made across the
+    # table moments ago should still count — the journal tail is the only
+    # place that promise is written down.
+    history = journal.tail(8).strip()
+    parts = [
         "You are playing Exploding Kittens. "
         f"{'You' if mine else 'Your opponent'} played {played}.{stacked}\n"
         f"Your hand: {', '.join(deck_mod.label(c) for c in game.hands[RAU])}.\n"
         f"They hold {len(game.hands[USER])} cards. "
-        f"{len(game.draw)} cards left in the deck, one of them the kitten.\n\n"
-        "Do you play a Nope to cancel it? Answer with exactly one word: "
-        "NOPE or PASS. Nothing else."
+        f"{len(game.draw)} cards left in the deck, one of them the kitten.",
+    ]
+    if history:
+        parts.extend(["", history])
+    parts.extend(
+        [
+            "",
+            "Do you play a Nope to cancel it? Answer with exactly one word: "
+            "NOPE or PASS. Nothing else.",
+        ]
     )
+    return "\n".join(parts)
 
 
 def _reflex(game: Game) -> bool:
@@ -125,6 +265,11 @@ def decide_nope(game: Game) -> bool:
                 model=slot.get("model") or "deepseek-v4-pro",
                 max_tokens=8,
                 temperature=0.4,
+                # An eight token budget cannot survive a thinking block, and
+                # omitting `effort` is not neutral: the catalog default for
+                # DeepSeek is "high", so the reply came back empty every time
+                # and every Nope decision fell through to the reflex.
+                effort="minimal",
             )
             answer.append(str(result.content or "").strip().upper())
         except Exception:
@@ -148,6 +293,7 @@ def decide_nope(game: Game) -> bool:
 
 
 def _turn_prompt(game: Game, *, correction: str = "") -> str:
+    from rau.games.kittens import vibe as vibe_mod
     from rau.language import response_language_instruction
 
     table = view_mod.prompt_fragment(game, RAU)
@@ -159,7 +305,8 @@ def _turn_prompt(game: Game, *, correction: str = "") -> str:
     parts = [
         "You are Rau's player half in Exploding Kittens. Pick exactly one legal "
         "move and say one short line across the table. Play to win. Do not default "
-        "to drawing: use a useful action before drawing when one is available.",
+        "to drawing: use a useful action before drawing when one is available. "
+        "If you just told them what you would do, do that.",
         response_language_instruction(),
         "",
         table.strip(),
@@ -168,6 +315,19 @@ def _turn_prompt(game: Game, *, correction: str = "") -> str:
         parts.extend(["", history.strip()])
     parts.extend(
         [
+            "",
+            "## What to say",
+            f"Your read on them: {vibe_mod.read()}",
+            "You always say something — never leave `say` empty.",
+            "When the mood and the moment carry it, make the line a taunt or a "
+            "joke: gloat, needle them, celebrate your own cleverness, mourn "
+            "your terrible luck. That is the point of playing with you.",
+            "When it would not land — they have gone quiet or terse, they just "
+            "lost badly, the moment is tense, or the move is too dull to be "
+            "worth a punchline — say something plain and ordinary instead. A "
+            "forced joke is worse than a flat line.",
+            "Never reuse a line you have already said in the transcript above, "
+            "and do not say the same thing twice in different words.",
             "",
             "Reply with ONLY a JSON object, no markdown fences, shaped like:",
             json.dumps(
@@ -232,7 +392,13 @@ def _ask_model(prompt: str) -> str:
         [Message(role="user", content=prompt)],
         model=slot.get("model") or "deepseek-v4-pro",
         max_tokens=int(slot.get("max_tokens") or 400),
-        temperature=float(slot.get("temperature") if slot.get("temperature") is not None else 0.6),
+        temperature=float(
+            slot.get("temperature") if slot.get("temperature") is not None else TEMPERATURE
+        ),
+        # Without this the slot's four hundred tokens went to a thinking block
+        # and `content` came back empty or truncated, so every turn failed to
+        # parse and fell through to the fallback move with nothing to say.
+        effort="minimal",
     )
     return str(result.content or "")
 
@@ -347,6 +513,23 @@ def _describe_move(move: Dict[str, Any]) -> str:
     return kind or "moved"
 
 
+def _fresh_conversation() -> bool:
+    """
+    Has either side said anything since his last move?
+
+    A draw the model picks right after he told them "I'll draw, then it's you"
+    is a promise, and the proactive override below would make a liar of him.
+    Table talk and move records do not count — those are him playing, not the
+    two of them talking.
+    """
+    for entry in reversed(journal.snapshot()):
+        if entry["kind"] in ("user_chat", "rau_chat"):
+            return True
+        if entry["who"] == "rau" and entry["kind"] == "move":
+            return False
+    return False
+
+
 def take_turn(game: Game) -> None:
     """
     Make exactly one legal move for Rau, and optionally say a line.
@@ -376,11 +559,13 @@ def take_turn(game: Game) -> None:
                 '{"move": {…}, "say": "…"}.'
             )
             continue
-        if parsed.get("move") == "draw":
+        if parsed.get("move") == "draw" and not _fresh_conversation():
             # The old prompt and fallback both anchored on Draw, so even a
             # healthy model routinely ignored a hand full of action cards.
             # Make the first useful action of a turn proactive; a later draw
-            # remains legal and under model control.
+            # remains legal and under model control. The exception is fresh
+            # conversation: a draw he just announced to them is his word, and
+            # keeping it matters more than the better card.
             parsed = (
                 _preferred_proactive_move(game, allow_interactive=True) or parsed
             )
@@ -408,5 +593,7 @@ def take_turn(game: Game) -> None:
             return
 
     journal.record("rau", "move", _describe_move(move))
-    if say:
-        table_talk(say)
+    # He speaks on every move. The model normally supplies the line; when it
+    # failed, or answered with a move and nothing else, a canned line stands in
+    # so a dead provider costs him his jokes rather than his voice.
+    table_talk(say or table_line(str(move.get("move") or "")))

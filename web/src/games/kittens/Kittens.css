@@ -91,6 +91,10 @@
 
 .ek-pile-slot {
   position: absolute;
+  /* Depth for the flip. A `px` here is a room unit — the camera magnifies
+     the layer about twentyfold — so this reads as roughly 500px on screen:
+     near enough that a card turning over visibly foreshortens. */
+  perspective: 24px;
 }
 
 .ek-pile-face,
@@ -695,6 +699,15 @@ button.ek-card.is-arriving {
   justify-items: center;
   gap: var(--s-2);
   text-align: center;
+  animation: ek-panel-in 240ms var(--ek-settle) both;
+}
+
+/* Shared by the floating panels: they arrive, they do not pop in. */
+@keyframes ek-panel-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px);
+  }
 }
 
 .ek-nope-line {
@@ -791,6 +804,7 @@ button.ek-card.is-arriving {
   justify-items: center;
   gap: var(--s-3);
   text-align: center;
+  animation: ek-panel-in 240ms var(--ek-settle) both;
 }
 
 .ek-salvage p {
@@ -992,12 +1006,62 @@ button.ek-card.is-arriving {
 /* ------------------------------------------------------------- the flip */
 
 .ek-flip-in {
-  animation: ek-flip 280ms var(--ek-settle) both;
+  /* The delay is set inline from FLIP_DELAY_MS: the card turns over as the
+     flight carrying it lands, not a beat before. The `both` fill holds it
+     edge-on and invisible while the pile is still waiting for it. */
+  animation: ek-flip 280ms var(--ek-settle) var(--ek-flip-delay, 0ms) both;
 }
 
 @keyframes ek-flip {
   from {
     transform: rotateY(-90deg);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  /* Carries a little past face-up and settles back — the landing the thrown
+     card was already in the middle of. */
+  70% {
+    transform: rotateY(12deg);
+  }
+}
+
+/* --------------------------------------------------------------- the kitten */
+
+/*
+ * Drawing it is felt before it is read: one jolt through the whole room and
+ * one red breath over the table, in the time the card is still in the air.
+ * The shake is the error shake's rhythm; the flash is the blast's red.
+ */
+.ek-room.is-kitten {
+  animation: ek-table-shock 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes ek-table-shock {
+  10%, 90% { transform: translate(-2px, 1px); }
+  20%, 80% { transform: translate(4px, -1px); }
+  30%, 50%, 70% { transform: translate(-7px, 2px); }
+  40%, 60% { transform: translate(7px, -2px); }
+}
+
+.ek-kitten-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 13;
+  pointer-events: none;
+  background: radial-gradient(55% 55% at 50% 46%, rgba(214, 64, 47, 0.34), rgba(214, 64, 47, 0) 72%);
+  animation: ek-kitten-flash 640ms ease-out both;
+}
+
+@keyframes ek-kitten-flash {
+  from {
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  to {
     opacity: 0;
   }
 }
@@ -1011,8 +1075,12 @@ button.ek-card.is-arriving {
   .ek-over,
   .ek-over-art,
   .ek-flip-in,
+  .ek-nope,
   .ek-nope-card,
-  .ek-error {
+  .ek-salvage,
+  .ek-error,
+  .ek-room.is-kitten,
+  .ek-kitten-flash {
     animation: none;
   }
 

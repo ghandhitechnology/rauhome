@@ -592,7 +592,7 @@ class VoiceSession:
             # Construct the worker before publishing the turn, so another
             # caller can always cancel/join the active object it observes.
             turn.thread = threading.Thread(
-                target=self._turn_body,
+                target=self._turn_thread,
                 args=(turn,),
                 daemon=True,
                 name=f"rau-voice-turn-{turn.ident}",
@@ -682,6 +682,18 @@ class VoiceSession:
             tts.get("model") or "",
             tts.get("effect") or "none",
         )
+
+    def _turn_thread(self, turn: _Turn) -> None:
+        """Thread entry for one conversational turn.
+
+        The face counts as busy for the whole think+speak stretch, so table
+        banter does not talk over a live browser conversation.
+        """
+        state.set_face_busy(True)
+        try:
+            self._turn_body(turn)
+        finally:
+            state.set_face_busy(False)
 
     def _turn_body(self, turn: _Turn) -> None:
         from rau.heartbeat.presence import note_user_reply

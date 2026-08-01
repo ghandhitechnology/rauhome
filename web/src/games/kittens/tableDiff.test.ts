@@ -155,16 +155,16 @@ describe('which cards visibly move', () => {
         prev,
         tableOf({ deck_count: 19, hand: ['skip', 'attack', 'tacocat', 'nope'] as CardId[] }),
       ),
-    ).toEqual([{ from: 'deck', to: 'playerHand' }])
+    ).toEqual([{ from: 'deck', to: 'playerHand', card: 'nope' }])
   })
 
   it('flies a played card from whoever had the turn', () => {
     expect(
       diffFlights(tableOf({ current: 'rau' }), tableOf({ discard: ['skip'] as CardId[] })),
-    ).toEqual([{ from: 'rauHand', to: 'discard' }])
+    ).toEqual([{ from: 'rauHand', to: 'discard', card: 'skip' }])
     expect(
       diffFlights(tableOf({ current: 'user' }), tableOf({ discard: ['skip'] as CardId[] })),
-    ).toEqual([{ from: 'playerHand', to: 'discard' }])
+    ).toEqual([{ from: 'playerHand', to: 'discard', card: 'skip' }])
   })
 
   it('flies a Nope from the hand that threw it, not from whose turn it is', () => {
@@ -193,7 +193,7 @@ describe('which cards visibly move', () => {
       discard: ['attack', 'nope'] as CardId[],
       pending: { ...pending, nopes: 1, waiting_on: 'rau' },
     })
-    expect(diffFlights(prev, next)).toEqual([{ from: 'playerHand', to: 'discard' }])
+    expect(diffFlights(prev, next)).toEqual([{ from: 'playerHand', to: 'discard', card: 'nope' }])
   })
 
   it('flies a whole combo, one card per card', () => {
@@ -208,6 +208,41 @@ describe('which cards visibly move', () => {
       hand_counts: { user: 2, rau: 5 },
     })
     expect(diffFlights(prev, next)).toEqual([{ from: 'playerHand', to: 'rauHand' }])
+  })
+
+  it('flies the kitten off the deck and the Defuse out of your fan', () => {
+    // Drawing the bomb with a Defuse in hand lands both on the pile in one
+    // push: the kitten was never in your fan, the Defuse genuinely was.
+    const prev = tableOf({ hand: ['skip', 'defuse', 'tacocat'] as CardId[] })
+    const next = tableOf({
+      phase: 'awaiting_defuse',
+      awaiting_seat: 'user',
+      deck_count: 19,
+      discard: ['exploding_kitten', 'defuse'] as CardId[],
+      hand: ['skip', 'tacocat'] as CardId[],
+    })
+    expect(diffFlights(prev, next)).toEqual([
+      { from: 'deck', to: 'discard', card: 'exploding_kitten' },
+      { from: 'playerHand', to: 'discard', card: 'defuse' },
+    ])
+  })
+
+  it('flies a defused kitten from the pile back into the deck', () => {
+    const prev = tableOf({
+      phase: 'awaiting_defuse',
+      awaiting_seat: 'user',
+      deck_count: 19,
+      discard: ['exploding_kitten', 'defuse'] as CardId[],
+      hand: ['skip', 'tacocat'] as CardId[],
+    })
+    const next = tableOf({
+      deck_count: 20,
+      discard: ['defuse'] as CardId[],
+      hand: ['skip', 'tacocat'] as CardId[],
+    })
+    expect(diffFlights(prev, next)).toEqual([
+      { from: 'discard', to: 'deck', card: 'exploding_kitten' },
+    ])
   })
 
   it('flies nothing for a shuffle or a peek', () => {

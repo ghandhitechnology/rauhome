@@ -100,6 +100,24 @@ class WhenHeSpeaks(BanterCase):
         self.look()
         self.assertEqual(self.said, ["bold, with three cards left."])
 
+    def test_a_move_made_during_the_cooldown_still_earns_its_reaction(self):
+        self.answer("one.")
+        self.look()
+        self.user_moved()
+        self.look()
+        self.assertEqual(self.said, ["one."])
+        # Lands while the cooldown from "one." is still up: nothing is said
+        # yet, but the move must not be fingerprinted and forgotten.
+        self.user_moved("played another Skip")
+        self.look()
+        self.assertEqual(self.said, ["one."])
+        # The cooldown expires; the move is still unseen, so it gets its
+        # reaction now rather than never.
+        banter._next_ok_at = 0.0
+        self.answer("two.")
+        self.look()
+        self.assertEqual(self.said, ["one.", "two."])
+
     def test_skip_means_he_says_nothing(self):
         self.answer("SKIP")
         self.look()
@@ -186,6 +204,68 @@ class WhenHeStaysQuiet(BanterCase):
         self.user_moved()
         self.look()
         self.assertEqual(self.said, [])
+
+    def test_a_dropped_line_costs_the_short_wait(self):
+        # Same slow provider: the line comes back after the hand ended and is
+        # dropped. Nobody heard it, so the wait it charges is the short one,
+        # not the full gag a delivered line earns.
+        def slow(prompt: str) -> str:
+            session.end("test over")
+            return "still your move."
+
+        self.addCleanup(setattr, banter, "_ask", banter._ask)
+        banter._ask = slow
+        self.look()
+        self.user_moved()
+        before = time.monotonic()
+        self.look()
+        self.assertEqual(self.said, [])
+        charged = banter._next_ok_at - before
+        self.assertGreater(charged, 0)
+        self.assertLessEqual(charged, banter.SKIP_GAP_SEC + 1)
+
+    def test_a_line_drops_when_a_conversation_starts_mid_thought(self):
+        # The face was free when he started thinking and busy by the time the
+        # line came back. Delivering it would talk over the conversation, so
+        # it is dropped — and charged the short wait, like any unheard line.
+        talking = {"on": False}
+
+        def slow(prompt: str) -> str:
+            talking["on"] = True
+            return "wait, what?"
+
+        self.addCleanup(setattr, banter, "_ask", banter._ask)
+        banter._ask = slow
+        self.addCleanup(
+            setattr, banter, "_face_is_talking", banter._face_is_talking
+        )
+        banter._face_is_talking = lambda: talking["on"]
+        self.look()
+        self.user_moved()
+        self.look()
+        self.assertEqual(self.said, [])
+        self.assertLessEqual(banter._next_ok_at - time.monotonic(), banter.SKIP_GAP_SEC)
+
+    def test_his_move_line_hushes_the_table_only_briefly(self):
+        import rau.games.kittens.player as player_mod
+
+        self.addCleanup(player_mod.reset_speech)
+        self.answer("too soon.")
+        self.look()
+        self.user_moved()
+        # His move line is going out right now: a proactive line on top of it
+        # would read as a stutter.
+        player_mod._spoke_at = time.monotonic()  # noqa: SLF001 — the stamp table_talk sets
+        self.look()
+        self.assertEqual(self.said, [])
+        # That hush is the short floor, not the full gap: once it has passed,
+        # the table is fair game again.
+        self.answer("and we are back.")
+        player_mod._spoke_at = (  # noqa: SLF001
+            time.monotonic() - banter.LAST_SPOKE_GAP_SEC - 0.5
+        )
+        self.look()
+        self.assertEqual(self.said, ["and we are back."])
 
 
 class IdleProd(BanterCase):

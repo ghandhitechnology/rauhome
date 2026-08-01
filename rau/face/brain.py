@@ -746,14 +746,19 @@ def _system_prompt(
         # goal, or between-session reconstruction on the latency path. The
         # small soul keeps Rau recognizable; the live history supplies the
         # immediate conversational thread.
-        return "\n\n".join(
-            [
-                soul,
-                SPEECH_HABITS_PROMPT,
-                HYPER_CONVERSATION_PROMPT,
-                response_language_instruction(),
-            ]
-        )
+        parts = [
+            soul,
+            SPEECH_HABITS_PROMPT,
+            HYPER_CONVERSATION_PROMPT,
+            response_language_instruction(),
+        ]
+        # A game on the table is none of those exclusions — it is the room
+        # right now. Its fragment is compact (table and journal, no tools) and
+        # without it the voice does not know a game is even on.
+        game = kittens.prompt_fragment()
+        if game:
+            parts.append(game)
+        return "\n\n".join(parts)
 
     ht = state.get_hard_task()
     hard = ""

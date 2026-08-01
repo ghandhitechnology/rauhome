@@ -40,6 +40,9 @@ import {
   reducedMotion,
   runFlight,
   DEAL_STAGGER_MS,
+  FLIGHT_STAGGER_MS,
+  FLIP_DELAY_MS,
+  type FlightRequest,
   type FlightSpot,
 } from './flights'
 import {
@@ -190,7 +193,13 @@ function DiscardPile({
       style={style}
     >
       {top ? (
-        <div className="ek-pile-face ek-flip-in" key={`${top}-${table.discard.length}`}>
+        <div
+          className="ek-pile-face ek-flip-in"
+          key={`${top}-${table.discard.length}`}
+          /* Held back so the face comes around as the flight carrying it
+             lands, rather than a beat before. */
+          style={{ '--ek-flip-delay': `${FLIP_DELAY_MS}ms` } as CSSProperties}
+        >
           <Card id={top} />
         </div>
       ) : (
@@ -421,6 +430,14 @@ export default memo(function GameTable() {
     than like it was already there.
   */
   const [arriving, setArriving] = useState<number[]>([])
+  /*
+    His side of the same trick: backs on their way to him that the state
+    already counts. Held out of the rendered fan until each flight lands, so
+    a card he draws does not sit in his hand while it is also in the air.
+  */
+  const [inboundRau, setInboundRau] = useState(0)
+  /* A jolt through the room when the kitten surfaces. */
+  const [kittenShock, setKittenShock] = useState(false)
   const [named, setNamed] = useState<CardId | null>(null)
   const [insertAt, setInsertAt] = useState(0)
   const [hint, setHint] = useState('')
@@ -429,7 +446,17 @@ export default memo(function GameTable() {
   const templateRef = useRef<HTMLDivElement | null>(null)
   const fanRef = useRef<HTMLDivElement | null>(null)
   const cardEls = useRef(new Map<number, HTMLElement>())
+  /** Every face, rendered once off-screen, so a known card can fly face-up. */
+  const faceEls = useRef(new Map<CardId, HTMLElement>())
   const prevTable = useRef<TableState | null>(null)
+  /**
+   * Where the card you just committed was, in screen pixels. Read at commit
+   * time — by the time the server answers, the slots that held those cards
+   * have been dealt to their neighbours and there is nothing left to measure.
+   */
+  const playOrigin = useRef<Pt | null>(null)
+  /** Turns the kitten jolt back off; kept across pushes so it can restart. */
+  const shockTimer = useRef<number | null>(null)
   /** Home centre of the card being dragged, so the offset is from where it was. */
   const dragHome = useRef<Pt>({ x: 0, y: 0 })
   /** Tears down the window listeners for the gesture in progress, if any. */
@@ -456,6 +483,7 @@ export default memo(function GameTable() {
     () => () => {
       gameBridge.hoverPoint = null
       endGesture.current?.()
+      if (shockTimer.current !== null) window.clearTimeout(shockTimer.current)
       // Only if the board has not already taken it — see `releaseWorld`.
       gameBridge.releaseWorld(ownedWorld.current)
       gameBridge.attachRauHand(null)
@@ -532,6 +560,27 @@ export default memo(function GameTable() {
     }
     return 1
   }, [])
+
+  /**
+   * Where the given fan cards are right now, averaged.
+   *
+   * Only worth asking while they are still in your hand: the answer to a move
+   * re-deals the fan, and the slots that held the played cards are somebody
+   * else's by the time a flight wants to start there.
+   */
+  const fanPoint = (indices: number[]): Pt | null => {
+    let x = 0
+    let y = 0
+    let n = 0
+    for (const i of indices) {
+      const r = cardEls.current.get(i)?.getBoundingClientRect()
+      if (!r) continue
+      x += r.x + r.width / 2
+      y += r.y + r.height / 2
+      n += 1
+    }
+    return n > 0 ? { x: x / n, y: y / n } : null
+  }
 
   const overDiscard = useCallback((x: number, y: number) => {
     const r = gameBridge.current?.spots.discard
@@ -633,10 +682,29 @@ export default memo(function GameTable() {
     if (!table) return
     const prev = prevTable.current
     prevTable.current = table
+
+    // Where the card you just threw left your hand, measured at commit time.
+    // Consumed on every push, so a move that never produced a flight cannot
+    // leave one lying around for the next one.
+    const thrown = playOrigin.current
+    playOrigin.current = null
+
     if (phase !== 'playing' || !prev || prev.game_id !== table.game_id) return
 
     const beats = diffBeats(prev, table)
     if (beats.length > 0) gameBridge.choreography?.observe(beats)
+
+    // The kitten is felt before it is read: the room jolts while the card
+    // itself is still in the air.
+    if (
+      prev.phase !== 'awaiting_defuse' &&
+      table.phase === 'awaiting_defuse' &&
+      !reducedMotion()
+    ) {
+      setKittenShock(true)
+      if (shockTimer.current !== null) window.clearTimeout(shockTimer.current)
+      shockTimer.current = window.setTimeout(() => setKittenShock(false), 700)
+    }
 
     const layer = screenRef.current
     const template = templateRef.current
@@ -649,34 +717,76 @@ export default memo(function GameTable() {
     const yours = requests.filter((r) => r.to === 'playerHand')
     const elsewhere = requests.filter((r) => r.to !== 'playerHand')
 
+    /*
+      What flies is what the flight is about. A card landing in your fan
+      clones the slot already waiting for it; a card the diff could name
+      clones its face; his cards — genuinely hidden — keep flying as backs.
+    */
+    const templateFor = (req: FlightRequest, slot?: number): HTMLElement => {
+      if (slot !== undefined) {
+        const el = cardEls.current.get(slot)
+        if (el) return el
+      }
+      if (req.card) {
+        const el = faceEls.current.get(req.card)
+        if (el) return el
+      }
+      return template
+    }
+
+    let cancelled = false
+
+    // Backs on their way to him are counted in his hand already, but they
+    // are not there yet: hold them out until each flight lands.
+    const inbound = elsewhere.filter((r) => r.to === 'rauHand').length
+    if (inbound > 0) setInboundRau((n) => n + inbound)
+
     // Measured in one pass, flown in the next: `runFlight` appends the card
     // into the flight layer, so a rect read taken between two of them forces a
     // reflow. Splitting the two costs nothing — the stagger is a `delay` on
     // each animation, not on when it is started.
     const elsewhereFlights = elsewhere.map((req, i) => ({
-      from: pointOf(req.from),
+      req,
+      from: req.from === 'playerHand' && thrown ? thrown : pointOf(req.from),
       to: pointOf(req.to),
       opts: {
-        delay: i * 80,
+        delay: i * FLIGHT_STAGGER_MS,
         spin: req.to === 'discard' ? 18 : -10,
         fromScale: scaleOf(req.from),
         toScale: scaleOf(req.to),
       },
     }))
-    for (const f of elsewhereFlights) void runFlight(layer, template, f.from, f.to, f.opts)
+    for (const f of elsewhereFlights) {
+      void runFlight(layer, templateFor(f.req), f.from, f.to, f.opts).then(() => {
+        // Not gated on `cancelled`: the increment above and this decrement
+        // are a pair, however the hand has moved on in the meantime.
+        if (f.req.to === 'rauHand') setInboundRau((n) => Math.max(0, n - 1))
+      })
+    }
 
-    if (yours.length === 0) return
+    if (yours.length === 0) {
+      return () => {
+        cancelled = true
+      }
+    }
     if (slots.length === 0 || reducedMotion()) {
       const home = pointOf('playerHand')
       const direct = yours.map((req, i) => ({
+        req,
         from: pointOf(req.from),
-        opts: { delay: i * 80, spin: -10, fromScale: scaleOf(req.from), toScale: 1 },
+        opts: {
+          delay: i * FLIGHT_STAGGER_MS,
+          spin: -10,
+          fromScale: scaleOf(req.from),
+          toScale: 1,
+        },
       }))
-      for (const f of direct) void runFlight(layer, template, f.from, home, f.opts)
-      return
+      for (const f of direct) void runFlight(layer, templateFor(f.req), f.from, home, f.opts)
+      return () => {
+        cancelled = true
+      }
     }
 
-    let cancelled = false
     setArriving(slots)
     // The gap opens first and the card is thrown into it, rather than both at
     // once: a card cannot slide into a space that is still being made, and
@@ -691,14 +801,23 @@ export default memo(function GameTable() {
         const el = cardEls.current.get(slot)
         const rect = el?.getBoundingClientRect()
         return {
+          req,
+          slot,
           from: pointOf(req.from),
           to: rect
             ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
             : pointOf('playerHand'),
-          opts: { delay: i * 80, spin: -10, fromScale: scaleOf(req.from), toScale: 1 },
+          opts: {
+            delay: i * FLIGHT_STAGGER_MS,
+            spin: -10,
+            fromScale: scaleOf(req.from),
+            toScale: 1,
+          },
         }
       })
-      const jobs = plan.map((f) => runFlight(layer, template, f.from, f.to, f.opts))
+      const jobs = plan.map((f) =>
+        runFlight(layer, templateFor(f.req, f.slot), f.from, f.to, f.opts),
+      )
       void Promise.all(jobs).then(() => {
         if (!cancelled) setArriving([])
       })
@@ -715,10 +834,17 @@ export default memo(function GameTable() {
 
   /* ── moves ──────────────────────────────────────────────────────── */
 
-  const commit = useCallback(async (move: Move) => {
-    const ok = await gameStore.play(move)
-    dispatch({ type: 'resolved', ok })
-  }, [dispatch])
+  const commit = useCallback(
+    async (move: Move, from?: Pt | null) => {
+      // The flight out of your fan starts where the cards actually were; the
+      // push that answers the move is where the point is read back out.
+      playOrigin.current = from ?? null
+      const ok = await gameStore.play(move)
+      if (!ok) playOrigin.current = null
+      dispatch({ type: 'resolved', ok })
+    },
+    [dispatch],
+  )
 
   const chosen = useMemo(() => {
     if (!table) return []
@@ -808,7 +934,7 @@ export default memo(function GameTable() {
     }
     if (giving) {
       dispatch({ type: 'release', overDiscard: true })
-      void commit({ move: 'give_favor', card })
+      void commit({ move: 'give_favor', card }, fanPoint([current.index]))
       return
     }
     const dropped = actionFor(table, [card])
@@ -823,7 +949,7 @@ export default memo(function GameTable() {
     }
     if (dropped.move) {
       dispatch({ type: 'release', overDiscard: true })
-      void commit(dropped.move)
+      void commit(dropped.move, fanPoint([current.index]))
       return
     }
     // Dropped, but the card wants to know something first: the choice opens
@@ -856,7 +982,7 @@ export default memo(function GameTable() {
     if (!action) return
     if (action.move) {
       dispatch({ type: 'confirm' })
-      void commit(action.move)
+      void commit(action.move, fanPoint(raised))
       return
     }
     dispatch({ type: 'picker', picker: action.picker ?? 'none' })
@@ -871,7 +997,11 @@ export default memo(function GameTable() {
   const lastLine = table.log[table.log.length - 1]
 
   return (
-    <div className="ek-room" role="region" aria-label={t('ek.region')}>
+    <div
+      className={`ek-room ${kittenShock ? 'is-kitten' : ''}`}
+      role="region"
+      aria-label={t('ek.region')}
+    >
       <CardDefs />
 
       {/* ── in the room ─────────────────────────────────────────── */}
@@ -890,7 +1020,7 @@ export default memo(function GameTable() {
           dropTarget={hand.mode === 'dragging' && hand.overDiscard}
         />
         <RauHand
-          count={Math.min(table.hand_counts.rau, dealtRau)}
+          count={Math.max(0, Math.min(table.hand_counts.rau, dealtRau) - inboundRau)}
           held={table.hand_counts.rau}
           thinking={thinking}
           attach={attachRau}
@@ -918,10 +1048,27 @@ export default memo(function GameTable() {
 
       {/* ── in your hands ───────────────────────────────────────── */}
       <div className="ek-screen" ref={screenRef}>
-        {/* Cloned for every card in flight, so what flies is what lands. */}
+        {/* Cloned for the flights that stay face-down — his cards. */}
         <div className="ek-flight-template" ref={templateRef} aria-hidden>
           <CardBack />
         </div>
+        {/* Every face once, for the flights that know their card: a played or
+            drawn card of yours flies face-up, his hidden ones fly as backs. */}
+        <div className="ek-flight-template" aria-hidden>
+          {CARD_IDS.map((id) => (
+            <div
+              key={id}
+              ref={(el) => {
+                if (el) faceEls.current.set(id, el)
+                else faceEls.current.delete(id)
+              }}
+            >
+              <Card id={id} />
+            </div>
+          ))}
+        </div>
+
+        {kittenShock && <div className="ek-kitten-flash" aria-hidden />}
 
         <PileTags table={table} live={yourMove && !locked} attach={attachTags} />
 
@@ -1026,7 +1173,7 @@ export default memo(function GameTable() {
                     onClick={() => {
                       if (!named) return
                       dispatch({ type: 'confirm' })
-                      void commit({ move: 'combo', cards: chosen, named_card: named })
+                      void commit({ move: 'combo', cards: chosen, named_card: named }, fanPoint(raised))
                     }}
                   >
                     {named ? t('ek.demand', { card: cardMeta(named).title }) : t('ek.pickOne')}
@@ -1084,7 +1231,7 @@ export default memo(function GameTable() {
                   disabled={locked}
                   onClick={() => {
                     dispatch({ type: 'confirm' })
-                    void commit({ move: 'give_favor', card: chosen[0] })
+                    void commit({ move: 'give_favor', card: chosen[0] }, fanPoint(raised))
                   }}
                 >
                   {t('ek.give', { card: cardMeta(chosen[0]).title })}
@@ -1137,7 +1284,9 @@ export default memo(function GameTable() {
               '--n': table.hand.length,
             } as CSSProperties
             if (isDragging && dragOffset) {
-              style.transform = `translate(${dragOffset.x}px, ${dragOffset.y}px) rotate(3deg) scale(1.06)`
+              /* Keeps most of the fan angle: snapping an edge card straight
+                 the moment the drag trips is a jump, not a pick-up. */
+              style.transform = `translate(${dragOffset.x}px, ${dragOffset.y}px) rotate(calc(var(--rot) * 0.4 + 3deg)) scale(1.06)`
               style.zIndex = 30
             }
             return (

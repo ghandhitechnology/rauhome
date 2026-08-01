@@ -179,6 +179,29 @@ class HyperConversationPolicyTests(unittest.TestCase):
         self.assertIn("delicate, rapid tiki-taka conversation", prompt)
         self.assertNotIn("Recent memory excerpt", prompt)
         self.assertNotIn("Before any tool call", prompt)
+        self.assertNotIn("Exploding Kittens on the table", prompt)
+
+    def test_hyper_prompt_carries_a_live_game_without_diary_or_tools(self) -> None:
+        """Game-blind was the bug: hyper must know a hand is on the table."""
+        from rau.face import brain
+        from rau.games.kittens import tools as kittens_tools
+        from tests.test_kittens_session import isolate_memory, quiesce
+
+        isolate_memory(self)
+        self.addCleanup(quiesce)
+        kittens_tools.run_tool("start_kittens", {})
+        with patch.object(
+            brain,
+            "recent_context",
+            side_effect=AssertionError("Hyper must not read diary memory"),
+        ):
+            prompt = brain._system_prompt(voice=True, hyper=True)
+
+        self.assertIn("delicate, rapid tiki-taka conversation", prompt)
+        self.assertIn("Exploding Kittens on the table", prompt)
+        self.assertIn("player half makes the moves", prompt)
+        self.assertNotIn("Recent memory excerpt", prompt)
+        self.assertNotIn("Before any tool call", prompt)
 
     def test_hyper_history_keeps_only_a_small_recent_prose_tail(self) -> None:
         from rau.face import brain

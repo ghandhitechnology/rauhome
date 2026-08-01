@@ -207,8 +207,13 @@ def _ask(prompt: str) -> str:
         # Higher than a move call: this one is only worth making if it is not the
         # same line every game.
         temperature=0.95,
+        # See `player._ask`: no effort means the catalog default ("high" for
+        # DeepSeek), and thinking does not fit in this budget.
+        effort="minimal",
     )
-    return str(getattr(result, "text", "") or "")
+    # `ChatResult` carries `content`, never `text`. The old getattr made this
+    # unconditionally empty, so no proactive line has ever left this module.
+    return str(result.content or "")
 
 
 def _run(game: ChessGame, reason: str) -> None:

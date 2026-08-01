@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rau.events import BUS  # noqa: E402
 from rau.games.kittens import engine as engine_mod  # noqa: E402
-from rau.games.kittens import session, tools  # noqa: E402
+from rau.games.kittens import journal, session, tools  # noqa: E402
 from rau.games.kittens import deck as deck_mod  # noqa: E402
 from rau.games.kittens import view as view_mod  # noqa: E402
 from rau.games.kittens.deck import (  # noqa: E402
@@ -90,7 +90,7 @@ def deal_past_the_kitten() -> None:
     """
     Deal, then sink the Exploding Kitten to the bottom of the deck.
 
-    One deal in thirty-seven puts the kitten on top, and drawing it parks the
+    One deal in thirty-five puts the kitten on top, and drawing it parks the
     game in `awaiting_defuse` waiting on *you* — so Rau correctly never gets a
     turn. That is right behaviour and a wrong fixture for any test about whose
     turn it is, so the coin flip is removed rather than tolerated.
@@ -345,6 +345,103 @@ class ThePump(GameHarness):
         # Written to the harness's temporary path, never to the real diary.
         self.assertTrue(self.tmp_games.exists(), "the tally was never written")
         self.assertIn('"wins": 1', self.tmp_games.read_text(encoding="utf-8"))
+
+
+class LogMirror(GameHarness):
+    """Engine notes reach the shared journal — for both seats, exactly once."""
+
+    def test_a_user_move_is_mirrored_as_theirs(self):
+        deal_past_the_kitten()
+        session.apply_move(USER, {"move": "draw"})
+        text = journal.tail(0)
+        self.assertIn("Them moved: Drew a card.", text)
+        # The turn handover note is tagged by seat too, not blamed on the mover.
+        self.assertIn("Rau moved: Rau's turn.", text)
+
+    def test_a_rau_move_is_mirrored_as_well(self):
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[RAU] = [SKIP]
+        game.hands[USER] = [SKIP]
+        game.draw = [ATTACK, SKIP]
+        game.current = RAU
+        game.phase = engine_mod.PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        session.apply_move(RAU, {"move": "draw"})
+        self.assertIn("Rau moved: Drew a card.", journal.tail(0))
+
+    def test_mirroring_twice_records_each_note_once(self):
+        deal_past_the_kitten()
+        session.apply_move(USER, {"move": "draw"})
+        # The pump calls this on every resolution too; a repeat pass adds nothing.
+        session._mirror_log()
+        self.assertEqual(journal.tail(0).count("Drew a card."), 1)
+
+    def test_the_watermark_survives_the_engine_log_cap(self):
+        """The engine keeps only forty notes; a count-based mirror goes blind."""
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        for index in range(45):
+            game._note(USER, f"noise {index}")
+        session._mirror_log(game)
+        game._note(USER, "CANARY-NOTE")
+        session._mirror_log(game)
+        text = journal.tail(0)
+        self.assertIn("CANARY-NOTE", text)
+        self.assertEqual(text.count("noise 44"), 1)
+
+    def test_a_resolved_nope_window_reaches_the_journal(self):
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[USER] = [ATTACK]
+        game.hands[RAU] = [SKIP]  # no Nope — his window still runs out the clock
+        game.draw = [SKIP, SKIP]
+        game.current = USER
+        game.phase = engine_mod.PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        session.apply_move(USER, {"move": "play", "card": ATTACK})
+        # The pump does exactly this pair when the window expires.
+        game.tick(time.time() + 1)
+        session._mirror_log(game)
+        self.assertIn("now owes 2 turns", journal.tail(0))
+
+
+class RauNopeIsVisible(GameHarness):
+    """His Nope used to be invisible: no journal record, nothing said."""
+
+    def test_the_pump_records_and_speaks_a_rau_nope(self):
+        import threading
+        from unittest.mock import patch
+
+        from rau.games.kittens import pump
+
+        engine_mod.NOPE_WINDOW_MS = 60_000  # hold the window open for the test
+        tools.run_tool("start_kittens", {})
+        game = session.current()
+        assert game is not None
+        game.hands[USER] = [ATTACK]
+        game.hands[RAU] = [deck_mod.NOPE, SKIP]
+        game.draw = [SKIP, SKIP]
+        game.current = USER
+        game.phase = engine_mod.PHASE_PLAYING
+        game.pending = None
+        game.awaiting_seat = None
+        said: List[str] = []
+        with patch.object(
+            self._player, "decide_nope", return_value=True
+        ), patch.object(self._player, "table_talk", said.append):
+            session.apply_move(USER, {"move": "play", "card": ATTACK})
+            pump._tick_once(threading.Event())
+        text = journal.tail(0)
+        self.assertIn("noped", text, "his own record of the move is missing")
+        self.assertIn("Nope.", text, "the mirrored engine note is missing")
+        self.assertIn("was Noped.", text, "the cancelled resolution is missing")
+        self.assertTrue(said, "he Noped in silence")
 
 
 class HubRoutes(GameHarness):
