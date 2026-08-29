@@ -1,7 +1,7 @@
 {
   "face": {
-    "provider": "openrouter",
-    "model": "z-ai/glm-5.2",
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
     "max_tokens": 4090,
     "temperature": 0.9,
     "effort": "high"
